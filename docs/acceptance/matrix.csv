@@ -1,0 +1,116 @@
+功能ID,SPEC节,功能条目,验收域,新卡号,既有卡号,历史覆盖度,自动化覆盖,验收层,状态,缺口说明
+1-01,1 看板与任务卡,任务页 = 单人周时间网格,D1,ACC-K-01,"M91,M92",部分,src/components/TaskTimeline/TaskTimelinePage.test.tsx(21例); src/components/TaskTimeline/week.test.ts,L1+L2,未验,拖拽落点写 planStart/End、30 分钟吸附、底缘拉伸、18:00 折入次日渲染未验
+1-02,1 看板与任务卡,排期,D1,ACC-K-02,M91,部分,(无专项单测),L2,未验,拖拽写计划起止、30 分钟吸附、块可移动与底缘拉伸、拖回池清除均未专卡
+1-03,1 看板与任务卡,任务编辑浮窗,D1,ACC-K-03,"M55,M91",部分,src/components/TaskTimeline/TaskEditorOverlay.test.tsx(8例),L1+L2,未验,双击开浮窗、240ms 滑入滑出、跨页原位换任务不重播动画未验
+1-04,1 看板与任务卡,浮窗关闭拨杆,D1,ACC-K-04,—,无,src/App.test.tsx（拨杆状态）,L1+L2,未验,10-21 新增，全库无实机卡；不保存关闭两条分支完全未验
+1-05,1 看板与任务卡,计划块 v2,D1,ACC-K-05,"M92,M91",部分,src/components/TaskTimeline/week.test.ts(titleRows/fmtHours),L1+L2,未验,标题行数分档 1/2/4/6、同列双卡半区、3 卡以上整簇塌缩三档尺寸未验
+1-06,1 看板与任务卡,已归档卡原位封存保留,D1,ACC-K-06,—,无,(无),L2,未验,M91 报告明写未验：归档卡原位封存、虚线边与红印章、双击跳归档区定位脉冲
+1-07,1 看板与任务卡,任务卡,D1,ACC-K-07,"M44,M45,M46,M66,M73",部分,src/components/TodoCard.test.tsx(30例),L1+L2,未验,子任务进度、折叠、归属头像切换未逐项验
+1-08,1 看板与任务卡,截止时间只有两种合法形态,D1,ACC-K-08,"M45,M89,M46",全,src/format.test.ts(datetime-local),L1+L2,未验,「不保存关闭」路径下的截止值校验未验
+1-09,1 看板与任务卡,文件绑定语义,D1,ACC-K-09,"S21,M53,M92",部分,src/lib/taskFiles.test.ts; src/lib/useTaskFiles.test.tsx,L1+L2,未验,文件夹槽替换制、每卡 10 封顶、AI_Gen_Files 白名单校验、bot 渠道只增不减未验
+1-10,1 看板与任务卡,子任务卡,D1,ACC-K-10,M91,部分,src/components/task/SubtaskRow.test.tsx(13例),L1+L2,未验,＋生成子卡 / ↗ 跳转 / × 删除三条交互与母卡删除二选一弹窗未验
+1-11,1 看板与任务卡,自动归档,D1,ACC-K-11,—,无,src-tauri/src/task_autotag.rs(6例); src/lib/archiveRule.test.ts(10例),L1+L2,未验,7 天边界归档、大模型自动打标 ≤3、归档页搜索与标签筛选未实机验
+1-12,1 看板与任务卡,归档页「整理标签」,D1,ACC-K-12,"M28,M29,M36",全,src/components/TagConsolidateModal.test.tsx; src-tauri/src/bot/tags_consolidate.rs,L1+L2,未验,—
+1-13,1 看板与任务卡,回收站,D1,ACC-K-13,—,无,src/components/TrashPage.test.tsx(仅2例),L1+L2,未验,移废纸篓三选项弹窗、删除被引用文件时指名持有者、彻底删除**只删 `tasks` 一张表**（`db/tasks.rs` 是 `DELETE FROM tasks`，无三表级联）——矩阵原写「三表清理」前提存疑；绑文件任务的彻底删除三选项未验
+1-14,1 看板与任务卡,多人汇总,D1,ACC-K-14,"M53,M67",部分,src-tauri/src/db/tasks/owner_graph_tests.rs(14例),L1+L2,未验,导入信封 profile 卡头像落 people 表、多人汇总的 owner_id 归属未验
+1-15,1 看板与任务卡,定时任务卡 ⏰,D1,ACC-K-15,"M65,M72,M92",部分,src-tauri/src/bot_scheduler/sched_tests.rs(21例),L1+L2,未验,错过补跑 2h 时效窗口未验；F4「定时执行被落成 due 卡到点不执行」实机发现至今未修；【写卡时查出】SPEC 的「结果前置『⏰ 自动执行』写备注」在实现里不存在——后端只写作业结果标题「⏰ 定时任务完成：…」，结果落 `scheduled_job_runs` 表，备注前缀由模型自行决定
+1-16,1 看板与任务卡,首页 = 主窗口落地仪表盘,D1,ACC-K-16,"M92,冒烟6a",部分,src/components/HomePage/HomePage.test.tsx(24例); homeData.test.ts,L1+L2,未验,KPI 完成率口径、必应每日一图、即将到期横条轮播、本周柱状图未验
+1-17,1 看板与任务卡,主窗口,D1,ACC-K-17,"M91,M92",部分,src/App.test.tsx,L1+L2,未验,十一个导航入口（`NAV_ITEMS` 6 个 + `AGENT_ITEMS` 5 个）切换与挂载零断言
+1-18,1 看板与任务卡,主导航宽度 184px,D1,ACC-K-18,—,无,src/lib/navWidth.test.ts,L2,未验,无实机卡
+1-19,1 看板与任务卡,设置页左栏与主导航同宽,D1,ACC-K-19,—,无,src/App.test.tsx,L2,未验,无实机卡
+1-20,1 看板与任务卡,设置页是叠层，不是替换,D1,ACC-K-20,"M18,S33",全,src/App.test.tsx（inert 断言）,L1+L2,未验,—
+1-21,1 看板与任务卡,聊天会话栏宽度 224px,D1,ACC-K-21,—,无,(无),L2,未验,无实机卡
+2-22,2 机器人聊天入口（挂件已退役）,侧边磁吸挂件窗口整体退役,D2,ACC-C-01,—,无(负向),(无),L2,未验,负向卡：侧边磁吸挂件窗口不得复活
+2-23,2 机器人聊天入口（挂件已退役）,聊天改为左导航「Agent 能力」组下的「聊天」导航项，点开占满主内容区,D2,ACC-C-02,—,无,src/App.test.tsx,L1+L2,未验,聊天导航项位置与占满主内容区未实机验
+2-24,2 机器人聊天入口（挂件已退役）,聊天常挂载,D2,ACC-C-03,"M91,M92",部分,src/components/ChatPanel.test.tsx,L1+L2,未验,execute-task / chat-focus-session / subagent-finished 三监听器在切走页面期间的行为未验
+2-25,2 机器人聊天入口（挂件已退役）,聊天窗滚动语义,D2,ACC-C-04,—,无,src/components/ChatPanel.scroll.test.tsx(5例),L1+L2,未验,无实机卡：贴底 32px 判据、滚回底恢复跟随未验
+2-26,2 机器人聊天入口（挂件已退役）,在途回合不丢,D2,ACC-C-05,"M18,M19,S33",全,src/components/ChatPanel.inflight.test.tsx,L1+L2,未验,—
+2-27,2 机器人聊天入口（挂件已退役）,在途流式可恢复,D2,ACC-C-06,"M19,M34",全,src-tauri/src/bot/stream_log.rs(10例),L1+L2,未验,—
+2-28,2 机器人聊天入口（挂件已退役）,跨入口跳聊天统一走 chat-focus-session,D2,ACC-C-07,—,无,(无),L2,未验,chat-focus-session 跨入口统一跳转未验
+2-29,2 机器人聊天入口（挂件已退役）,托盘菜单「打开主窗口 / 打开聊天 / 退出」,D2,ACC-C-08,S20,部分,(无),L2,未验,托盘「打开聊天」推到最顶层并发空载荷事件未验
+2-30,2 机器人聊天入口（挂件已退役）,聊天区不再有「选任务模式」与任务引用块,D2,ACC-C-09,—,无(负向),(无),L2,未验,负向卡：聊天区不得出现「选任务模式」与任务引用块
+2-31,2 机器人聊天入口（挂件已退役）,机器人总开关关闭时聊天页不给可用界面,D2,ACC-C-10,M32,部分,src/components/ChatPanel.session.test.tsx,L1+L2,未验,开关关闭时聊天页不给可用界面未验
+2-32,2 机器人聊天入口（挂件已退役）,聊天页两栏布局,D2,ACC-C-11,"M88,W11",部分,src/components/ChatPanel.test.tsx,L1+L2,未验,会话栏常驻 224px 与两行式条目未验
+3-33,3 机器人聊天与模型,多会话聊天,D3a,ACC-I-01,"S19,S20",部分,src/components/ChatPanel.send.test.tsx,L1+L2,未验,斜杠命令 /compact /retry /clean、删除确认 60s 超时自动拒未验
+3-34,3 机器人聊天与模型,本地提示是纯瞬态,D3a,ACC-I-02,S20,部分,src/components/ChatPanel.send.test.tsx,L1+L2,未验,只覆盖停止回显；/compact 不足 /retry 不可重试等提示不落库未验
+3-35,3 机器人聊天与模型,停止有回显：停了多少条,D3a,ACC-I-03,S20,全,(无),L1+L2,未验,—
+3-36,3 机器人聊天与模型,会话锁被占时的拒答不当成答复,D3a,ACC-I-04,S19,全,src/components/ChatPanel.send.test.tsx,L1+L2,未验,—
+3-37,3 机器人聊天与模型,注入块并进本轮用户消息，保住缓存前缀,D3a,ACC-I-05,"M80,V87",全,src-tauri/src/bot_chat/inject_tests.rs,L1+L2,未验,V88 recency 护栏实测「无牙齿（强模型）」
+3-38,3 机器人聊天与模型,助手气泡承载本轮全部执行态,D3a,ACC-I-06,"M91,M92",部分,src/components/ChatPanel/LiveIndicator.test.tsx(12例),L1+L2,未验,气泡内四段次序（活体→思考→工具→子 agent→正文）未验
+3-39,3 机器人聊天与模型,气泡下方的附件位改成「交付物区」,D3a,ACC-I-07,—,无,src/lib/deliverables.test.ts(14例); MessageList.deliverable.test.tsx,L1+L2,未验,10-27 新增，全库无实机卡：正文自报 ∪ 新产生合流、形态过滤、存在性探测、空态两态未验
+3-40,3 机器人聊天与模型,叫停后不留活体气泡,D3a,ACC-I-08,—,无,src/components/ChatPanel.stream.test.tsx,L1+L2,未验,10-26 新增：叫停后不得残留永远转圈的活体气泡
+3-41,3 机器人聊天与模型,工具调用收进折叠,D3a,ACC-I-09,—,无,(无),L2,未验,无实机卡：折叠行 N/M 进度与当前工具名
+3-42,3 机器人聊天与模型,每条消息带头像,D3a,ACC-I-10,—,无,(无),L2,未验,无实机卡：头像固定 DOM 首位、左右只由行方向决定
+3-43,3 机器人聊天与模型,机器人气泡宽度只增不减,D3a,ACC-I-11,"M37,M88,W11,V95",全,src/components/ChatPanel/stickyBubbleWidth.test.tsx(7例),L1+L2,未验,—
+3-44,3 机器人聊天与模型,危险操作确认单一呈现者,D3a,ACC-I-12,"M01,M02,M09,M16",部分,src/components/ConfirmMap/ConfirmMap.test.tsx(10例),L1+L2,未验,「全窗唯一呈现者」未验：同一请求不得弹两次、答完后不得留残影
+3-45,3 机器人聊天与模型,会话栏交互,D3a,ACC-I-13,—,无,(无),L2,未验,无实机卡：两行式条目、三重标记、aria-current
+3-46,3 机器人聊天与模型,会话条目首行用满整宽,D3a,ACC-I-14,—,无,(无),L2,未验,无实机卡：首行不得为删除键预留整行宽度
+3-47,3 机器人聊天与模型,会话活跃时间随清空推进,D3a,ACC-I-15,—,无,src/components/ChatPanel.session.test.tsx,L2,未验,无实机卡：/clean 清空也算会话活动
+3-48,3 机器人聊天与模型,会话栏可折叠,D3a,ACC-I-16,—,无,(无),L2,未验,无实机卡：折叠态存 localStorage
+3-49,3 机器人聊天与模型,右侧上下文栏,D3a,ACC-I-17,"M33,M58,M59,M60",部分,src/components/ChatPanel/ContextRail.test.tsx(22例),L1+L2,未验,10-27 拆双子页后：改动/交付物双子页切换、点击来源决定预览面未验
+3-50,3 机器人聊天与模型,阅读带限宽,D3a,ACC-I-18,—,无,(无),L2,未验,无实机卡：760px 居中带
+3-51,3 机器人聊天与模型,聊天头部,D3a,ACC-I-19,—,无,(无),L2,未验,无实机卡：标题常驻、头部不承载活体指示
+3-52,3 机器人聊天与模型,输入卡底栏四件套,D3a,ACC-I-20,—,无,src/components/ChatPanel/InputArea.test.tsx(7例),L1+L2,未验,授权模式四档在输入卡内直接改、乐观更新失败回滚未验
+3-53,3 机器人聊天与模型,输入区草稿按会话隔离且跨卸载存活,D3a,ACC-I-21,M20,全,src/App.test.tsx,L1+L2,未验,—
+3-54,3 机器人聊天与模型,空会话引导,D3a,ACC-I-22,—,无,(无),L2,未验,无实机卡：三枚起始短语只填入不自动发送
+3-55,3 机器人聊天与模型,一次执行 = 一个新会话,D3a,ACC-I-23,—,无,src-tauri/tests/task_chat_exec.rs,L2,未验,无实机卡：任务卡 🤖 与定时执行统一走新会话
+3-56,3 机器人聊天与模型,双协议,D3a,ACC-I-24,"M14,M68,M78",部分,src-tauri/src/bot/config/mod.rs(49例),L1+L2,未验,厂商级 key、每模型推理参数、可用性门禁、聊天内快切模型未逐项验
+3-57,3 机器人聊天与模型,截断自愈,D3b,ACC-E-01,—,无,(无),L2,未验,全库无命中：Anthropic 撞 max_tokens 后续跑 ≤2 轮拼接
+3-58,3 机器人聊天与模型,大模型 API 错误说人话,D3b,ACC-E-02,rerun§2.2,全,src/components/ChatPanel.stream.test.tsx,L1+L2,未验,—
+3-59,3 机器人聊天与模型,200 流内错误也进重试网,D3b,ACC-E-03,—,无,(无),L2,未验,10-26 新增，全库无命中：HTTP 200 流内报错按 type 归一状态码并进重试网
+3-60,3 机器人聊天与模型,新增代码不得再走 blanket 降级,D3b,ACC-E-04,—,无(门禁),scripts/test-fast.sh 降级防线,L0,未验,属 L0 门禁项，不进实机；新增行命中 CommandError::from( 即拦
+3-61,3 机器人聊天与模型,语义性失败不再降级成不可恢复的内部错误,D3b,ACC-E-05,—,无,src-tauri/src/bot_chat/command_error_mapping_tests.rs,L1+L2,未验,TaskInvalidState / InvalidArgument / LlmRequestFailed 精确化未验
+3-62,3 机器人聊天与模型,执行类谎报守卫,D3b,ACC-E-06,"S16,M89,M90,overflow H/J",部分,src-tauri/tests/llm_integration/guard.rs,L1+L2,未验,点名判据、中文别名表、子 agent 保守让开、入参不参与判决四项未验
+3-63,3 机器人聊天与模型,易错工具的 schema 里带真实示例,D3b,ACC-E-07,"M82,V89",全,src-tauri/src/bot/registry/schemas.rs,L1+L2,未验,V89 实测「无牙齿（强模型）」——护栏价值声明需改口径
+3-64,3 机器人聊天与模型,互不依赖的调用合并到同一轮,D3b,ACC-E-08,"M83,V90",全,(无),L2,未验,V90 同为「无牙齿（强模型）」
+3-65,3 机器人聊天与模型,旧轮工具结果可召回,D3b,ACC-E-09,"M76,V78,V79",全,src-tauri/src/bot/tools/trace_tests.rs(8例),L1+L2,未验,V79 判据被变异报告判为需改（强模型自愈成多跳回）
+3-66,3 机器人聊天与模型,思考段可回灌（DeepSeek/Moonshot/MiniMax 硬要求）,D3b,ACC-E-10,"M78,V82,V83",部分,src-tauri/src/bot_model_loop/tests/sse.rs,L1+L2,未验,10-29 改「发了就回」后卡面口径过时；V82/V83 本机不可激活
+3-67,3 机器人聊天与模型,轮内工具结果滑动窗,D3b,ACC-E-11,"M75,V76,V77",全,scripts/mutation-trace-funnel.sh(M1–M12),L1+L2,未验,F5「一次性门空消费」已修 fd43e4da，需复验
+3-68,3 机器人聊天与模型,长历史的工具自检走侧调通道,D3b,ACC-E-12,"M79,V84,V85,V86",全,(无),L2,未验,V86 注入面成立但行为面不敏感
+3-69,3 机器人聊天与模型,守卫拦下后的两种处置,D3b,ACC-E-13,—,无,(无),L2,未验,全库无命中：第二次谎报不再返工、改挂如实更正 + hallucination_guard.repeat 审计
+3-70,3 机器人聊天与模型,自检判定字样不是答复,D3b,ACC-E-14,M26,全,(无),L1+L2,未验,—
+3-71,3 机器人聊天与模型,内容轴的两道判据,D3b,ACC-E-15,—,无,(无),L2,未验,「回声」全库无命中：结果无出处与回声调用两道判据
+3-72,3 机器人聊天与模型,文件声称的落盘凭证闸,D3b,ACC-E-16,"S16,overflow J",部分,src-tauri/src/audit/tests.rs,L1+L2,未验,句级触发、路径存在性 + 工具写过两问、不可证伪通道让开未验
+3-73,3 机器人聊天与模型,生成类文档的落盘凭证,D3b,ACC-E-17,—,无,src-tauri/src/bot/dispatch/commit_and_report_tests.rs,L1+L2,未验,五个文档生成工具的二进制档落盘凭证未验
+3-74,3 机器人聊天与模型,截图按变更类登记、也给落盘凭证,D3b,ACC-E-18,S16,全,src-tauri/src/bot_desktop.rs,L1+L2,未验,—
+3-75,3 机器人聊天与模型,工具成败只由 status 承担,D3b,ACC-E-19,S05,部分,src-tauri/src/bot/dispatch/commit_and_report_tests.rs,L1+L2,未验,Denied 与 Error 三类归属未验：参数闸/门禁拒绝/执行失败
+3-76,3 机器人聊天与模型,工具输出回灌上限,D3b,ACC-E-20,"S14,S15,overflow A–J,V93",全,docs/realmachine-overflow-test.md（10 场景）+ scripts/overflow-probe.sh,L1+L2,未验,覆盖最厚的一块，仍需按新构建复跑
+3-77,3 机器人聊天与模型,read_text_file 读取面补两道闸,D3b,ACC-E-21,—,无,src-tauri/src/bot_fs/tests.rs(read_slice_*),L1+L2,未验,10-29 新增：单行 2000 字符截断闸、默认页 56KB 收页未验
+3-78,3 机器人聊天与模型,工具,D3b,ACC-E-22,"M01–M08,M11–M13,M82,M86,S16,S25",部分,src-tauri/src/bot/registry/registry_tests.rs,L1+L2,未验,事实表漏 complete_task（实列 64 vs 实际 65）；逐工具行为覆盖不均，9/10 任务卡工具本体无直接单测
+3-79,3 机器人聊天与模型,执行计划浮层,D3c,ACC-T-01,—,无,src-tauri/src/bot/tools/plan.rs(3例); src/components/ChatPanel/PlanPanel.test.tsx,L1+L2,未验,10-26 新增，全库无命中：update_plan 整表替换、bot-plan 事件、面板三段与过期标记未验
+3-80,3 机器人聊天与模型,Word 模板双层口径,D3c,ACC-T-02,—,无,src-tauri/src/py/document/word_template_tests.rs,L1+L2,未验,无实机卡：模板管纸张页边、旁车 json 管排版、缺旁车自动重提取
+3-81,3 机器人聊天与模型,语义记忆体 v2,D3c,ACC-T-03,"M80,M81,M91",部分,src-tauri/src/memory/tests.rs; cargo test --lib memory::embed -- --ignored,L1+L2,未验,自动抽取、去重阈值、记忆整理、检索参数 8 项、黄金集 recall@5 未验
+3-82,3 机器人聊天与模型,MCP 外部服务器,D3c,ACC-T-04,"S03,S04,S10,S13,S17,S18,M34,M50,M51,M86,W04",全,src-tauri/src/bot/mcp/config.rs(23例); manager/e2e_stdio.rs(12例),L1+L2,未验,覆盖面最广的一块
+3-83,3 机器人聊天与模型,MCP 工具函数名跨断连稳定,D3c,ACC-T-05,S10,全,(无),L1+L2,未验,—
+3-84,3 机器人聊天与模型,技能系统,D3c,ACC-T-06,"S01,S02,S06,M23,M24,M25,M47,M84",全,src-tauri/src/bot_skills/runtime/tests.rs(50例),L1+L2,未验,—
+3-85,3 机器人聊天与模型,技能配额（2026-10-26 定基线，2026-10-29 改口径）,D3c,ACC-T-07,—,无,src-tauri/src/bot_skills/runtime/tests.rs,L1+L2,未验,10-26/10-29 改口径：无墙钟无独立预算、max_steps 仅 auto 生效未验
+3-86,3 机器人聊天与模型,技能执行中断的两条根因与三处修法,D3c,ACC-T-08,—,无,src-tauri/src/bot_skills/runtime/tests.rs,L1+L2,未验,10-26 新增：失败语义按 mode 分岔、use_skill 正文不受全局 cap 压制、grep_files 兼容单文件
+3-87,3 机器人聊天与模型,PPT 制作中断的四个根因与四处修法,D3c,ACC-T-09,—,无,src-tauri/src/bot_py/tests.rs(~60例),L1+L2,未验,10-26 新增：授权窗误杀、悬空 run、scriptPath 落盘、运行目录留存四条修法未验
+3-88,3 机器人聊天与模型,内置技能已退役,D3c,ACC-T-10,M48,全,(无),L1+L2,未验,负向卡：随包分发技能清单须为空、旧物化副本启动时清掉
+3-89,3 机器人聊天与模型,技能启用开关,D3c,ACC-T-11,M47,全,src-tauri/src/bot_skills/manage/tests.rs(38例),L1+L2,未验,—
+3-90,3 机器人聊天与模型,产物统一落 AI_Gen_Files,D3c,ACC-T-12,"M86,M92",部分,src-tauri/src/bot_artifacts.rs(6例),L1+L2,未验,同名加 (n) 永不覆盖、启动预建、产物登记表弹窗未验
+4-91,4 编排与执行,子 Agent 编排,D4,ACC-O-01,"M21,M22,M52,M58,M60,S11,M92",部分,src-tauri/src/bot_orchestrator/orchestrator_tests.rs,L1+L2,未验,"10-29 全常量化后的 200 轮 / 400 工具安全网与两轴收尾窗新口径未验；【写卡时查出真 bug】read_own_card 的 roundsMax 恒报共享上限 200，实际循环上限是 min(200, 配置档 max_turn)，内置档 max_turn=4~8 → 模型看到的余量虚高 25~50 倍"
+4-92,4 编排与执行,子任务回报：成功才吸收,D4,ACC-O-02,M22,部分,(无),L2,未验,两段式：模型循环成功后才记已吸收
+4-93,4 编排与执行,子 agent 的收尾契约,D4,ACC-O-03,"M22,M52",部分,(无),L2,未验,10-29 撤墙钟后口径已变：三段修复、digest 补渲染、机器判定派发即验未验
+4-94,4 编排与执行,输入规范化（L0）,D4,ACC-O-04,—,无,(无),L2,未验,user.input_normalized 全库无卡：零宽空格/BOM/CRLF 规范化未验
+4-95,4 编排与执行,子 Agent 配置档管理,D4,ACC-O-05,—,无,src-tauri/src/bot_onions.rs(24例),L1+L2,未验,导入导出、文件名与 onion_id 一致、坏文件显形未实机验
+4-96,4 编排与执行,per-onion 采样温度,D4,ACC-O-06,—,无,src-tauri/src/bot_onions.rs,L2,未验,配置档温度覆盖模型条目温度未验
+4-97,4 编排与执行,任务图谱 = 三维星云,D4,ACC-O-07,"M13,M67,S26,S27,W07,M92",部分,src/components/GraphPage/graph-*.test.ts(9 个纯函数文件),L1+L2,未验,自发光阈值、力场锚点、弹簧静息长度、星点缩放下限未验
+4-98,4 编排与执行,词元统计四档计价,D4,ACC-O-08,M61,全,src-tauri/src/db/trace/tests.rs(31例),L1+L2,未验,—
+4-99,4 编排与执行,Agent 透明化,D4,ACC-O-09,"M60,M61,M71,S14,S16",部分,src/components/TracePanel/TracePanel.test.tsx(12例),L1+L2,未验,通知中心三类决策事件消息化、痕迹三表保留期清扫未验
+4-100,4 编排与执行,执行痕迹的入口与筛选,D4,ACC-O-10,—,无,src/components/ActivityPage/ActivityPage.test.tsx(3例),L1+L2,未验,「活动页」全库无卡：后端按 origin 过滤未验
+4-101,4 编排与执行,Agent 运行参数全常量化,D4,ACC-O-11,—,无,src-tauri/src/bot/constants.rs,L1+L2,未验,撤参数卡后无卡：常量与生效值口径未验
+4-102,4 编排与执行,程序（M1 运行态 + M2 开发态已上线，设计稿 docs/APPS-DESIGN-2026-10-15.md、代码规范 docs/APP-DEV-CONVENTIONS.md）,D4,ACC-O-12,"M30,M42,M56,M69,M70",部分,src-tauri/src/apps/manage/tests.rs(29例),L1+L2,未验,归档视图、彻底删除三表与目录、整文件集上架、版本回滚、timeoutSecs 未验；【写卡时查出真 bug】resolve_run_timeout 钳到 1800 后被执行层 py/runtime.rs 的 MAX_TIMEOUT_SECS=600 二次钳制，声明 900/1800/7200 秒的程序生效值全是 600 秒（溯源 fb1bd0ac）
+5-103,5 治理与记忆沉淀,记忆整理与沉淀,D5,ACC-G-01,—,无,src-tauri/src/memory/consolidate/tests.rs,L1+L2,未验,「记忆整理」全库无命中：ops 同事务直写、四条 lesson 渠道、cos≥0.92 合并即替换未验
+5-104,5 治理与记忆沉淀,文件治理,D5,ACC-G-02,"M43,M83,W05",部分,src-tauri/src/bot_fs/tests.rs,L1+L2,未验,授权四档与 per-tool 规则表未验；精确命中与软链逃逸已验
+5-105,5 治理与记忆沉淀,密钥纪律,D5,ACC-G-03,"M14,M15,M16,M17,S04,W08",全,src-tauri/src/bot/config/io.rs,L1+L2,未验,遗留 4 条 keyring 条目 ACL 为 -A 待拍板
+6-106,6 数据、集成与平台,SQLite,D6,ACC-P-01,"M57,M69,M70,M71,冒烟4/4b",部分,src-tauri/src/db/tests.rs; src/storage.test.ts,L1+L2,未验,WAL 与 busy_timeout、单写者行级增量未专卡
+6-107,6 数据、集成与平台,本地 HTTP API,D6,ACC-P-02,M85,部分,src-tauri/src/api_handlers/mod.rs(18例); src-tauri/src/api_auth.rs(11例),L1+L2,未验,只验了端口采集金丝雀：端点面、token 鉴权、多用户信封、SSE 未专卡
+6-108,6 数据、集成与平台,便携模式,D6,ACC-P-03,"W01,W10,S31",全,(无),L1+L2,未验,—
+6-109,6 数据、集成与平台,交付给用户的产物不带「来自互联网」标记,D6,ACC-P-04,W03,全,src-tauri/src/py/document/download_mark_guard_tests.rs,L1+L2,未验,—
+6-110,6 数据、集成与平台,本机运行环境监测,D6,ACC-P-05,"S07,S31,S32,M31,M34",部分,src-tauri/src/env_probe.rs(18例); src/components/SettingsPage/EnvPanel.test.tsx,L1+L2,未验,18 Python 包 / 3 Node 包 / 16 运行时三组的缺项与安装命令未全验
+6-111,6 数据、集成与平台,桌面清理,D6,ACC-P-06,—,无,src-tauri/src/migration/rules.rs(8例); ops.rs(13例),L1+L2,未验,无实机卡：CSV 规则表、{year} 占位、move/delete 两动作、10 分钟轮询
+6-112,6 数据、集成与平台,日志体系,D6,ACC-P-07,M87,全,src-tauri/src/audit/tests.rs,L1+L2,未验,—
+6-113,6 数据、集成与平台,全局快捷键,D6,ACC-P-08,—,无,(无),L2,未验,无实机卡：三个全局快捷键未验
+6-114,6 数据、集成与平台,UI 体系,D6,ACC-P-09,—,无,src/ui/main.css.test.ts,L2,未验,无实机卡：nm 组件类、深浅色三态、a11y 基线未验
+6-115,6 数据、集成与平台,流式恢复链与等待闸加固,D6,ACC-P-10,—,无,src-tauri/src/bot/stream_log.rs(12例); src-tauri/src/bot_model_loop/tests/sse.rs(4例); src/components/ChatPanel.inflight.test.tsx(16例); src/components/ConfirmMap(12例),L1+L2,未验,无实机卡：回放接回/看门狗判死/确认还原/停止响应未验
