@@ -761,8 +761,13 @@ pub struct ConnectionTestResult {
 
 /// 可测内核（注入 client + key，不碰 AppHandle/keyring，集成测试直打）：
 /// 探活路径按协议归一化——openai → GET {base}/models；anthropic →
-/// GET {base}/v1/models（base 已含 /v1 结尾则直接拼 /models，与
-/// anthropic_messages_url 同款「两种填法都可用」）。
+/// POST {base}/v1/messages 发空 JSON 体（路径归一复用 anthropic_messages_url）：
+/// Anthropic 兼容端点不保证提供 /v1/models（DeepSeek 的 /anthropic 就没有，
+/// GET 必 404），/v1/messages 是协议里唯一必有的路由；空体在参数校验层被拒，
+/// 不会计费。判读（仅 anthropic 放宽）：2xx，或 4xx 中非 401/403/404 → 端点通
+///（400/422 = 路由在但空体不合法，429 = 限流同样证明路由在且服务活着）；
+/// 401/403 = 鉴权失败、404 = 路径错、5xx = 服务端错，均如实失败。
+/// openai 分支维持只认 2xx（兼容端点都有 /models，无需放宽）。
 /// 鉴权：openai → Authorization: Bearer；anthropic → x-api-key + anthropic-version
 ///（apply_anthropic_auth）。有 key 才带鉴权头（部分代理 /models 免鉴权）。
 /// 5s 超时（连接测试是前台交互，不能让慢厂商挂住 UI）。
@@ -772,38 +777,45 @@ pub async fn probe_connection(
     api_format: &str,
     api_key: &str,
 ) -> ConnectionTestResult {
-    let b = base_url.trim_end_matches('/');
-    // 误粘完整端点的填法先剥掉端点尾段（与 anthropic_messages_url 同规则），
-    // 否则探测路径叠成 /v1/messages/v1/models、/chat/completions/models
-    let b = b
-        .strip_suffix("/v1/messages")
-        .or_else(|| b.strip_suffix("/messages"))
-        .or_else(|| b.strip_suffix("/chat/completions"))
-        .unwrap_or(b);
-    let url = if api_format == "anthropic" {
-        if b.ends_with("/v1") {
-            format!("{b}/models")
-        } else {
-            format!("{b}/v1/models")
-        }
+    let anthropic = api_format == "anthropic";
+    let url = if anthropic {
+        crate::bot_anthropic::anthropic_messages_url(base_url)
     } else {
+        let b = base_url.trim_end_matches('/');
+        // 误粘完整端点的填法先剥掉端点尾段，否则探测路径叠成 /chat/completions/models
+        let b = b
+            .strip_suffix("/v1/messages")
+            .or_else(|| b.strip_suffix("/messages"))
+            .or_else(|| b.strip_suffix("/chat/completions"))
+            .unwrap_or(b);
         format!("{b}/models")
     };
-    let mut req = client.get(&url);
     let key = api_key.trim();
+    let mut req = if anthropic {
+        client.post(&url).json(&serde_json::json!({}))
+    } else {
+        client.get(&url)
+    };
     if !key.is_empty() {
-        if api_format == "anthropic" {
-            req = crate::bot_anthropic::apply_anthropic_auth(req, key);
+        req = if anthropic {
+            crate::bot_anthropic::apply_anthropic_auth(req, key)
         } else {
-            req = req.header("Authorization", format!("Bearer {key}"));
-        }
+            req.header("Authorization", format!("Bearer {key}"))
+        };
     }
     match req.timeout(std::time::Duration::from_secs(5)).send().await {
         Ok(resp) => {
             let status = resp.status();
+            let code = status.as_u16();
+            let ok = if anthropic {
+                status.is_success()
+                    || ((400..500).contains(&code) && !matches!(code, 401 | 403 | 404))
+            } else {
+                status.is_success()
+            };
             ConnectionTestResult {
-                ok: status.is_success(),
-                status: Some(status.as_u16()),
+                ok,
+                status: Some(code),
                 error: None,
             }
         }

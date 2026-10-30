@@ -4,8 +4,10 @@
 //! + 真实 reqwest，直打可测内核 `bot::config::commands::probe_connection`
 //!（不依赖 Tauri runtime / keyring）。
 //!
-//! 覆盖：200 → ok:true + status；401 → ok:false + status:401；
-//! 连接失败（端口无人监听）→ ok:false + error 消息；anthropic 协议变体同路径。
+//! 覆盖：openai GET /models 200 → ok:true + status；401 → ok:false + status:401；
+//! 连接失败（端口无人监听）→ ok:false + error 消息；anthropic 打 POST /v1/messages
+//! 空体：400/429 → ok:true（路由在即通，DeepSeek 等无 /v1/models 的兼容端点不再
+//! 被 404 误杀），401/403/404 → ok:false。
 
 mod mock_llm_re_export {
     include!("mock_llm.rs");
@@ -45,9 +47,10 @@ async fn connection_test_401_reports_status() {
 }
 
 #[tokio::test]
-async fn connection_test_anthropic_format_same_path() {
-    // anthropic 协议 + base 已含 /v1：直接拼 /models；鉴权头差异在 apply_anthropic_auth
-    //（mock server 不记录 header，头构造由 bot_anthropic 模块内单测覆盖）
+async fn connection_test_anthropic_post_messages_route() {
+    // anthropic 协议打 POST /v1/messages 空体（路径归一复用 anthropic_messages_url）；
+    // 鉴权头差异在 apply_anthropic_auth（mock server 不记录 header，头构造由
+    // bot_anthropic 模块内单测覆盖）
     let server = MockLlmServer::start();
     server.push_behavior(MockBehavior::HttpError(
         403,
@@ -58,22 +61,52 @@ async fn connection_test_anthropic_format_same_path() {
     assert_eq!(r.status, Some(403));
     let paths = server.request_paths();
     assert!(
-        paths[0].contains("GET /v1/models"),
-        "anthropic 打 /v1/models 探活路径：{paths:?}"
+        paths[0].contains("POST /v1/messages"),
+        "anthropic 打 POST /v1/messages 探活路径：{paths:?}"
     );
+}
+
+#[tokio::test]
+async fn connection_test_anthropic_validation_error_is_reachable() {
+    // 空体过不了参数校验，回 400 恰好证明 /v1/messages 路由存在且不计费；
+    // 429 同理（限流先于业务，路由必然在）。404 才是真失败（DeepSeek 场景：
+    // 兼容端点没有 /v1/models，探它必 404）
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::HttpError(
+        400,
+        r#"{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: field required"}}"#.into(),
+    ));
+    server.push_behavior(MockBehavior::HttpError(
+        429,
+        r#"{"type":"error","error":{"type":"rate_limit_error"}}"#.into(),
+    ));
+    server.push_behavior(MockBehavior::HttpError(
+        404,
+        r#"{"error":"not found"}"#.into(),
+    ));
+    let client = reqwest::Client::new();
+    let r = probe_connection(&client, &server.base_url, "anthropic", "k").await;
+    assert!(r.ok, "400 空体校验应 ok:true：{r:?}");
+    assert_eq!(r.status, Some(400));
+    let r = probe_connection(&client, &server.base_url, "anthropic", "k").await;
+    assert!(r.ok, "429 限流应 ok:true：{r:?}");
+    assert_eq!(r.status, Some(429));
+    let r = probe_connection(&client, &server.base_url, "anthropic", "k").await;
+    assert!(!r.ok, "404 应 ok:false：{r:?}");
+    assert_eq!(r.status, Some(404));
 }
 
 #[tokio::test]
 async fn connection_test_anthropic_base_without_v1_gets_v1_prefix() {
     // 回归（审计 P0）：anthropic base 不带 /v1（预设 https://api.anthropic.com）
-    // 时探测必须补 /v1，否则打 /models → 404 → 厂商永远进不了 verified_vendors
+    // 时探测必须补 /v1，否则路由错 → 404 → 厂商永远进不了 verified_vendors
     let server = MockLlmServer::start();
     let base = server.base_url.trim_end_matches("/v1").to_string();
     let r = probe_connection(&reqwest::Client::new(), &base, "anthropic", "k").await;
     assert!(r.ok, "默认 200 应 ok:true：{r:?}");
     let paths = server.request_paths();
     assert!(
-        paths[0].contains("GET /v1/models"),
+        paths[0].contains("POST /v1/messages"),
         "base 不带 /v1 应补前缀：{paths:?}"
     );
 }
@@ -81,7 +114,7 @@ async fn connection_test_anthropic_base_without_v1_gets_v1_prefix() {
 #[tokio::test]
 async fn connection_test_endpoint_suffix_stripped() {
     // 回归（ocr high）：误把完整端点粘进 Base URL 时先剥尾段再拼探测路径——
-    // anthropic …/v1/messages 不得叠成 /v1/messages/v1/models，
+    // anthropic …/v1/messages 不得叠成 /v1/messages/v1/messages，
     // openai …/chat/completions 不得叠成 /chat/completions/models
     let server = MockLlmServer::start();
     let r = probe_connection(
@@ -102,8 +135,8 @@ async fn connection_test_endpoint_suffix_stripped() {
     assert!(r.ok, "{r:?}");
     let paths = server.request_paths();
     assert!(
-        paths.iter().all(|p| p.contains("GET /v1/models")),
-        "两次探测都应打 /v1/models：{paths:?}"
+        paths[0].contains("POST /v1/messages") && paths[1].contains("GET /v1/models"),
+        "anthropic 应打 /v1/messages、openai 应打 /v1/models：{paths:?}"
     );
 }
 

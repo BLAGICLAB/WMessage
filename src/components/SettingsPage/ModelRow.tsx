@@ -134,8 +134,8 @@ export function ModelRow({
           {model.label || model.model || "（未命名）"}
         </span>
         <ContextBadge contextK={model.contextK} />
-        {/* 插头：连接测试（openai → GET /models，anthropic → GET /v1/models）；
-            绿色持久化——厂商在 verified_vendors 里即常显 */}
+        {/* 插头：连接测试（openai → GET /models，anthropic → POST /v1/messages 空体，
+            4xx 除 401/403/404 均视为路由可达）；绿色持久化——厂商在 verified_vendors 里即常显 */}
         <button
           type="button"
           aria-label="测试连接"
