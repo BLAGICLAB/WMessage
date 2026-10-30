@@ -236,11 +236,14 @@ pub async fn run_model_loop(
         system_prompt: inference.system_prompt,
         // 推理强度：覆盖优先于后台默认；抽象档位按模型族映射到线上参数。
         // budget < max_tokens 夹紧用的就是条目覆盖后的 max_tokens
+        //（缺省档 "medium" 与 reasoning.rs 解析兜底同源，SPEC 公示为后台默认档）
         reasoning: crate::bot::reasoning::resolve(
             provider,
             &model_for_reasoning,
             crate::bot::reasoning::EffortLevel::from_cfg(
-                reasoning_override.as_deref().or(Some("medium")),
+                reasoning_override
+                    .as_deref()
+                    .or(Some(crate::bot::reasoning::EffortLevel::DEFAULT_EFFORT)),
             ),
             inference.max_tokens,
         ),

@@ -431,7 +431,7 @@ mod tests {
         assert_eq!(
             resolve_max_tokens(Some(999_999)),
             MAX_MAX_TOKENS,
-            "高于上限钳 200000"
+            "高于上限钳到 MAX_MAX_TOKENS"
         );
     }
 

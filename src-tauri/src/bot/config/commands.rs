@@ -336,8 +336,8 @@ pub fn bot_set_config(
         .take()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    // verifier 重试上限落盘前钳制（0..=VERIFIER_RETRY_MAX_CAP：0 = 不重试；上限 3
-    // 防止无限循环烧 token——真实 3 次还失败的任务属于硬阻塞不如直接如实汇报用户）
+    // verifier 重试上限落盘前钳制（0..=VERIFIER_RETRY_MAX_CAP：0 = 不重试；上限 2
+    // 防止无限循环烧 token——重试烧完仍失败的任务属于硬阻塞，如实汇报比继续烧省）
     config.verifier_retry_max = config
         .verifier_retry_max
         .map(crate::bot::params::clamp_verifier_retry_max);

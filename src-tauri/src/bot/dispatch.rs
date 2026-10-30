@@ -588,8 +588,8 @@ async fn execute_tool_impl(
                 ctx.tools.len()
             ));
         }
-        // 动作流 call 相位：白名单通过即上屏（后续无论放行还是被预算/墙钟/收尾窗
-        // 拒，前端都能按 toolCallId 合并成一行带结局的动作）
+        // 动作流 call 相位：白名单通过即上屏（后续无论放行还是被确认/收尾窗拒，
+        // 前端都能按 toolCallId 合并成一行带结局的动作）
         emit_subagent_activity(
             app,
             &ctx,

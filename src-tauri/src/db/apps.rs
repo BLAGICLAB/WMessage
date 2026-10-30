@@ -76,12 +76,13 @@ pub struct App {
     pub enabled_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
-    /// 本程序声明的单次运行时长上限（秒）：None = 未声明（运行时用内置默认 60s）。
+    /// 本程序声明的单次运行时长上限（秒）：None = 未声明（运行时用内置默认 120s）。
     ///
     /// **为什么是程序的属性而不是全局常量**：耗时与输入规模成正比的程序
     /// （语音转写、装依赖、长文档处理）要多久，在登记时就是已知的——
     /// 它不是运行时才出现的意外。全局墙钟拿来管这类活，砍掉的是正常业务。
-    /// 写侧已钳到 `py::runtime::MAX_TIMEOUT_SECS`（落盘值 = 生效值）。
+    /// 写侧钳到 apps 域独立的 `APPS_MAX_TIMEOUT_SECS`（1800s，不走 run_python
+    /// 工具路径的 600s 钳制——声明值 = 生效值）。
     pub timeout_secs: Option<u64>,
 }
 

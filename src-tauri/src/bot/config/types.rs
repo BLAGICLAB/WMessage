@@ -115,7 +115,7 @@ pub struct BotConfig {
     /// None = 未显式设置，配了 braveKey 就当开启；Some(false) 强制不走 Brave。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brave_enabled: Option<bool>,
-    /// run_python 默认超时秒数（可选）：None = 60s；工具参数 timeoutSecs 优先于此；
+    /// run_python 默认超时秒数（可选）：None = 120s；工具参数 timeoutSecs 优先于此；
     /// 硬钳上限 = py::runtime::MAX_TIMEOUT_SECS。大计算（pandas 等）可调大。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub python_timeout_secs: Option<u64>,
@@ -418,10 +418,11 @@ pub struct BotConfigView {
     pub has_brave_key: bool,
     /// 「Brave 搜索」开关原样透传（None = 未显式设置，前端按 key 有无显示自动态）
     pub brave_enabled: Option<bool>,
-    /// run_python 默认超时秒数（None = 60s 默认；设置页可改，硬钳 = py::runtime::MAX_TIMEOUT_SECS）
+    /// run_python 默认超时秒数（None = 120s 默认；设置页可改，硬钳 = py::runtime::MAX_TIMEOUT_SECS）
     pub python_timeout_secs: Option<u64>,
-    /// 单次请求 Function 调用熔断上限（ 全域统一）：None = 默认 100；
-    /// 子 agent 默认预算同源此值
+    /// 终稿自检的轮次间隔（None = 默认 8；0 = 关闭自检；后端钳 0..=100）。
+    /// 每隔这么多轮自动触发一次终稿校验；模型提交交付时强制自检，不受间隔限制。
+    /// 保留的 bot-config.json 手改键（无 UI）。
     pub final_selfcheck_round_gap: Option<u32>,
     /// 终稿自检侧调模型条目 id 原样透传（None = 自检在主循环内跑；Some =
     /// 独立小请求打该模型库条目；条目解析失败回落主循环路径并审计）
@@ -432,7 +433,7 @@ pub struct BotConfigView {
     /// 内置默认词表：只读参照 + 设置页「恢复默认」的取值来源
     pub guard_claim_default_keywords: Vec<String>,
     /// verifier 拒绝重试预算上限原样透传（None = 1 默认；0 = 不重试；后端
-    /// 钳 0..=3；设置页「Agent 运行参数」可调）
+    /// 钳 0..=2；保留的 bot-config.json 手改键）
     pub verifier_retry_max: Option<u32>,
     /// 任务卡归档天数原样透传（None = 7 默认；设置页「数据管理」卡编辑）
     pub archive_after_days: Option<u32>,

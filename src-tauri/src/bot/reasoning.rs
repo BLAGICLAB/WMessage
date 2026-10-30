@@ -32,6 +32,9 @@ pub enum EffortLevel {
 }
 
 impl EffortLevel {
+    /// 后台默认档（SPEC 公示值；shell 装配层与 from_cfg 的兜底共用这一份）。
+    pub const DEFAULT_EFFORT: &str = "medium";
+
     /// 配置字符串 → 档位。None / "medium" / 非法值一律回 Medium
     /// （与 ApiProvider::from_cfg 的防御回退同风格；默认「中」）。
     pub fn from_cfg(v: Option<&str>) -> Self {

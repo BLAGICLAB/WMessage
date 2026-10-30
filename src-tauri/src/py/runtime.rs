@@ -578,7 +578,7 @@ pub enum PyFailKind {
     StartFailed,
     /// 跑起来了，但超过时长上限被强杀
     Timeout,
-    /// 跑起来了，但被停止（用户 /stop、应用退出、子 agent 墙钟耗尽）
+    /// 跑起来了，但被停止（用户 /stop、应用退出、子 agent 停滞超时收割）
     Stopped,
     /// 跑起来了，但出了别的错（等待子进程状态失败、被信号杀死等）
     Runtime,

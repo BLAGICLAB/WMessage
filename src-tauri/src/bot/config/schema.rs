@@ -206,7 +206,7 @@ pub fn resolve_top_p(v: Option<f64>) -> Option<f64> {
 
 /// 条目级推理参数解析：优先级 条目值 > 全局值 > 内置默认。
 /// - max_tokens：条目值覆盖全局 BotConfig.max_tokens，再统一过 resolve_max_tokens
-///   （32768 兜底 + 256..=200000 钳制）；OpenAI 分支不发送（多数兼容网关不认识），
+///   （16384 兜底 + 256..=32768 钳制）；OpenAI 分支不发送（多数兼容网关不认识），
 ///   但有效值仍供 reasoning::resolve 夹紧 thinking budget 用。
 /// - temperature / top_p：配置无全局字段，条目有值才注入（否则用模型服务端默认），
 ///   注入前按协议钳制（resolve_temperature / resolve_top_p）。
@@ -576,7 +576,7 @@ mod inference_tests {
         // 条目无值 → 内置默认（全局键已退役）
         cfg.models_by_provider.as_mut().unwrap().openai[0].max_tokens = None;
         assert_eq!(eff(&cfg).max_tokens, DEFAULT_MAX_TOKENS);
-        // 钳制在覆盖之后：条目 50 → 256，条目 999999 → 200000
+        // 钳制在覆盖之后：条目 50 → 256，条目 999999 → MAX_MAX_TOKENS
         for (raw, clamped) in [(50u32, MIN_MAX_TOKENS), (999_999, MAX_MAX_TOKENS)] {
             cfg.models_by_provider.as_mut().unwrap().openai[0].max_tokens = Some(raw);
             assert_eq!(eff(&cfg).max_tokens, clamped);
