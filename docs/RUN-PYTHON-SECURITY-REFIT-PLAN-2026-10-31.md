@@ -268,9 +268,38 @@ B10/B11 落位批 1（unattended 判定机制 + `open_url` 接线 + `fetch.rs` �
   后，残余暴露可忽略。
 - 社工面（模型把数据写进产物、引导用户自行外传）：技术闸范围外，SPEC 诚实边界记一句。
 
-## 十二、实施结果（落地后回填）
+## 十二、实施结果（2026-10-31 落地回填）
 
-- 实际落地：待填
-- 偏离登记：待填
-- B1–B9 最终拍板：待填
-- 实机抽验结果：待填
+**实际落地**（六批全部落地，cargo --lib 2204 测试 + 前端 1182 测试全绿，快门禁过）：
+
+| 批 | commit | 内容 |
+|---|---|---|
+| 0 | 3992a26c | 本文 + AGENTS 地图 |
+| 1+2 | cf57b52b | 目的地闸基座 + http_request 工具（合并提交，见偏离 1） |
+| 3 | 73bdfd62 | saveAs 下载落盘 |
+| 4 | 93b21e09 | 断网三处 + 超时 120s 对齐 + apps 契约 |
+| 5 | 728d267d | macOS seatbelt（真机探测验证：sandbox 内 socket = EPERM） |
+| 6 | 本批 | 提示词引导 + 记账（SPEC 66 工具/6-116 条目/ACC-P-11 卡/event-names+2/FACT 同步）+ 上游回填 |
+
+**偏离登记**：
+
+1. **批 1 与批 2 合并为一个 commit**：`check_destination` 无消费者即死码（clippy
+   `-D warnings` 不过），基座与工具必须同一编译单元——方案 §八的批次切分在
+   死码门禁面前让步。
+2. **saveAs 不进 `bot_artifacts` 登记面**（方案 §五原预期 register）：产物登记表
+   按 task_id 组织而工具层无 task_id；且 saveAs 产物是**中间数据**（供脚本处理），
+   最终交付物收口走 B3 引导（create_* / manage_file），登记真值锚仍是
+   `link_file_to_task` 的存在性校验。
+3. **seatbelt 探测的解释器固定用 `cached_python`**：闸生效性是系统属性，与本次
+   run 传进的 python 参数无关——spawn_fail 测试传假路径时探测不再误判闸失效。
+4. **wrap 前新增含分隔符路径的 metadata 校验**（方案未预见）：sandbox-exec 包装
+   把 python 变成参数，NotFound 被吞成退出码 71、`spawn_not_found` 缓存重试语义
+   失效；含 `/` 的路径在 wrap 前 metadata 校验（裸名走 PATH 与原语义一致）。
+5. **B11 落成 `web.jina_fallback`**（方案表里写作 `dest=jina_passthrough`）：事件名
+   前缀 `web.` 与 fetch 域一致，语义同。
+6. **设置页披露句**（B11 的第二半）：落进目的地白名单卡的提示行（泛域名信任提醒），
+   Jina 披露由审计事件承担——设置页不再单加一段。
+
+**B1–B9 拍板**：见 §七表（2026-10-31 拍定，B10/B11 一并按推荐）。
+
+**实机抽验**：待做（清单见 §十.4 与 ACC-P-11 卡）。

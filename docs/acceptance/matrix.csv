@@ -114,3 +114,4 @@
 6-113,6 数据、集成与平台,全局快捷键,D6,ACC-P-08,—,无,(无),L2,未验,无实机卡：三个全局快捷键未验
 6-114,6 数据、集成与平台,UI 体系,D6,ACC-P-09,—,无,src/ui/main.css.test.ts,L2,未验,无实机卡：nm 组件类、深浅色三态、a11y 基线未验
 6-115,6 数据、集成与平台,流式恢复链与等待闸加固,D6,ACC-P-10,—,无,src-tauri/src/bot/stream_log.rs(12例); src-tauri/src/bot_model_loop/tests/sse.rs(4例); src/components/ChatPanel.inflight.test.tsx(16例); src/components/ConfirmMap(12例),L1+L2,未验,无实机卡：回放接回/看门狗判死/确认还原/停止响应未验
+6-116,6 数据、集成与平台,run_python 断网与目的地闸,D6,ACC-P-11,—,无,src-tauri/src/bot_web/destination.rs(7例); src-tauri/src/bot_web/http.rs(2例); src-tauri/src/bot/tools/http.rs(6例); src-tauri/src/py/seatbelt.rs(3例); src-tauri/src/prompts/mod.rs(锚点); src-tauri/src/bot/registry/registry_tests.rs(3锚点),L1+L2,未验,无实机卡：白名单弹窗/会话授权/saveAs 下载直读/seatbelt 实机 socket 拒未验

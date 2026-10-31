@@ -58,7 +58,7 @@
 
 ## 三、事实表 A：65 个工具逐条
 
-> 工具数 65 = `bot::registry::TOOLS_TABLE` 条目数（`registry/schemas.rs` 头部自述）；
+> 工具数 66 = `bot::registry::TOOLS_TABLE` 条目数（`registry/schemas.rs` 头部自述，2026-10-31 增 http_request）；
 > `read_own_card` / `write_artifact_file` 仅子 agent 可见，不进主 agent 清单。
 
 ### G1 任务卡（10 个）
@@ -98,13 +98,14 @@
 | 工具 | 跑位 | 数据边界 | 闸 | 强制层 |
 |---|---|---|---|---|
 | `web_search` | 宿主进程内（reqwest） | **产品自有出口**：Tavily / Brave API，或 Bing + 百度网页抓取 | 结果体 2MB 线；输出 6000 字 | 无（目的地是产品/用户配的 provider） |
-| `fetch_url` | 宿主进程内（reqwest） | **任意公网 http/https** | ① 公网闸 `check_public_url`（协议 + 主机 + DNS 全部 IP 都要公网，含环回/私网/链路本地 `169.254.x`）；② 钉 IP 防 DNS TOCTOU；③ 不跟随自动重定向、手动逐跳校验 Location；④ 内容类型闸（只收 html/xml/text，**JSON/PDF 被拒**）；⑤ 10MB 传输闸（流式封顶，不信 Content-Length）；⑥ 30K 字切片 + offset 续读 | **无目的地白名单**（任何公网都放行）——本次要补的就是这条 |
+| `fetch_url` | 宿主进程内（reqwest） | **任意公网 http/https** | ① 公网闸 `check_public_url`（协议 + 主机 + DNS 全部 IP 都要公网，含环回/私网/链路本地 `169.254.x`）；② 钉 IP 防 DNS TOCTOU；③ 不跟随自动重定向、手动逐跳校验 Location；④ 内容类型闸（只收 html/xml/text，**JSON/PDF 被拒**）；⑤ 10MB 传输闸（流式封顶，不信 Content-Length）；⑥ 30K 字切片 + offset 续读 | **无目的地白名单（2026-10-31 拍板 D1 不做）**——GET 查询串外传是已知缺口，靠提示词防线 + 在场可见性兜底；Jina 兜底采用时记 `web.jina_fallback` |
+| `http_request` | 宿主进程内（reqwest，`bot_web/http.rs` + `bot/tools/http.rs`） | 任意公网 http/https（POST/PUT/PATCH/DELETE/HEAD + 请求体 + 自定义头）；`saveAs` 写 AI_Gen_Files | ① 公网闸（同 fetch_url）；② **目的地闸每跳都判**（`bot_web/destination.rs`：产品自有出口 / allowedDomains 白名单 + provider + MCP 端点 → 放行；白名单外 ask 弹窗、批准仅本会话；子 agent 与无人值守直接拒）；③ 重定向手动逐跳 + https→http 降级拒；④ 响应头凭据类（set-cookie 等）只回名；⑤ `keyring:`/`env:` 凭据引用真值不过模型；⑥ args_preview 特例裁 method+host+path | 弹窗授权是 UI 层强制；审计 `bot.http_request` 只记 host/method/status/bytes/dest |
 
 ### G6 Python 执行（2 个工具 + 1 类程序）
 
 | 能力 | 跑位 | 数据边界 | 闸 | 强制层 |
 |---|---|---|---|---|
-| `run_python` | **py 沙箱子进程** | **用户权限读任意文件**；可联网；可起子进程（被 NPROC 限量）；临时目录内写 | ① `ensure_py_enabled`（设置页开关默认关闭，yolo 免开关）；② 提示词红线；③ 沙箱临时目录只加读侧 | **有（资源维度）**：AS（timeout×8MB，钳 256MB–2GB）、CPU（timeout+10s）、NPROC（用户进程基数+64）、时长（默认 120s / 上限 600s）、输出 64KB、进程组连坐杀、Windows Job Object。**无文件隔离、无网络隔离** |
+| `run_python` | **py 沙箱子进程**（macOS 再包一层 sandbox-exec） | **用户权限读任意文件**；**不联网**（macOS seatbelt `(deny network*)` 内核级全拒；Windows 提示词软约束）；可起子进程（被 NPROC 限量，macOS 下子进程同断网）；临时目录内写 | ① `ensure_py_enabled`（设置页开关默认关闭，yolo 免开关）；② 提示词红线；③ 沙箱临时目录只加读侧 | **有（资源维度）**：AS（timeout×8MB，钳 256MB–2GB）、CPU（timeout+10s）、NPROC（用户进程基数+64）、时长（默认 120s / 上限 600s）、输出 64KB、进程组连坐杀、Windows Job Object；**macOS 另有网络面强制**（2026-10-31）：seatbelt 自证探测 + fail-closed（闸不证明生效就拒跑，`py/seatbelt.rs`），apps 同享。**无文件隔离** |
 | `ast_inspect` | 同一 py 沙箱 | 读 `.py` 文件（路径先过白名单闸），**只解析不执行** | 同上 | 同上（但它没有出网需求，禁网是零成本） |
 | apps 上架程序 | 同一 py 沙箱（`apps/mod.rs:151`） | 同 `run_python` | 同一 Python 开关（`apps/commands.rs:64`：「同一执行面同一口径」） | 同上，超时上限 1800s（`runtime.rs:42`） |
 
@@ -171,7 +172,7 @@
 | 输出量 | ✅ | 64KB | |
 | 落盘位置 | ⚠️ 弱 | 独立临时目录（`py_runs_root()` = temp/wmessage-py-runs/<uuid>） | 目录只加**读侧**白名单——模型不能往沙箱里写；但沙箱外任何可写路径都能写 |
 | 文件系统 | ❌ | 无 | 以当前用户权限读任意文件 |
-| 网络 | ❌ | 无 | 可直连任意地址 |
+| 网络 | ❌→✅（macOS） | 无 → seatbelt（2026-10-31，`py/seatbelt.rs`：deny network* + 自证探测 + fail-closed） | Windows 可直连任意地址（软约束）；macOS 内核级全拒含 loopback |
 | 子进程 | ❌ | 无禁止 | 被 NPROC / CPU / 进程组连坐间接约束 |
 | 系统设置 | ❌ | 无 | 提示词说「绝不」，技术层不管 |
 
@@ -183,12 +184,12 @@ Unavailable 留痕（丢限额但诚实），绝不误判「可用」静默失�
 
 | 能力 | 能力面 | 强制层 | 缺口 |
 |---|---|---|---|
-| `run_python` | 读任意文件、执行任意代码、可直连任意地址 | 资源限额 | **无文件隔离、无网络隔离、无子进程禁止** |
+| `run_python` | 读任意文件、执行任意代码 | 资源限额 + macOS seatbelt 网络面（2026-10-31） | **无文件隔离、无子进程禁止**（网络面 macOS 已关、Windows 软约束） |
 | `start_service` | 起长驻进程、可监听端口 | 端口闸 + 资源告警 | **无 rlimit**——长驻进程不受内存/CPU 限额约束 |
 | MCP stdio 服务器 | 跑用户配置的程序 | 启动器白名单 + cwd 路径闸 | **无 rlimit、无 seccomp**；程序本体由用户在设置页指定 |
 | `ui_click` | 操作已登录窗口（发送 / 支付 / 删除） | 危险按钮弹确认 | **确认可被跳过**（提示词说「不反复重试」，但闸本身拦不住一次误点） |
 | `install_skill` | 下载并落盘可执行内容 | 准入核 + 用户确认 | 无签名校验；准入核查的是意图模式不是代码行为 |
-| `fetch_url` | 任意公网 + 查询串外传 | 公网闸（挡私网/环回/元数据） | **无目的地白名单**——外网任意去，GET 查询串可夹带数据 |
+| `fetch_url` | 任意公网 + 查询串外传 | 公网闸（挡私网/环回/元数据） | **无目的地白名单（D1 拍板不做）**——GET 查询串可夹带数据，已知缺口靠提示词防线兜底 |
 | `write_file` / `edit_file` | 写白名单外路径 | perm_mode 三分支 | ask 模式下靠弹窗，非强制 |
 | `write_artifact_file` / `create_*` | 产物落盘 | 路径限定在 AI_Gen_Files | 范围本身窄，风险低 |
 
@@ -198,9 +199,8 @@ stdlib）。按「能力面 × 强制缺口」排，真正排在前面的是 `st
 
 ## 六、从这张表得出的三条结论
 
-1. **只有 py 执行这一条路径有 OS 级强制，且只在资源维度。** 本仓至今**没有任何能力维度的
-   沙箱**（文件 / 网络 / 进程都没被能力级关住）。给 Python 执行加 seatbelt 断网，会是
-   本仓第一条能力维度的沙箱——它不是给已有沙箱补洞，是新建一层维度。
+1. **只有 py 执行这一条路径有 OS 级强制。** 资源维度全平台；**网络维度自 2026-10-31 起
+   macOS 也有**（seatbelt，本仓第一条能力维度的沙箱）；文件 / 进程维度仍无。Windows 三维全靠软约束 + 资源限额。
 2. **闸的分布是分散的，闸序是集中的。** dispatch 管「能不能调」，工具本体管「能碰什么」。
    新增一个能碰同类资源的工具时，旧闸不会自动套用——这是口径漂移的结构性来源，也解释了
    为什么「主聊天提示词改了、子 agent 漏改」这类问题会反复出现。
@@ -214,11 +214,9 @@ stdlib）。按「能力面 × 强制缺口」排，真正排在前面的是 `st
   共用一行闸与边界。
 - 闸序以 `bot/dispatch.rs` 的 `execute_tool_impl` 为准；早退点数 7 由
   `dispatch/pre_tool_hook_tests.rs` 的计数断言锁住。
-- **已知空白**：MCP 侧配置（用户配的 server 列表与其 URL/命令）与本文的「目的地」概念
-  尚未对齐——MCP 目的地是用户配的，天然属于「产品/用户自有出口」，但本仓没有把
-  「用户配的 MCP 目的地」与「将来 http_request 的目的地白名单」统一成一张表。方案
-  《`docs/HTTP-REQUEST-TOOL-DESIGN-2026-10-30.md`》§3.1 的两层分类是第一步，但 MCP 侧
-  还没接进去。
+- **已对齐（2026-10-31）**：MCP http 端点 host 与 provider base_url 已并入目的地闸的
+  统一判定源（`bot_web/destination.rs::user_configured_hosts`）——用户配的出口天然属
+  信任域，不再另立第二套账。
 - `src-tauri/src/.mimosa/` 是钩子基线快照（已 gitignore），里面留着旧文案属正常，核查时
   要排除。
 
