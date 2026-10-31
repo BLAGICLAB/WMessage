@@ -7,9 +7,10 @@
 onion_id: probe
 role: 资料与代码探查，只读，产出结构化素材
 profile: research
-allowed: [web_search, fetch_url, list_files, read_text_file, grep_files, extract_document,
-          write_artifact_file, read_own_card]
-max_turn: 6
+allowed: [web_search, fetch_url, http_request, list_files, read_text_file, grep_files,
+          extract_document, write_artifact_file, read_own_card]
+# 轮数不设 max_turn：三段式派发与主/子 agent 共用同一安全网
+# （bot/constants.rs MAX_ROUNDS）；自定义配置档需要快停时可自行声明。
 temperature: 0.1
 hooks:
   post_turn: ""             # 素材落产物目录由 write_artifact_file 承担，无需钩子
