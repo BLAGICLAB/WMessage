@@ -464,11 +464,10 @@ pub(crate) fn compact_before_round(
     }
     // 请求体总字符对上下文硬顶分级：70% 软压 / 85% 硬压只降工具消息密度，
     // 100% 只记 `loop.msgs.over_budget` 审计（新工具调用的拒收由软警告路径另管）。
-    let msgs_chars: usize = msgs
-        .iter()
-        .filter_map(|m| m["content"].as_str())
-        .map(|s| s.chars().count())
-        .sum();
+    // 量尺与砍史/侧调同一把（msg_chars 序列化全量）：只数 content 为字符串的
+    // 消息会把多模态图片（base64，单图至多 3MB）与 tool_calls 的 arguments
+    // 漏在尺外，硬顶对带图请求静默失明。
+    let msgs_chars: usize = msgs.iter().map(msg_chars).sum::<usize>();
     match crate::bot::compaction::classify_level(
         msgs_chars,
         crate::bot::constants::CONTEXT_CHARS_HARD_CAP,
