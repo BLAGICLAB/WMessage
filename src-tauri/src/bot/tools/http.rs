@@ -18,6 +18,32 @@ const MAX_BODY_BYTES: usize = 50 * 1024 * 1024;
 const DEFAULT_BODY_BYTES: usize = 10 * 1024 * 1024;
 const KEYRING_PREFIX: &str = "keyring:";
 const ENV_PREFIX: &str = "env:";
+/// saveAs（下载落盘）模式的超时上限：慢网大文件下载与交互请求的时长语义不同，
+/// 放宽到 300s（普通请求仍 120s）。
+const SAVE_MAX_TIMEOUT_SECS: u64 = 300;
+
+/// saveAs 文件名清洗：只留文件名语义，拒一切目录语义——路径分隔符（/ \\）、
+/// 父目录引用（..）、控制字符都拒；落点固定 AI_Gen_Files 根，不跟随子目录。
+/// 通过的返回清洗后的名字（trim），拒的给原因。
+fn sanitize_save_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err("saveAs 文件名不能为空".into());
+    }
+    if name.len() > 200 {
+        return Err("saveAs 文件名过长（上限 200 字符）".into());
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err("saveAs 文件名不能含路径分隔符（只能存到 AI_Gen_Files 根目录）".into());
+    }
+    if name == "." || name == ".." || name.contains("..") {
+        return Err("saveAs 文件名不能含 ..".into());
+    }
+    if name.chars().any(|c| c.is_control()) {
+        return Err("saveAs 文件名含控制字符".into());
+    }
+    Ok(name.to_string())
+}
 
 /// 解析凭据引用前缀：真值在宿主侧解开，模型上下文从头到尾只见条目名。
 /// 读不到明确报错——静默去掉头会让「以为带了鉴权」的请求裸奔。
@@ -149,10 +175,25 @@ pub async fn tool_http_request(
         }
         _ => None,
     };
+    let save_as = match v["saveAs"].as_str() {
+        Some(s) => match sanitize_save_name(s) {
+            Ok(n) => Some(n),
+            Err(e) => return ToolResult::denied(e),
+        },
+        None => None,
+    };
+    // 下载落盘放宽超时上限（慢网大文件），交互请求维持 120s
     let timeout_secs = v["timeoutSecs"]
         .as_u64()
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
-        .clamp(1, MAX_TIMEOUT_SECS);
+        .clamp(
+            1,
+            if save_as.is_some() {
+                SAVE_MAX_TIMEOUT_SECS
+            } else {
+                MAX_TIMEOUT_SECS
+            },
+        );
     let max_bytes = v["maxBytes"]
         .as_u64()
         .unwrap_or(DEFAULT_BODY_BYTES as u64)
@@ -199,6 +240,51 @@ pub async fn tool_http_request(
                     out.push_str(h);
                     out.push('\n');
                 }
+            }
+            // 下载落盘分支：给了 saveAs 就存文件不回正文。
+            // truncated（传输达上限）不落盘——落一个可能不完整的文件再让脚本去
+            // 算，错数据比没有数据更糟；报错让模型调大 maxBytes 重试。
+            if let Some(name) = &save_as {
+                if reply.truncated {
+                    return ToolResult::error(
+                        format!(
+                            "响应体达到传输上限 {}MB，可能不完整，没有落盘；调大 maxBytes（上限 50MB）重试",
+                            max_bytes / (1024 * 1024)
+                        ),
+                        Vec::new(),
+                    );
+                }
+                if method == "HEAD" {
+                    return ToolResult::error("HEAD 请求没有响应体，saveAs 无意义", Vec::new());
+                }
+                let dir = match crate::db::gen_dir(app) {
+                    Ok(d) => d,
+                    Err(e) => return ToolResult::error(format!("产物目录不可用：{e}"), Vec::new()),
+                };
+                let mut path = dir.join(name);
+                // 重名不覆盖（与 manage_file 同口径）：追加毫秒时间戳到 stem
+                if path.exists() {
+                    let stem = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("download")
+                        .to_string();
+                    let ext = path
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .map(|e| format!(".{e}"))
+                        .unwrap_or_default();
+                    path = dir.join(format!("{stem}_{}{ext}", crate::db::now_ms()));
+                }
+                if let Err(e) = std::fs::write(&path, &reply.body) {
+                    return ToolResult::error(format!("写入产物文件失败：{e}"), Vec::new());
+                }
+                out.push_str(&format!(
+                    "\n[已保存] {}（{} 字节）\n数据文件交给 run_python / extract_document 按路径直读，不必经过对话上下文",
+                    path.display(),
+                    reply.body.len()
+                ));
+                return ToolResult::ok(out, Vec::new());
             }
             if method == "HEAD" || reply.body.is_empty() {
                 return ToolResult::ok(out, Vec::new());
@@ -312,5 +398,23 @@ mod tests {
             encode_body("[1,2]", "form").is_err(),
             "form 的 body 必须是对象"
         );
+    }
+
+    /// 锚点：saveAs 拒绝一切目录语义（路径分隔符 / .. / 控制字符），防目录穿越。
+    #[test]
+    fn save_name_rejects_path_semantics() {
+        assert!(sanitize_save_name("data.csv").is_ok());
+        assert!(
+            sanitize_save_name("  数据集 2026.csv ").is_ok(),
+            "空白与中文合法"
+        );
+        assert!(sanitize_save_name("").is_err());
+        assert!(sanitize_save_name("a/b.csv").is_err(), "正斜杠拒");
+        assert!(sanitize_save_name("a\\b.csv").is_err(), "反斜杠拒");
+        assert!(sanitize_save_name("..").is_err());
+        assert!(sanitize_save_name("a..b.csv").is_err(), "内嵌 .. 也拒");
+        assert!(sanitize_save_name("../etc/passwd").is_err());
+        assert!(sanitize_save_name("\u{7f}x").is_err(), "控制字符拒");
+        assert!(sanitize_save_name(&"x".repeat(201)).is_err(), "超长拒");
     }
 }
