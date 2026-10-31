@@ -401,14 +401,15 @@ fn no_gate_early_return_uses_warn_status() {
         !production.contains("ToolResult::warn("),
         "dispatch 的生产代码不得构造 ToolResult::warn（会把「没执行」记成成功）"
     );
-    // 7 处：pre_tool 钩子拒绝 / allowed-tools 集合外 / 规则 deny / 确认被拒 /
-    // skill 熔断 / 子 agent 白名单外 / arguments 非法 JSON。
+    // 8 处：pre_tool 钩子拒绝 / allowed-tools 集合外 / 规则 deny / 规则 ask
+    // 对子 agent 直接拒 / 确认被拒 / skill 熔断 / 子 agent 白名单外 / arguments
+    // 非法 JSON。
     // （工具调用预算的阶梯在模型循环层，dispatch 不再有预算类早退；墙钟整套已取消。）
     // 数量变了请同步本测试与 every_gate_denial_* 的用例表。
     assert_eq!(
         production.matches("ToolResult::denied(").count(),
-        7,
-        "门禁早退点应恰好 7 处"
+        8,
+        "门禁早退点应恰好 8 处"
     );
 }
 
