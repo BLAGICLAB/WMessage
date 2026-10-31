@@ -543,13 +543,16 @@ pub(crate) async fn run_subagent(
             let sid = watcher_sid.clone();
             // 只读轮询：直接开连接，不持 DB_WRITE_LOCK（防多子 agent 写锁互饿）
             let watcher_app2 = watcher_app.clone();
+            // 查询期瞬时错误（DB 忙/锁竞争）按「未取消」处理——误停健康 run
+            // 比晚两秒发现真取消伤得多；真取消由下一 tick 复查兜住，与排队
+            // 路径「DB 读失败不误判取消」同一容错方向。
             let aborted = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
                 let conn = crate::db::open_db(&watcher_app2)?;
                 Ok(crate::db::load_subagent(&conn, &sid)
                     .ok()
                     .flatten()
                     .map(|r| r.status.is_terminal())
-                    .unwrap_or(true))
+                    .unwrap_or(false))
             })
             .await
             .unwrap_or(Ok(false))
