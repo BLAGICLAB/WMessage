@@ -376,6 +376,33 @@ async fn tool_rule_gate(
             )))
         }
         Some(crate::bot_fs::ToolRuleAction::Ask) => {
+            // 子 agent 是后台会话：确认窗无人认领（停滞 600s 才被接替），与
+            // 目的地闸同一口径直接拒——不弹「批准了也无效」的窗（批准后
+            // 子 agent 白名单闸仍会拒）。
+            if crate::tool_guard::is_subagent_session(session_id) {
+                for (level, event, kv) in early_return_events(
+                    name,
+                    "denied_by_rule",
+                    start.elapsed().as_millis() as u64,
+                    None,
+                    session_id,
+                    trace,
+                ) {
+                    crate::audit::write_event(app, level, event, &kv);
+                }
+                crate::audit::write_event(
+                    app,
+                    crate::audit::AuditLevel::Info,
+                    "tool_rule.hit",
+                    &[
+                        ("tool", name.to_string()),
+                        ("action", "ask_denied_subagent".to_string()),
+                    ],
+                );
+                return Some(crate::bot::registry::ToolResult::denied(format!(
+                    "⚠️ 工具「{name}」按工具规则需要用户确认，而子 agent 是后台会话无人应答。请主 agent 向用户说明后改由主会话执行。"
+                )));
+            }
             let approved = crate::bot_slash::ask_user_confirm(
                 app,
                 name,

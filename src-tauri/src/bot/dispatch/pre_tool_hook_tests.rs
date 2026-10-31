@@ -513,3 +513,29 @@ fn pre_tool_layer_passes_through_when_registry_has_no_denial() {
         run.failures
     );
 }
+
+/// 规则闸 Ask 分支的子 agent 短路：子 agent 是后台会话，确认窗无人认领
+/// （停滞 600s 才被接替），且批准后子 agent 白名单闸仍会拒——先弹窗等于
+/// 「批准了也无效」的空转。锚定「子 agent 检查在弹窗调用之前」（接线锚点，
+/// 同 post_tool 层守卫的理由：行为测试够不到 dispatch 的接线顺序）。
+#[test]
+fn rule_gate_ask_branch_short_circuits_for_subagent_before_popup() {
+    let body = include_str!("../dispatch.rs")
+        .split_once("#[cfg(test)]")
+        .expect("dispatch.rs 应有测试模块")
+        .0;
+    let ask_branch = body
+        .split_once("Some(crate::bot_fs::ToolRuleAction::Ask) => {")
+        .expect("找不到规则闸 Ask 分支")
+        .1;
+    let subagent = ask_branch
+        .find("is_subagent_session(session_id)")
+        .expect("Ask 分支必须先判子 agent 会话：后台会话弹窗无人认领，直接拒");
+    let popup = ask_branch
+        .find("ask_user_confirm(")
+        .expect("Ask 分支应保留主会话的确认弹窗");
+    assert!(
+        subagent < popup,
+        "子 agent 短路必须在 ask_user_confirm 之前，否则弹窗照弹"
+    );
+}
