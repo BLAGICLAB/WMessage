@@ -61,6 +61,15 @@ export function asksOf(sid: string): AskState[] {
   return asks.get(sid) ?? EMPTY;
 }
 
+/** 该会话是否存在未答的提问卡。
+ *
+ * dead-man 看门狗据此豁免判死：提问以小时计（后端 24h 上限），等待应答
+ * 期间零流式事件是**合法静默**，不能按「后端挂起」回收。豁免随终态解除
+ * （后端保证 resolved 必发：应答、超时、停止都走终态事件）。 */
+export function hasUnresolvedAsk(sid: string): boolean {
+  return (asks.get(sid) ?? EMPTY).some((a) => !a.resolved);
+}
+
 /** 应用一条 `bot-ask`：按信封会话号归位，同 qid 幂等替换。缺关键字段丢弃。 */
 export function applyAsk(payload: AskEventPayload): boolean {
   const sid = payload?.sessionId;

@@ -47,6 +47,32 @@ describe("askStore：提问落位", () => {
   });
 });
 
+describe("askStore：未答豁免（dead-man 看门狗判死豁免的依据）", () => {
+  it("有未答卡 = true；终态并入后 = false；无卡会话 = false", () => {
+    expect(askStore.hasUnresolvedAsk("s1")).toBe(false);
+    askStore.applyAsk(ASK);
+    expect(askStore.hasUnresolvedAsk("s1")).toBe(true);
+    expect(
+      askStore.applyResolved({ sessionId: "s1", questionId: "q1", action: "answer" }),
+    ).toBe(true);
+    expect(askStore.hasUnresolvedAsk("s1")).toBe(false);
+    expect(askStore.hasUnresolvedAsk("s2")).toBe(false);
+  });
+
+  it("多问串行：前一张已答、后一张未答仍豁免；全部终态才解除", () => {
+    askStore.applyAsk(ASK);
+    askStore.applyAsk({ ...ASK, questionId: "q2" });
+    expect(
+      askStore.applyResolved({ sessionId: "s1", questionId: "q1", action: "assume" }),
+    ).toBe(true);
+    expect(askStore.hasUnresolvedAsk("s1")).toBe(true);
+    expect(
+      askStore.applyResolved({ sessionId: "s1", questionId: "q2", action: "answer" }),
+    ).toBe(true);
+    expect(askStore.hasUnresolvedAsk("s1")).toBe(false);
+  });
+});
+
 describe("askStore：终态并入", () => {
   beforeEach(() => {
     askStore.applyAsk(ASK);

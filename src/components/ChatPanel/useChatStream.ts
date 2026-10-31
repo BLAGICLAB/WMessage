@@ -528,6 +528,9 @@ export function useChatStream(params: ChatStreamParams) {
     const watchdog = window.setInterval(() => {
       const now = Date.now();
       for (const sid of streamState.inflightSessions()) {
+        // 提问以小时计：问题卡未答期间零流式事件是合法静默，不判死。
+        // 豁免随 bot-ask-resolved 终态解除（该事件本身会刷新活动戳）。
+        if (askStore.hasUnresolvedAsk(sid)) continue;
         if (now - streamState.lastActivityOf(sid) < STREAM_DEAD_IDLE_MS) continue;
         // 判死前先取残文：dropSession 之后权威副本就没了
         const partial = streamState.metaOf(sid)?.text ?? "";
