@@ -120,6 +120,20 @@ impl SubagentStage {
             SubagentStage::Executor => SubagentProfile::Coder,
         }
     }
+
+    /// stage → 内置配置档（三段式派发自动挂载）：recon→probe / executor→writereditor
+    /// / verifier→validator。spawn 未显式给 `onion` 参数时按此挂载，显式参数优先。
+    ///
+    /// validator 的 profile 是 coder——verifier 的派生档位随之从 research 翻到
+    /// coder，验收要靠 run_python / ast_inspect 复核交付物，只读读代码不够；
+    /// 工具面仍被 validator.allowed 收在只读集合内。
+    pub fn default_onion(self) -> &'static str {
+        match self {
+            SubagentStage::Recon => "probe",
+            SubagentStage::Executor => "writereditor",
+            SubagentStage::Verifier => "validator",
+        }
+    }
 }
 
 /// 派发时已解析校验过的 per-onion 配置档。

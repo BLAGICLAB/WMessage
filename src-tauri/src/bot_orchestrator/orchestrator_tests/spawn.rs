@@ -7,6 +7,7 @@ use crate::bot::subagent_digest::MachineCheck;
 use crate::bot::subagent_digest::MachineVerdict;
 use crate::bot::subagent_runner::effective_status;
 use crate::bot::subagent_spawn::spawn_subagent_locked;
+use crate::bot::subagent_tools::attach_stage_onion;
 use crate::bot::subagent_tools::spawn_receipt_text;
 
 #[test]
@@ -809,6 +810,52 @@ fn stage_default_profile_is_research_or_coder() {
     );
 }
 #[test]
+fn stage_default_onion_maps_to_builtin_configs() {
+    // 三段式自动挂载的映射表：锚点测试——改内置档名或换挂载对象，这里先红
+    assert_eq!(SubagentStage::Recon.default_onion(), "probe");
+    assert_eq!(SubagentStage::Executor.default_onion(), "writereditor");
+    assert_eq!(SubagentStage::Verifier.default_onion(), "validator");
+}
+#[test]
+fn stage_onion_auto_attach_prefers_explicit_and_degrades_cleanly() {
+    let app = tauri::test::mock_app();
+    // 先清掉历史运行残留的播种目录：本测试要验「文件不在 → 降级」这条路径
+    let onions_dir = crate::bot_onions::onions_dir(app.handle());
+    let _ = std::fs::remove_dir_all(&onions_dir);
+    // 未播种 → 自动挂载降级为不挂（留审计后派发继续走 stage 默认档）
+    assert!(attach_stage_onion(app.handle(), None, Some(SubagentStage::Recon)).is_none());
+    // 播种后三个 stage 各挂对应内置档
+    crate::bot_onions::materialize_builtin_configs(app.handle());
+    assert_eq!(
+        attach_stage_onion(app.handle(), None, Some(SubagentStage::Recon))
+            .unwrap()
+            .onion_id,
+        "probe"
+    );
+    assert_eq!(
+        attach_stage_onion(app.handle(), None, Some(SubagentStage::Executor))
+            .unwrap()
+            .onion_id,
+        "writereditor"
+    );
+    assert_eq!(
+        attach_stage_onion(app.handle(), None, Some(SubagentStage::Verifier))
+            .unwrap()
+            .onion_id,
+        "validator"
+    );
+    // 显式参数优先：stage 在场也不抢
+    let explicit = crate::bot_onions::load(app.handle(), "probe").unwrap();
+    assert_eq!(
+        attach_stage_onion(app.handle(), Some(explicit), Some(SubagentStage::Executor))
+            .unwrap()
+            .onion_id,
+        "probe"
+    );
+    // 没有 stage 不挂（单段基线路径行为不变）
+    assert!(attach_stage_onion(app.handle(), None, None).is_none());
+}
+#[test]
 fn stage_is_not_persisted_and_profile_field_unaffected() {
     let mut conn = test_conn();
     let _g = crate::db::lock_db_write();
@@ -860,6 +907,15 @@ fn spawn_profile_priority_is_explicit_then_config_then_stage() {
 #[test]
 fn onion_config_is_wired_from_spawn_to_guard_whitelist() {
     let body = orch_prod_src();
+
+    // ⓪ stage 自动挂载必须在派发层接线——缺了它，三段式派发永远不带配置档
+    assert!(
+        body.contains(concat!(
+            "attach_stage_",
+            "onion(app, explicit_onion, stage)"
+        )),
+        "spawn 工具必须把显式参数与 stage 一起交给自动挂载"
+    );
 
     // ① 派发层解析出配置档并装进 SpawnRequest
     let parse_arm = body

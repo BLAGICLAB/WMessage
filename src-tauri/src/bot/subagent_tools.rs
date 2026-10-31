@@ -21,6 +21,47 @@ pub(crate) fn gen_dir_rule_for(artifact_dir: &std::path::Path) -> String {
 fn parse_tool_args(args: &str) -> serde_json::Value {
     serde_json::from_str(args).unwrap_or(serde_json::Value::Null)
 }
+
+/// 三段式派发的配置档自动挂载：stage 带出对应内置档（见
+/// `SubagentStage::default_onion`），显式 `onion` 参数优先。
+///
+/// 挂载失败（文件不在 / 用户手改坏）降级为不挂——配置是可选增强，
+/// 不该让流水线起不来；但降级必须留审计，否则「配置看着生效、实际落空」
+/// 连痕迹都没有。加载错误文案已自带原因。
+pub(crate) fn attach_stage_onion<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    explicit: Option<crate::bot_onions::OnionConfig>,
+    stage: Option<SubagentStage>,
+) -> Option<crate::bot_onions::OnionConfig> {
+    if let Some(cfg) = explicit {
+        return Some(cfg);
+    }
+    let stage = stage?;
+    match crate::bot_onions::load(app, stage.default_onion()) {
+        Ok(cfg) => {
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Info,
+                "onion.stage_attached",
+                &[
+                    ("stage", stage.as_str().to_string()),
+                    ("onion_id", cfg.onion_id.clone()),
+                ],
+            );
+            Some(cfg)
+        }
+        Err(e) => {
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "onion.stage_attach_failed",
+                &[("stage", stage.as_str().to_string()), ("err", e)],
+            );
+            None
+        }
+    }
+}
+
 /// spawn_subagent 工具（递归双保险②：子 agent 会话调用 → 服务端身份校验拒绝）。
 pub async fn tool_spawn_subagent(
     app: &AppHandle,
@@ -41,13 +82,15 @@ pub async fn tool_spawn_subagent(
     let stage = v["stage"].as_str().and_then(SubagentStage::from_str);
     // 配置档：名字非法 / 文件不在 / YAML 语法错 / 字段不合法都在这里报错。
     // 放在建行之前——加载失败的配置档若留到 runner 才炸，就是一条永远跑不起来的行。
-    let onion_cfg = match v["onion"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+    // 显式参数优先；没给时三段式 stage 自动挂载对应内置档（失败降级不挂）。
+    let explicit_onion = match v["onion"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
         Some(id) => match crate::bot_onions::load(app, id) {
             Ok(cfg) => Some(cfg),
             Err(e) => return ToolResult::error(format!("spawn 失败：{e}"), Vec::new()),
         },
         None => None,
     };
+    let onion_cfg = attach_stage_onion(app, explicit_onion, stage);
     let profile = match resolve_spawn_profile(
         v["profile"].as_str().and_then(SubagentProfile::from_str),
         onion_cfg.as_ref().and_then(|c| c.profile_enum()),
