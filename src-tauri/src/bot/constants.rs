@@ -235,6 +235,8 @@ pub const SUBAGENT_CHECK_WAIT_MS_CAP: u64 = 600_000;
 
 /// 子 agent 停滞超时（秒）：这么久没有任何 LLM 流增量、工具开始或返回，判为假死停掉。
 ///
-/// 子 agent 没有墙钟，这是它唯一的时间维度。取值是所有工具单次最长时长的上界
-/// （Python 沙箱上限同为 600s）：工具还在跑就不会被误判停滞。
+/// 子 agent 没有墙钟，这是它唯一的时间维度。工具执行期看门狗挂起判定
+/// （tool_in_flight 标记，见 `tool_guard::set_subagent_tool_in_flight`）：
+/// run_python/MCP 单调用上限同为 600s，与阈值零余量，靠标记兜住误杀窗——
+/// 工具各有自己的超时上限，标记不会永久占住。
 pub const SUBAGENT_STALL_TIMEOUT_SECS: u64 = 600;

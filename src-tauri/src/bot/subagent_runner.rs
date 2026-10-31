@@ -424,6 +424,9 @@ pub(crate) async fn run_subagent(
     let used_tool_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     // 进展心跳：从进入 running 起算，模型循环薄壳的流式事件出口每次刷新
     let last_progress_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(now_ms() as u64));
+    // 工具在跑标记：看门狗据此在工具执行期挂起停滞判定（长工具执行期无心跳，
+    // 与 600s 阈值零余量）。bot-tool-running/done 事件翻转，见 shell 的 emit 出口。
+    let tool_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let _session_guard = crate::tool_guard::SubagentSessionGuard::new(
         &session_id,
         crate::tool_guard::SubagentSessionCtx {
@@ -435,6 +438,7 @@ pub(crate) async fn run_subagent(
             used_tool_calls: used_tool_calls.clone(),
             used_rounds: rounds_gauge.clone(),
             last_progress_ms: last_progress_ms.clone(),
+            tool_in_flight: tool_in_flight.clone(),
         },
     );
 
@@ -502,6 +506,7 @@ pub(crate) async fn run_subagent(
     let watcher_stop = stop.token();
     let watcher_sid = row.id.clone();
     let watcher_progress = last_progress_ms.clone();
+    let watcher_tool_in_flight = tool_in_flight.clone();
     let stalled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let watcher_stalled = stalled.clone();
     struct AbortOnDrop(tauri::async_runtime::JoinHandle<()>);
@@ -518,7 +523,12 @@ pub(crate) async fn run_subagent(
             }
             let idle_ms = (now_ms() as u64)
                 .saturating_sub(watcher_progress.load(std::sync::atomic::Ordering::Relaxed));
-            if idle_ms >= crate::bot::constants::SUBAGENT_STALL_TIMEOUT_SECS * 1000 {
+            // 工具在跑时不判停滞：run_python/MCP 单调用上限同为 600s，与阈值
+            // 零余量，长工具执行期 emit 不发心跳，会被这一刀误杀。工具各有
+            // 自己的超时上限兜底，标记不会永久占住。
+            let tool_running = watcher_tool_in_flight.load(std::sync::atomic::Ordering::Relaxed);
+            if !tool_running && idle_ms >= crate::bot::constants::SUBAGENT_STALL_TIMEOUT_SECS * 1000
+            {
                 watcher_stalled.store(true, std::sync::atomic::Ordering::SeqCst);
                 crate::bot::audit_log(
                     &watcher_app,

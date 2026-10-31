@@ -274,6 +274,13 @@ pub async fn run_model_loop(
         // 子 agent 进展心跳：任何流式事件（增量 / 工具开始 / 工具返回）都算有进展，
         // 停滞判定读它。非子 agent 会话这一步静默。
         crate::tool_guard::touch_subagent_progress(session_id);
+        // 工具在跑标记：watcher 据此在工具执行期挂起停滞判定（与停滞阈值
+        // 零余量的长工具不再有误杀窗）。非子 agent 会话静默。
+        if event == "bot-tool-running" {
+            crate::tool_guard::set_subagent_tool_in_flight(session_id, true);
+        } else if event == "bot-tool-done" {
+            crate::tool_guard::set_subagent_tool_in_flight(session_id, false);
+        }
         if stream_to_main {
             // 走统一出口：分配序号 + 写会话缓冲 + 广播。
             // 序号让客户端能按 seq 补齐（补齐与实时可能重叠，靠序号去重）。

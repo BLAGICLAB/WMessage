@@ -411,6 +411,7 @@ fn check_reports_rounds_while_subagent_runs() {
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(14)),
             last_progress_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            tool_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     );
     let running = check_subagent_locked(&conn, &ack.subagent_id).unwrap();
@@ -451,6 +452,7 @@ fn list_view_attaches_rounds_while_subagent_runs() {
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(14)),
             last_progress_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            tool_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     );
     let row = crate::db::load_subagent(&conn, &ack.subagent_id)
@@ -481,6 +483,7 @@ fn list_view_drops_rounds_after_guard_dropped() {
                 used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(7)),
                 last_progress_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tool_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         );
         let row = crate::db::load_subagent(&conn, &ack.subagent_id)

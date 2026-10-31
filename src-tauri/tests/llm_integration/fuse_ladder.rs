@@ -25,6 +25,7 @@ async fn core_denied_tool_calls_do_not_count_toward_fuse() {
             used_tool_calls: used.clone(),
             used_rounds: Arc::new(AtomicUsize::new(0)),
             last_progress_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            tool_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     );
 
@@ -92,6 +93,7 @@ async fn core_wrap_up_window_denies_reads_allows_writes_then_stops_by_rounds() {
             used_tool_calls: Arc::new(AtomicUsize::new(0)),
             used_rounds: Arc::new(AtomicUsize::new(0)),
             last_progress_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            tool_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     );
 
@@ -196,6 +198,7 @@ async fn core_rounds_wrap_up_window_denies_reads_before_tool_budget() {
             used_tool_calls: Arc::new(AtomicUsize::new(0)),
             used_rounds: Arc::new(AtomicUsize::new(0)),
             last_progress_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            tool_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     );
 

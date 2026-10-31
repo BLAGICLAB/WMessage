@@ -74,6 +74,11 @@ pub struct SubagentSessionCtx {
     /// 停滞判定（runner 的 watcher）读它——超过停滞超时无刷新即判停。只在轮边界
     /// 刷新会把一次几分钟的长流式回复误判成假死，所以刷新点必须细到增量。
     pub last_progress_ms: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// 工具在跑标记：`bot-tool-running` 置位、`bot-tool-done` 清除（与心跳同一
+    /// 出口翻转，见 `set_subagent_tool_in_flight`）。停滞看门狗据此挂起判定——
+    /// run_python/MCP 单调用上限同为 600s，与停滞阈值零余量，长工具执行期
+    /// 无心跳，不挂起就会被误杀。工具各有自己的超时上限，标记不会永久占住。
+    pub tool_in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 static SUBAGENT_SESSIONS: OnceLock<std::sync::Mutex<HashMap<String, SubagentSessionCtx>>> =
@@ -163,6 +168,15 @@ pub fn touch_subagent_progress(session_id: Option<&str>) {
     }
 }
 
+/// 工具在跑标记翻转：与进展心跳同一点（模型循环薄壳的流式事件出口）——
+/// `bot-tool-running` 置位、`bot-tool-done` 清除；非子 agent 会话静默。
+pub fn set_subagent_tool_in_flight(session_id: Option<&str>, running: bool) {
+    if let Some(ctx) = subagent_ctx(session_id) {
+        ctx.tool_in_flight
+            .store(running, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,7 +237,31 @@ mod tests {
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             last_progress_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            tool_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    #[test]
+    fn tool_in_flight_flag_flips_via_registry() {
+        let sid = "test_tool_in_flight";
+        register_subagent_session(sid, sample_ctx("sa_flag"));
+        let ctx = subagent_ctx(Some(sid)).expect("注册后必能取到 ctx");
+        assert!(!ctx
+            .tool_in_flight
+            .load(std::sync::atomic::Ordering::Relaxed));
+        set_subagent_tool_in_flight(Some(sid), true);
+        let ctx = subagent_ctx(Some(sid)).expect("再次取到 ctx");
+        assert!(ctx
+            .tool_in_flight
+            .load(std::sync::atomic::Ordering::Relaxed));
+        set_subagent_tool_in_flight(Some(sid), false);
+        let ctx = subagent_ctx(Some(sid)).expect("第三次取到 ctx");
+        assert!(!ctx
+            .tool_in_flight
+            .load(std::sync::atomic::Ordering::Relaxed));
+        // 非子 agent 会话静默（不 panic、无副作用）
+        set_subagent_tool_in_flight(Some("no_such_session"), true);
+        unregister_subagent_session(sid);
     }
 
     #[test]
