@@ -289,7 +289,7 @@ fn service_does_not_inherit_cpu_limit_and_survives_burn() {
             session_id: None,
         };
         let out = do_start(&handle, &req).expect("服务应能启动");
-        // 烧 8s CPU（远超 run_python 默认 60s 超时对应的 70s CPU 限额的一半，
+        // 烧 8s CPU（远超 run_python 默认 120s 超时对应的 130s CPU 限额的一半，
         // 也远超我们测试里给的短超时）——服务必须还活着
         std::thread::sleep(Duration::from_millis(3000));
         let state = {

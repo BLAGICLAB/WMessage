@@ -131,6 +131,7 @@ pub(crate) const PROFILE_CODER: &str = r#"你是 coder 子 agent。
 - 压缩包用 unpack_archive 解压、pack_archive 打包（zip / tar / tar.gz）；包内带 .. 或软链的条目会被跳过并列出，被跳过的部分要如实转述。
 - 改文件用 edit_file（oldString 唯一精确匹配；批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）；新建用 write_file（覆盖已有文件在后台执行会被拒）。
 - 摸清陌生 Python 代码结构用 ast_inspect（op=symbols 出符号树 / defs 定位定义 / refs 找引用 / callgraph 出调用链），别靠 grep 猜调用关系；只支持 .py。
+- run_python 不联网（它直连外网没有任何保护）；需要查资料由上游 recon 阶段负责，或用 fetch_url / web_search。
 - 先读后改，小步验证；能跑测试就跑测试。
 - 产物路径写入 artifacts。
 - 不要改任务卡主状态。"#;
@@ -139,6 +140,7 @@ pub(crate) const PROFILE_CODER: &str = r#"你是 coder 子 agent。
 pub(crate) const PROFILE_GENERAL: &str = r#"你是 general 子 agent。
 工具：web_search、fetch_url、http_request、read_text_file、list_files、grep_files、extract_document、edit_file、write_file、run_python、ast_inspect、unpack_archive、pack_archive、write_artifact_file、read_own_card。
 - 调研结论给来源；写代码先读后改、小步验证；改文件用 edit_file（批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）；读陌生 Python 代码的结构用 ast_inspect，不要靠 grep 猜调用关系；读 Office/PDF 用 extract_document；压缩包用 unpack_archive 解压、pack_archive 打包，被跳过的条目要如实转述。
+- run_python 不联网（它直连外网没有任何保护）；需要查资料由上游 recon 阶段负责，或用 fetch_url / web_search。
 - 产物路径写入 artifacts。
 - 不要改任务卡主状态。"#;
 
@@ -165,6 +167,7 @@ pub(crate) const PROFILE_EXECUTOR: &str = r#"你是 executor（执行）子 agen
 - 优先读 recon 报告路径（contextSummary 给的）作为输入，不重新调研。
 - 改文件用 edit_file（oldString 唯一精确匹配；批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）；新建用 write_file（覆盖已有文件在后台执行会被拒）。
 - 动手前用 ast_inspect 摸清 recon 指到的 Python 代码结构（op=symbols/defs/refs/callgraph），别照着 grep 结果猜。
+- run_python 不联网（它直连外网没有任何保护）；需要查资料由上游 recon 阶段负责，或用 fetch_url / web_search。
 - 先读后改，小步验证；能跑测试就跑测试。
 - 收尾输出改动清单 + 产物路径 + 自评（哪些 acceptanceCriteria 已达成、哪些等 verifier 验收）。"#;
 
@@ -245,6 +248,22 @@ mod subagent_prompt_tests {
                     "profile 提示未点名白名单工具 {tool}（模型会误判不可用）"
                 );
             }
+        }
+    }
+
+    /// 子 agent profile 必须写明 run_python 不联网——主聊天的红线不覆盖子 agent，
+    /// coder/executor/general 握着 run_python 就握着直连暗道。
+    #[test]
+    fn subagent_profiles_state_run_python_has_no_network() {
+        for (name, p) in [
+            ("coder", PROFILE_CODER),
+            ("executor", PROFILE_EXECUTOR),
+            ("general", PROFILE_GENERAL),
+        ] {
+            assert!(
+                p.contains("run_python 不联网"),
+                "{name} profile 必须写明 run_python 不联网"
+            );
         }
     }
 

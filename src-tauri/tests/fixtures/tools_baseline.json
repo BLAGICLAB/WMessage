@@ -765,7 +765,7 @@ const TOOLS: &str = r#"[
   },
   {
     "function": {
-      "description": "执行 Python 代码（资源受限：CPU/内存/时长限额 + 独立临时目录，无文件系统隔离；默认超时 60s。默认需用户在设置页开启 Python 编程，授权模式为 yolo 时免开关）。脚本较长时先用 write_file 把代码落盘，再用 scriptPath 执行：出错只改出错的那几行重跑即可，不必把整段代码重写一遍。",
+      "description": "执行 Python 代码（资源受限：CPU/内存/时长限额 + 独立临时目录，无文件系统隔离；不联网（联网走 web_search / fetch_url / http_request）；默认超时 120s，上限 600s。默认需用户在设置页开启 Python 编程，授权模式为 yolo 时免开关）。脚本较长时先用 write_file 把代码落盘，再用 scriptPath 执行：出错只改出错的那几行重跑即可，不必把整段代码重写一遍。",
       "name": "run_python",
       "parameters": {
         "properties": {
@@ -850,7 +850,7 @@ const TOOLS: &str = r#"[
   },
   {
     "function": {
-      "description": "发一个 HTTP 请求（GET/POST/PUT/PATCH/DELETE/HEAD），返回状态码、响应头（脱敏）与正文（30K 字符切片，offset 续读；超 maxBytes 传输截断）。只允许 http/https 公网地址（环回/私网一律拒）。目的地默认走用户设置页的域名白名单，白名单外的每次都要弹窗问用户，批准仅本会话内有效——优先请求用户已配过的域名，弹窗前先说明为什么需要访问它。鉴权头的值支持引用形式：\"keyring:厂商名\"（该厂商在设置页配置过的 key）或 \"env:环境变量名\"，引用形式下凭据不会出现在任何返回值与日志里。请求头与响应中的凭据一律不回显。读公开网页正文用 fetch_url；调外部 API、POST JSON、带鉴权头才用它。",
+      "description": "发一个 HTTP 请求（GET/POST/PUT/PATCH/DELETE/HEAD），返回状态码、响应头（脱敏）与正文（30K 字符切片，offset 续读；超 maxBytes 传输截断）。只允许 http/https 公网地址（环回/私网一律拒）。目的地默认走用户设置页的域名白名单，白名单外的每次都要弹窗问用户，批准仅本会话内有效——优先请求用户已配过的域名，弹窗前先说明为什么需要访问它。鉴权头的值支持引用形式：\"keyring:厂商名\"（该厂商在设置页配置过的 key）或 \"env:环境变量名\"，引用形式下凭据不会出现在任何返回值与日志里。请求头与响应中的凭据一律不回显。要下载数据文件（CSV/数据集等）给 saveAs，文件原样落盘返回路径，交给 run_python 本地处理；读公开网页正文用 fetch_url；调外部 API、POST JSON、带鉴权头才用它。",
       "name": "http_request",
       "parameters": {
         "properties": {
@@ -893,8 +893,12 @@ const TOOLS: &str = r#"[
             "description": "正文续读偏移（与 fetch_url 同形；注意每次调用都会重新发请求）",
             "type": "integer"
           },
+          "saveAs": {
+            "description": "可选：把响应体原样存成文件（落 AI_Gen_Files），返回文件绝对路径与大小，不返回正文。用于下载 CSV / 数据集等文件再交给 run_python 本地处理；只填文件名（不能含路径分隔符或 ..），重名自动加时间戳不覆盖",
+            "type": "string"
+          },
           "timeoutSecs": {
-            "description": "请求超时秒数（默认 30，上限 120）",
+            "description": "请求超时秒数（默认 30，上限 120；给了 saveAs 放宽到上限 300）",
             "type": "integer"
           },
           "url": {

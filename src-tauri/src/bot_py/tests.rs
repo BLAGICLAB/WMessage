@@ -212,10 +212,10 @@ fn run_python_at_grandchild_pipe_readers_joined() {
     );
 }
 
-// ── resolve_timeout / 资源限额（默认 60s、硬钳上限 = MAX_TIMEOUT_SECS、限额按 timeout 比例）──
+// ── resolve_timeout / 资源限额（默认 120s、硬钳上限 = MAX_TIMEOUT_SECS、限额按 timeout 比例）──
 
 #[test]
-fn resolve_timeout_default_60s() {
+fn resolve_timeout_default_120s() {
     assert_eq!(resolve_timeout(None), (DEFAULT_TIMEOUT_SECS, false));
     assert_eq!(resolve_timeout(Some(30)), (30, false));
     assert_eq!(

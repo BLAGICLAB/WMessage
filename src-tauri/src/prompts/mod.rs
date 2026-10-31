@@ -119,6 +119,29 @@ mod tests {
         );
     }
 
+    /// run_python 的联网口径：不联网，且把联网路由到专用工具。
+    ///
+    /// 三处覆盖是硬要求：主聊天提示词、子 agent profile、工具描述——只改主聊天
+    /// 的话，coder / executor 子 agent 仍握着一条直连暗道（三段式分工里
+    /// 执行与验收阶段本就不该联网）。本测试管主聊天这一处。
+    #[test]
+    fn system_prompt_forbids_run_python_network_and_routes_to_web_tools() {
+        assert!(
+            SYSTEM_PROMPT.contains("不让它访问网络"),
+            "必须写明 run_python 不联网"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("web_search")
+                && SYSTEM_PROMPT.contains("fetch_url")
+                && SYSTEM_PROMPT.contains("http_request"),
+            "必须把联网路由到 web_search / fetch_url / http_request"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("脚本直连"),
+            "必须写明理由：脚本直连没有公网闸 / 来源标注 / 目的地限制"
+        );
+    }
+
     /// 任务卡执行口径与 dispatch / bot_slash 的放行逻辑耦合：
     /// link_file_to_task 是收尾动作、complete_task 只在手动执行时调用
     #[test]

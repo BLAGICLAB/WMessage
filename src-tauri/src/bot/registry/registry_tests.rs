@@ -1140,3 +1140,90 @@ fn run_python_schema_advertises_script_path_without_forcing_code() {
         "描述里应说明 scriptPath 的用法：{desc}"
     );
 }
+
+/// 工具描述里的超时数字 == 沙箱常量。
+///
+/// 数字写死在 schema 文案里（schema 是 const str，拼不进常量），历史上漂过一次
+/// （文案 60s vs 常量 120s），且漂在**两处**：`run_python` 与 `ast_inspect`——
+/// 后者走同一个沙箱、同一份文案位，漏改等于漏了一半。所以两条都抠出来与
+/// DEFAULT_TIMEOUT_SECS 对拍，漂了当场红。
+fn timeout_secs_in(desc: &str) -> Option<u64> {
+    // 「默认超时 120s」与「默认 120s 超时」两种写法都认：找「默认」后第一个数字
+    let mut rest = desc;
+    while let Some(i) = rest.find("默认") {
+        let tail = &rest[i + "默认".len()..];
+        let digits: String = tail
+            .chars()
+            .skip_while(|c| !c.is_ascii_digit())
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if let Ok(n) = digits.parse::<u64>() {
+            return Some(n);
+        }
+        rest = tail;
+    }
+    None
+}
+
+#[test]
+fn schema_timeout_numbers_match_sandbox_constant() {
+    for (name, raw) in [
+        ("run_python", super::schemas::SCHEMA_RUN_PYTHON),
+        ("ast_inspect", super::schemas::SCHEMA_AST_INSPECT),
+    ] {
+        let v: serde_json::Value = serde_json::from_str(raw)
+            .unwrap_or_else(|e| panic!("{name} schema 必须是合法 JSON：{e}"));
+        let desc = v["function"]["description"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{name} description 必须是字符串"));
+        let n = timeout_secs_in(desc)
+            .unwrap_or_else(|| panic!("{name} 描述里必须能抠出「默认 Ns 超时」"));
+        assert_eq!(
+            n,
+            crate::py::runtime::DEFAULT_TIMEOUT_SECS,
+            "{name} 文案超时要与常量一致"
+        );
+        assert!(!desc.contains("60s"), "{name} 旧口径 60s 不得留在描述里");
+    }
+}
+
+#[test]
+fn run_python_schema_states_no_network() {
+    let v: serde_json::Value = serde_json::from_str(super::schemas::SCHEMA_RUN_PYTHON)
+        .expect("run_python schema 必须是合法 JSON");
+    let desc = v["function"]["description"]
+        .as_str()
+        .expect("description 必须是字符串");
+    assert!(desc.contains("不联网"), "run_python 描述必须写明不联网");
+    assert!(!desc.contains("可联网"), "旧的「可联网」口径不得留在描述里");
+    assert!(
+        desc.contains("web_search") && desc.contains("fetch_url") && desc.contains("http_request"),
+        "必须把联网路由到 web_search / fetch_url / http_request"
+    );
+}
+
+/// apps 程序契约：脚本自包含是交付约定，不是能力禁令。
+#[test]
+fn apps_script_contract_is_self_contained_not_network_banned() {
+    for (name, raw) in [
+        ("apps_create", super::schemas::SCHEMA_APPS_CREATE),
+        (
+            "apps_update_files",
+            super::schemas::SCHEMA_APPS_UPDATE_FILES,
+        ),
+    ] {
+        let v: serde_json::Value = serde_json::from_str(raw)
+            .unwrap_or_else(|e| panic!("{name} schema 必须是合法 JSON：{e}"));
+        let desc = v["function"]["description"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{name} description 必须是字符串"));
+        assert!(
+            !desc.contains("禁联网"),
+            "{name} 契约的「禁联网」已改为交付约定"
+        );
+        assert!(
+            desc.contains("自包含"),
+            "{name} 契约必须写明脚本自包含、不依赖外网"
+        );
+    }
+}
