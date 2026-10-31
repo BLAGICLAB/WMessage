@@ -201,7 +201,7 @@ pub fn run_dotnet_revisions(
             gen.as_deref(),
             &args,
             Some(120),
-            crate::py::runtime::MAX_TIMEOUT_SECS,
+            crate::bot::constants::PY_MAX_TIMEOUT_SECS,
             &mut audit_sink,
             None,
         )

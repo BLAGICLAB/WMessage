@@ -11,16 +11,14 @@ use tauri::AppHandle;
 use crate::bot::registry::ToolResult;
 
 use super::doc::slice_fetch_output;
-use crate::bot_web::{execute_http, GateCtx, HttpError, RequestSpec, MAX_TIMEOUT_SECS};
+use crate::bot::constants::{HTTP_REQUEST_TIMEOUT_SECS, HTTP_SAVE_TIMEOUT_SECS};
+use crate::bot_web::{execute_http, GateCtx, HttpError, RequestSpec};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_BODY_BYTES: usize = 50 * 1024 * 1024;
 const DEFAULT_BODY_BYTES: usize = 10 * 1024 * 1024;
 const KEYRING_PREFIX: &str = "keyring:";
 const ENV_PREFIX: &str = "env:";
-/// saveAs（下载落盘）模式的超时上限：慢网大文件下载与交互请求的时长语义不同，
-/// 放宽到 300s（普通请求仍 120s）。
-const SAVE_MAX_TIMEOUT_SECS: u64 = 300;
 
 /// saveAs 文件名清洗：只留文件名语义，拒一切目录语义——路径分隔符（/ \\）、
 /// 父目录引用（..）、控制字符都拒；落点固定 AI_Gen_Files 根，不跟随子目录。
@@ -189,9 +187,9 @@ pub async fn tool_http_request(
         .clamp(
             1,
             if save_as.is_some() {
-                SAVE_MAX_TIMEOUT_SECS
+                HTTP_SAVE_TIMEOUT_SECS
             } else {
-                MAX_TIMEOUT_SECS
+                HTTP_REQUEST_TIMEOUT_SECS
             },
         );
     let max_bytes = v["maxBytes"]

@@ -90,8 +90,29 @@ pub const LLM_MAX_ATTEMPTS: u32 = 3;
 /// 间隔太短会撞上游 500（重试本身成了压测源）。
 pub const LLM_RETRY_DELAY_MS: u64 = 1500;
 
+/// http_request 单次请求超时上限（秒）：交互式 API 调用不需要更长；
+/// 下载走 saveAs 时由工具层放宽到 `HTTP_SAVE_TIMEOUT_SECS`。
+pub const HTTP_REQUEST_TIMEOUT_SECS: u64 = 120;
+
+/// http_request saveAs（下载落产物目录）的超时上限（秒）。
+pub const HTTP_SAVE_TIMEOUT_SECS: u64 = 300;
+
 /// Python 沙箱单次执行超时默认（秒）。Claude Code Bash 同值（2 分钟）。
 pub const PYTHON_TIMEOUT_SECS: u64 = 120;
+
+/// run_python 工具路径的单次执行天花板（秒，Claude Code Bash 同值）。
+///
+/// 与 `SUBAGENT_STALL_TIMEOUT_SECS`（600s）零余量耦合：长工具执行期靠
+/// tool_in_flight 标记挂起停滞判定——两个数必须一起动，故同住本文件。
+pub const PY_MAX_TIMEOUT_SECS: u64 = 600;
+
+/// apps（程序）单次运行的天花板（秒）：用户直跑的批量活比 run_python 长，
+/// 与 run_python 的钳制路径分开（resolve_timeout_with_cap 按 cap 区分）。
+pub const APPS_MAX_TIMEOUT_SECS: u64 = 1800;
+
+/// MCP stdio 单次工具调用超时天花板（秒）：与 run_python 同值——
+/// 子 agent 停滞判定对两者一视同仁（600s 零余量，靠 tool_in_flight 挂起）。
+pub const MCP_TIMEOUT_MAX_SECS: u64 = 600;
 
 /// 文件读取单次上限（字节）。
 pub const READ_MAX_BYTES: usize = 100 * 1024;
@@ -237,6 +258,7 @@ pub const SUBAGENT_CHECK_WAIT_MS_CAP: u64 = 600_000;
 ///
 /// 子 agent 没有墙钟，这是它唯一的时间维度。工具执行期看门狗挂起判定
 /// （tool_in_flight 标记，见 `tool_guard::set_subagent_tool_in_flight`）：
-/// run_python/MCP 单调用上限同为 600s，与阈值零余量，靠标记兜住误杀窗——
-/// 工具各有自己的超时上限，标记不会永久占住。
+/// run_python 单调用上限同为 600s（`PY_MAX_TIMEOUT_SECS`，与阈值零余量，
+/// 两个数必须一起动），靠标记兜住误杀窗——工具各有自己的超时上限，
+/// 标记不会永久占住。
 pub const SUBAGENT_STALL_TIMEOUT_SECS: u64 = 600;

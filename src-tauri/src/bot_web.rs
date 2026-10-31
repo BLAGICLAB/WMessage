@@ -161,7 +161,7 @@ pub use search::web_search_with_config;
 pub(crate) use destination::invalidate_grants;
 pub(crate) use fetch::check_public_url;
 pub(crate) use fetch::ensure_public_http_url;
-pub(crate) use http::{execute as execute_http, GateCtx, HttpError, RequestSpec, MAX_TIMEOUT_SECS};
+pub(crate) use http::{execute as execute_http, GateCtx, HttpError, RequestSpec};
 #[allow(unused_imports)]
 pub use search::web_search;
 

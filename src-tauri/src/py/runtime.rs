@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::AppHandle;
 
+use crate::bot::constants::{APPS_MAX_TIMEOUT_SECS, PY_MAX_TIMEOUT_SECS};
 use crate::bot::StopToken;
 use crate::error::CommandError;
 use crate::py::audit::py_audit;
@@ -36,15 +37,11 @@ pub struct PyRunResult {
 
 pub const OUTPUT_CAP: usize = 64 * 1024;
 pub const DEFAULT_TIMEOUT_SECS: u64 = crate::bot::constants::PYTHON_TIMEOUT_SECS;
-/// run_python 工具路径的单次执行天花板（秒，Claude Code Bash 同值），也是子 agent
-/// 停滞超时（600s）的上界——两个数必须一起动；apps 用更宽的 1800s（用户直跑）。
-pub const MAX_TIMEOUT_SECS: u64 = 600;
-pub const APPS_MAX_TIMEOUT_SECS: u64 = 1800;
 pub fn resolve_timeout(timeout_secs: Option<u64>) -> (u64, bool) {
-    resolve_timeout_with_cap(timeout_secs, MAX_TIMEOUT_SECS)
+    resolve_timeout_with_cap(timeout_secs, PY_MAX_TIMEOUT_SECS)
 }
 
-/// 带调用方天花板的钳制：工具路径传 `MAX_TIMEOUT_SECS`，apps 用户直跑传
+/// 带调用方天花板的钳制：工具路径传 `PY_MAX_TIMEOUT_SECS`，apps 用户直跑传
 /// `APPS_MAX_TIMEOUT_SECS`——apps 声明的 1800s 天花板在执行层真实生效，
 /// 而不是声明完被这条统一钳制悄悄折回 600。cap 不得低于 `DEFAULT_TIMEOUT_SECS`
 /// （现役两个 cap 600/1800 都满足）。
@@ -56,11 +53,11 @@ pub fn resolve_timeout_with_cap(timeout_secs: Option<u64>, cap: u64) -> (u64, bo
     }
 }
 
-/// 写侧钳制（1..=MAX_TIMEOUT_SECS）——设置页落盘前用。运行期钳制在
+/// 写侧钳制（1..=PY_MAX_TIMEOUT_SECS）——设置页落盘前用。运行期钳制在
 /// `resolve_timeout` 但只在执行时生效：写下 10000、显示 10000、实跑 600——
 /// 落盘值必须等于生效值，写侧先钳一遍。
 pub fn clamp_timeout_secs(n: u64) -> u64 {
-    n.clamp(1, MAX_TIMEOUT_SECS)
+    n.clamp(1, PY_MAX_TIMEOUT_SECS)
 }
 
 pub fn mem_limit_bytes(timeout_secs: u64) -> u64 {
@@ -1209,7 +1206,7 @@ mod tests {
             None,
             &[],
             Some(20),
-            MAX_TIMEOUT_SECS,
+            PY_MAX_TIMEOUT_SECS,
             &mut audit,
             None,
         )
@@ -1277,7 +1274,7 @@ mod tests {
             None,
             &[],
             Some(1),
-            MAX_TIMEOUT_SECS,
+            PY_MAX_TIMEOUT_SECS,
             &mut audit,
             None,
         )

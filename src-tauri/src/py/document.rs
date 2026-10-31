@@ -9,13 +9,12 @@ use serde::Serialize;
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
+use crate::bot::constants::PY_MAX_TIMEOUT_SECS;
 use crate::bot::StopToken;
 use crate::error::{CommandError, CommandResult};
 use crate::py::audit::py_audit;
 use crate::py::env::run_dotnet_revisions;
-use crate::py::runtime::{
-    py_gate_acquire, run_python, run_python_ungated, PyRunResult, MAX_TIMEOUT_SECS,
-};
+use crate::py::runtime::{py_gate_acquire, run_python, run_python_ungated, PyRunResult};
 
 // 固定文档脚本模板
 
@@ -950,7 +949,7 @@ pub async fn run_doc_script(
             Some(&input),
             &[],
             Some(120),
-            MAX_TIMEOUT_SECS,
+            PY_MAX_TIMEOUT_SECS,
             None,
         )
         .map_err(|e| e.to_string())
@@ -1007,7 +1006,7 @@ pub async fn run_doc_revisions(
             Some(&input),
             &[],
             Some(120),
-            MAX_TIMEOUT_SECS,
+            PY_MAX_TIMEOUT_SECS,
             None,
         )
         .map(|res| (res, "python"))
@@ -1037,12 +1036,14 @@ pub fn py_exec_sync(
 ) -> Result<PyRunResult, String> {
     crate::py::commands::ensure_py_enabled(app)?;
     if let Some(t) = timeout_secs {
-        if t > MAX_TIMEOUT_SECS {
+        if t > PY_MAX_TIMEOUT_SECS {
             py_audit(
                 app,
-                &format!("py_exec err | kind=timeout_cap | requested={t} cap={MAX_TIMEOUT_SECS}"),
+                &format!(
+                    "py_exec err | kind=timeout_cap | requested={t} cap={PY_MAX_TIMEOUT_SECS}"
+                ),
             );
-            return Err(format!("timeout 超过 {MAX_TIMEOUT_SECS}s 上限"));
+            return Err(format!("timeout 超过 {PY_MAX_TIMEOUT_SECS}s 上限"));
         }
     }
     py_audit(
@@ -1052,7 +1053,15 @@ pub fn py_exec_sync(
             crate::audit::escape_for_log(&code, 300)
         ),
     );
-    let r = match run_python(app, &code, None, &[], timeout_secs, MAX_TIMEOUT_SECS, stop) {
+    let r = match run_python(
+        app,
+        &code,
+        None,
+        &[],
+        timeout_secs,
+        PY_MAX_TIMEOUT_SECS,
+        stop,
+    ) {
         Ok(r) => r,
         Err(e) => {
             py_audit(

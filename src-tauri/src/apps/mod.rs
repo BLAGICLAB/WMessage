@@ -14,6 +14,7 @@ use std::time::Instant;
 use serde::Serialize;
 use tauri::AppHandle;
 
+use crate::bot::constants::APPS_MAX_TIMEOUT_SECS;
 use crate::bot::StopToken;
 use crate::db;
 use crate::db::apps::{App, AppRun};
@@ -154,7 +155,7 @@ pub fn run(
         params_for_py,
         &app_dir_arg,
         timeout_secs,
-        runtime::APPS_MAX_TIMEOUT_SECS,
+        APPS_MAX_TIMEOUT_SECS,
         stop,
     )
     .map_err(|e| {
@@ -260,7 +261,7 @@ fn mark_run_failed(
 
 /// 陈旧 running 行的判定阈值：超过这个时长仍停在 running 的行，
 /// 它的进程早就不在了（崩在写回之前）——按中断处理。
-/// 取 py::runtime::APPS_MAX_TIMEOUT_SECS（30 分钟）的四倍：再长的运行也早该结束了。
+/// 取 bot::constants::APPS_MAX_TIMEOUT_SECS（30 分钟）的四倍：再长的运行也早该结束了。
 const STALE_RUN_AGE_MS: i64 = 2 * 60 * 60 * 1000;
 
 /// 清扫陈旧的 running 行（僵尸行，纯函数便于单测）：

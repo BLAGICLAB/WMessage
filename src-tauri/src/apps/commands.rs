@@ -311,7 +311,7 @@ pub fn resolve_run_timeout(caller_secs: Option<u64>, declared_secs: Option<u64>)
     caller_secs
         .or(declared_secs)
         .unwrap_or(crate::py::runtime::DEFAULT_TIMEOUT_SECS)
-        .min(crate::py::runtime::APPS_MAX_TIMEOUT_SECS)
+        .min(crate::bot::constants::APPS_MAX_TIMEOUT_SECS)
 }
 
 fn open_db_or(app: &AppHandle) -> Result<rusqlite::Connection, CommandError> {
@@ -406,7 +406,8 @@ pub mod manifest_contract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::py::runtime::{APPS_MAX_TIMEOUT_SECS, DEFAULT_TIMEOUT_SECS};
+    use crate::bot::constants::APPS_MAX_TIMEOUT_SECS;
+    use crate::py::runtime::DEFAULT_TIMEOUT_SECS;
 
     /// 运行超时的来源优先级：调用方 > 程序声明 > 内置默认；越不过天花板
     #[test]

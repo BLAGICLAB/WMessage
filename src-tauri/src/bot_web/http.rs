@@ -14,8 +14,6 @@ use super::check_public_url;
 use super::destination::{check_destination, DestOutcome};
 
 const MAX_REDIRECTS: usize = 5;
-/// 请求超时上限（秒）：交互式 API 调用不需要更长；下载走 saveAs 时由工具层放宽。
-pub(crate) const MAX_TIMEOUT_SECS: u64 = 120;
 
 /// 一次请求的全部参数。body 已编码为字节并带最终 Content-Type（编码/校验在
 /// 工具层完成——执行层只认成品，错误文案对模型才有上下文）。

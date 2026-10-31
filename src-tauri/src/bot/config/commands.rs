@@ -1085,7 +1085,7 @@ mod perm_mode_tests {
         );
         assert_eq!(
             cfg.python_timeout_secs,
-            Some(crate::py::runtime::MAX_TIMEOUT_SECS),
+            Some(crate::bot::constants::PY_MAX_TIMEOUT_SECS),
             "落盘值必须等于生效值（天花板常量一改这里跟着走）"
         );
         assert_eq!(

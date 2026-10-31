@@ -33,7 +33,6 @@ pub const MAX_MCP_HEADERS: usize = 16;
 /// stdio 单次工具调用超时钳制（秒）：默认 60，可调 5..=600。
 pub const MCP_TIMEOUT_DEFAULT_SECS: u64 = 60;
 pub const MCP_TIMEOUT_MIN_SECS: u64 = 5;
-pub const MCP_TIMEOUT_MAX_SECS: u64 = 600;
 /// LLM function name 硬上限（OpenAI / Anthropic 均为 64）。
 pub const MCP_TOOL_NAME_MAX_BYTES: usize = 64;
 /// 服务器 id 上限（uuid simple = 32 字节，64 留余量；防脏 id 入库后按 id
@@ -122,9 +121,10 @@ impl McpServerConfig {
 
     /// 实际生效的调用超时（秒）：None → 默认 60，钳 5..=600
     pub fn effective_timeout_secs(&self) -> u64 {
-        self.timeout_secs
-            .unwrap_or(MCP_TIMEOUT_DEFAULT_SECS)
-            .clamp(MCP_TIMEOUT_MIN_SECS, MCP_TIMEOUT_MAX_SECS)
+        self.timeout_secs.unwrap_or(MCP_TIMEOUT_DEFAULT_SECS).clamp(
+            MCP_TIMEOUT_MIN_SECS,
+            crate::bot::constants::MCP_TIMEOUT_MAX_SECS,
+        )
     }
 }
 
@@ -218,7 +218,12 @@ pub fn validate_server(s: &McpServerConfig) -> Result<(), String> {
 
 /// 超时入参钳制（保存路径）：None 保留 None（= 默认），Some 钳 5..=600。
 pub fn clamp_timeout(v: Option<u64>) -> Option<u64> {
-    v.map(|n| n.clamp(MCP_TIMEOUT_MIN_SECS, MCP_TIMEOUT_MAX_SECS))
+    v.map(|n| {
+        n.clamp(
+            MCP_TIMEOUT_MIN_SECS,
+            crate::bot::constants::MCP_TIMEOUT_MAX_SECS,
+        )
+    })
 }
 
 /// 迁移判据：原始配置文件里这台服务器是否还带着内联机密（env/headers 任一非空对象）。
@@ -775,7 +780,10 @@ mod tests {
         assert!(s.env.keys().all(|k| !k.trim().is_empty()));
         assert_eq!(s.env.len(), 1, "只应剩 HOME 一条");
         assert_eq!(s.env.get("HOME").map(String::as_str), Some("/tmp"));
-        assert_eq!(s.timeout_secs, Some(MCP_TIMEOUT_MAX_SECS));
+        assert_eq!(
+            s.timeout_secs,
+            Some(crate::bot::constants::MCP_TIMEOUT_MAX_SECS)
+        );
     }
 
     // ── trim 重名键查重（normalize 前置闸，防 map collect 静默合并）──

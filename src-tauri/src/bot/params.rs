@@ -117,7 +117,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         category: "tools",
         hint: "run_python 默认超时；工具参数可单次覆盖",
         min: Some(1),
-        max: Some(crate::py::runtime::MAX_TIMEOUT_SECS),
+        max: Some(crate::bot::constants::PY_MAX_TIMEOUT_SECS),
         editable: true,
         resolve: python_timeout_row,
     },

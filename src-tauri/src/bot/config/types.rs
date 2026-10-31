@@ -116,7 +116,7 @@ pub struct BotConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brave_enabled: Option<bool>,
     /// run_python 默认超时秒数（可选）：None = 120s；工具参数 timeoutSecs 优先于此；
-    /// 硬钳上限 = py::runtime::MAX_TIMEOUT_SECS。大计算（pandas 等）可调大。
+    /// 硬钳上限 = bot::constants::PY_MAX_TIMEOUT_SECS。大计算（pandas 等）可调大。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub python_timeout_secs: Option<u64>,
     /// 文件/代码执行授权模式（Kimi CLI 风格）：
@@ -426,7 +426,7 @@ pub struct BotConfigView {
     pub has_brave_key: bool,
     /// 「Brave 搜索」开关原样透传（None = 未显式设置，前端按 key 有无显示自动态）
     pub brave_enabled: Option<bool>,
-    /// run_python 默认超时秒数（None = 120s 默认；设置页可改，硬钳 = py::runtime::MAX_TIMEOUT_SECS）
+    /// run_python 默认超时秒数（None = 120s 默认；设置页可改，硬钳 = bot::constants::PY_MAX_TIMEOUT_SECS）
     pub python_timeout_secs: Option<u64>,
     /// 终稿自检的轮次间隔（None = 默认 8；0 = 关闭自检；后端钳 0..=100）。
     /// 每隔这么多轮自动触发一次终稿校验；模型提交交付时强制自检，不受间隔限制。

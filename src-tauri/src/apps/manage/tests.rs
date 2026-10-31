@@ -713,7 +713,7 @@ fn declared_timeout_normalizes_and_clamps() {
     assert_eq!(normalize_declared_timeout(Some(1800)), Some(1800));
     assert_eq!(
         normalize_declared_timeout(Some(9999)),
-        Some(crate::py::runtime::APPS_MAX_TIMEOUT_SECS),
+        Some(crate::bot::constants::APPS_MAX_TIMEOUT_SECS),
         "超上限的声明要钳到天花板"
     );
     assert!(declared_timeout_clamped(Some(9999)));

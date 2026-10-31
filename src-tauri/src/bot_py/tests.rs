@@ -3,6 +3,7 @@
 use super::*;
 // 原 bot_py.rs 顶层 use（被 facade 收走后丢失，补回以让测试编译）
 use crate::audit::escape_for_log;
+use crate::bot::constants::{APPS_MAX_TIMEOUT_SECS, PY_MAX_TIMEOUT_SECS};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -182,7 +183,7 @@ fn run_python_at_grandchild_pipe_readers_joined() {
         None,
         &[],
         Some(30),
-        MAX_TIMEOUT_SECS,
+        PY_MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     );
@@ -213,23 +214,23 @@ fn run_python_at_grandchild_pipe_readers_joined() {
     );
 }
 
-// ── resolve_timeout / 资源限额（默认 120s、硬钳上限 = MAX_TIMEOUT_SECS、限额按 timeout 比例）──
+// ── resolve_timeout / 资源限额（默认 120s、硬钳上限 = PY_MAX_TIMEOUT_SECS、限额按 timeout 比例）──
 
 #[test]
 fn resolve_timeout_default_120s() {
     assert_eq!(resolve_timeout(None), (DEFAULT_TIMEOUT_SECS, false));
     assert_eq!(resolve_timeout(Some(30)), (30, false));
     assert_eq!(
-        resolve_timeout(Some(MAX_TIMEOUT_SECS)),
-        (MAX_TIMEOUT_SECS, false)
+        resolve_timeout(Some(PY_MAX_TIMEOUT_SECS)),
+        (PY_MAX_TIMEOUT_SECS, false)
     );
 }
 
 #[test]
 fn resolve_timeout_clamps_over_ceiling() {
     // 传入超上限的数应被钳到上限并报告 clamped
-    assert_eq!(resolve_timeout(Some(10000)), (MAX_TIMEOUT_SECS, true));
-    assert_eq!(resolve_timeout(Some(u64::MAX)), (MAX_TIMEOUT_SECS, true));
+    assert_eq!(resolve_timeout(Some(10000)), (PY_MAX_TIMEOUT_SECS, true));
+    assert_eq!(resolve_timeout(Some(u64::MAX)), (PY_MAX_TIMEOUT_SECS, true));
 }
 
 #[test]
@@ -245,8 +246,8 @@ fn resolve_timeout_with_cap_lets_apps_ceiling_through() {
         (APPS_MAX_TIMEOUT_SECS, true)
     );
     assert_eq!(
-        resolve_timeout_with_cap(Some(1800), MAX_TIMEOUT_SECS),
-        (MAX_TIMEOUT_SECS, true)
+        resolve_timeout_with_cap(Some(1800), PY_MAX_TIMEOUT_SECS),
+        (PY_MAX_TIMEOUT_SECS, true)
     );
     assert_eq!(
         resolve_timeout_with_cap(None, APPS_MAX_TIMEOUT_SECS),
@@ -370,7 +371,7 @@ fn run_python_revisions(dir: &std::path::Path, params: &serde_json::Value) -> Py
         None,
         &[],
         Some(120),
-        MAX_TIMEOUT_SECS,
+        PY_MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     )
@@ -463,7 +464,7 @@ fn dotnet_revisions_tool_generates_valid_track_changes() {
         None,
         &["params.json".to_string()],
         Some(120),
-        MAX_TIMEOUT_SECS,
+        PY_MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     )
@@ -513,7 +514,7 @@ fn dotnet_revisions_in_place_preserves_formatting() {
         None,
         &["params.json".to_string()],
         Some(120),
-        MAX_TIMEOUT_SECS,
+        PY_MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     )
@@ -635,7 +636,7 @@ fn run_python_at_timeout_writes_audit_line() {
         None,
         &[],
         Some(1),
-        MAX_TIMEOUT_SECS,
+        PY_MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     );
@@ -666,7 +667,7 @@ fn run_python_at_spawn_fail_writes_audit_line() {
         None,
         &[],
         Some(1),
-        MAX_TIMEOUT_SECS,
+        PY_MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     );
@@ -702,7 +703,7 @@ fn spawn_fail_cleans_populated_dir_and_audits() {
         None,
         &[],
         Some(1),
-        MAX_TIMEOUT_SECS,
+        PY_MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     );
@@ -812,7 +813,7 @@ fn failed_run_keeps_script_readable() {
         None,
         &[],
         Some(10),
-        MAX_TIMEOUT_SECS,
+        PY_MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     ) {
@@ -848,7 +849,7 @@ fn successful_run_clears_run_dir() {
         None,
         &[],
         Some(10),
-        MAX_TIMEOUT_SECS,
+        PY_MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     ) {
@@ -880,7 +881,7 @@ fn traceback_line_numbers_match_script_body() {
         None,
         &[],
         Some(10),
-        MAX_TIMEOUT_SECS,
+        PY_MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     ) {
@@ -919,7 +920,7 @@ fn script_runs_as_main_module() {
         None,
         &[],
         Some(10),
-        MAX_TIMEOUT_SECS,
+        PY_MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     ) {
@@ -1107,7 +1108,7 @@ fn spawn_not_found_flagged_for_cache_retry() {
         None,
         &[],
         Some(1),
-        MAX_TIMEOUT_SECS,
+        PY_MAX_TIMEOUT_SECS,
         &mut |_| {},
         None,
     );
@@ -1146,7 +1147,7 @@ fn run_python_at_stop_token_interrupts_promptly() {
             None,
             &[],
             Some(60),
-            MAX_TIMEOUT_SECS,
+            PY_MAX_TIMEOUT_SECS,
             &mut |l: &str| lines.push(l.to_string()),
             Some(&token),
         );
