@@ -115,8 +115,8 @@ pub fn plan_view(session_id: &str) -> Option<PlanView> {
     })
 }
 
-/// `bot-plan` 事件载荷。sessionId 由 `emit_recorded` 之外的调用方补
-/// （事件统一走 `stream_log::emit_recorded`，它负责写缓冲与序号）。
+/// `bot-plan` 事件载荷。sessionId（信封）由统一出口 `emit_recorded` 盖章，
+/// 调用方不带同名键——自带 sessionId 是信封纪律的破口。
 pub fn plan_payload(view: &PlanView) -> serde_json::Value {
     serde_json::json!({
         "steps": view.steps,

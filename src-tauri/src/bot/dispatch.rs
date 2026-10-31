@@ -768,9 +768,9 @@ async fn execute_tool_impl(
     let level = crate::audit::AuditLevel::from_tool_status(result.status);
     // 「工具输出超预算」的审计事件**不在这里发**——这里只知道 per-tool 预算，
     // 而真实截断用 min(per-tool 预算, 全局 cap)（见 bot_model_loop 的
-    // effective_output_cap）。全局 cap 更紧时（默认 30000 vs 长输出工具的
-    // 65536）文本被截了而审计不报；反过来审计报了也可能根本没截——两边各说
-    // 各话。事件移到截断发生的地方发（bot_model_loop 的 execute_tool 闭包），
+    // effective_output_cap：全局 128KB，per-tool 最大 65536，恒为 per-tool 更紧）。
+    // 文本被截而审计不报、或审计报了根本没截的两边各说各话由此避免：事件移到
+    // 截断发生的地方发（bot_model_loop 的 execute_tool 闭包），
     // 审计阈值与真实 cap 是同一个数。
     // create_task/edit_task 带 files 参数时补 files_count/truncated kv（多文件绑定）
     // 三个 return 侧 sink（tool.return preview / 动作流 / 执行痕迹）共用的

@@ -418,9 +418,11 @@ pub(crate) async fn run_subagent(
     // 与 ctx 里的 used_rounds 是同一个 Arc（守卫按值克隆 ctx，Arc 保证同源）。
     let rounds_gauge = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     // 工具调用计数：与 ctx 里的 used_tool_calls 同一个 Arc（守卫按值克隆 ctx）。
-    // 收尾时读一次，判断预算是否触达——触达必须落 budget_exceeded，不能落
-    // succeeded（父 agent 提示词教它「failed / budget_exceeded 都要读 error
-    // 决定重试」，报成 succeeded 就不重试，产出残缺而无人知晓）。
+    // 消费方是 read_own_card 的实时余量与动作流「已用工具数」——收尾时的预算
+    // 触达判定**不读它**：靠正文的 FUSE_MARKER / ROUNDS_FUSE_MARKER 标记
+    // （subagent_repair），熔断路径必带标记，计数器兜底是想象的机制。
+    // 触达必须落 budget_exceeded 不能落 succeeded（父 agent 提示词教它「failed /
+    // budget_exceeded 都要读 error 决定重试」，报成 succeeded 就不重试）。
     let used_tool_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     // 进展心跳：从进入 running 起算，模型循环薄壳的流式事件出口每次刷新
     let last_progress_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(now_ms() as u64));

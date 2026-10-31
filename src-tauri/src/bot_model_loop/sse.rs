@@ -310,9 +310,9 @@ impl StreamState {
             self.last_finish_reason = Some(reason);
         }
         // reasoning_content 与 <think> 同出口（不进 final_text、不进历史）
-        // 另存一份原文：M2/M3 官方要求把 reasoning_content 随 tool_calls
-        // 回灌历史（「otherwise subsequent conversation will lose context」），
-        // 回灌与否由配置开关决定（默认关 = 只走前端展示出口）。
+        // 另存一份原文：M2/M3、DeepSeek reasoner、Moonshot K2 要求把
+        // reasoning_content 随 tool_calls 回灌历史（缺了 400 或丢上下文），
+        // 回灌是无条件的「发了就回」，没有配置开关。
         if let Some(r) = parsed.reasoning {
             self.reasoning_text.push_str(&r);
             emit("bot-think-delta", serde_json::json!({ "text": r }));

@@ -611,7 +611,8 @@ where
     let body = body.map(|(msg, refs)| (msg, merge_task_refs_dedup(refs)));
     // 回合状态收口：出口 → 状态。settling 在正文定稿后、收尾自检之前发，
     // 它是「说完了但还在动」这个场景唯一的存在方式——没有它，前端只能把
-    // 「正文说完」当「本轮结束」，随后那段收尾（可静默 300s）就是一片静止。
+    // 「正文说完」当「本轮结束」，随后那段收尾（终稿自检：侧调 ≤60s 或
+    // in-loop 一轮）就是一片静止。
     let final_status = match (&body, body_outcome, stop.stopped()) {
         (_, Some("fused"), _) => TurnStatus::Completed,
         (_, Some("interrupted"), _) => TurnStatus::Interrupted,
@@ -860,8 +861,8 @@ where
         // turn + tool_call_id 一并下传，工具审计可按轮回放（见 bot::ToolCallTrace）
         let t_tool = std::time::Instant::now();
         // 工具执行段的活体信号：bot-tool 只说明「要调了」，bot-tool-done 要等
-        // 工具返回——中间这段（run_python 可静默 300s、MCP 600s）此前零事件，
-        // UI 只有一个静态「…」。补一条 running 事件让前端起计时与 spinner。
+        // 工具返回——中间这段（run_python 默认 120s 上限 600s、MCP 600s）此前
+        // 零事件，UI 只有一个静态「…」。补一条 running 事件让前端起计时与 spinner。
         emit(
             "bot-tool-running",
             serde_json::json!({

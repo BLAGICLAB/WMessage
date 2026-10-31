@@ -227,7 +227,9 @@ fn record(session_id: &str, event: &str, payload: &serde_json::Value) -> Option<
 ///
 /// 口径对齐业界事件信封（CloudEvents 的属性层 / Kafka 的 headers / ACP 的
 /// `session/update` params）：**会话号是信封，不进业务载荷**。信封只此一处
-/// 盖章，业务字段不许自带同名键。
+/// 盖章，业务字段不许自带同名键（已登记例外两条：`bot-usage-delta` 与
+/// `bot-file-changed` 不进缓冲、调用点自带 sessionId 自盖章——理由见模块头
+/// 「不收进缓冲的事件」，新增旁路前先想清楚要不要并回这里）。
 ///
 /// 序号写进载荷的 `seq` 字段（前端据此去重：补齐与实时可能重叠）。
 /// `session_id` 为 None 的事件不进缓冲（后台任务不推流，没有会话可归属），

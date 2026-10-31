@@ -4,7 +4,8 @@
 
 /// 证据池里单次调用保留的返回文本上限（字符）。
 ///
-/// 工具返回本身已被回灌上限钳过（默认 30K 字节），这里再钳一层是防极端值把
+/// 工具返回本身已被回灌漏斗钳过（全局 128KB、per-tool 另有更小的预算层，
+/// 见 `bot_model_loop::output`），这里再钳一层是防极端值把
 /// 内存吃光。截掉的部分模型多半也没看见——真截在中间的数判成「无出处」是
 /// 误伤方向，宁可放过。
 pub(crate) const EVIDENCE_OUTPUT_CHARS: usize = crate::bot::constants::EVIDENCE_OUTPUT_CHARS;
