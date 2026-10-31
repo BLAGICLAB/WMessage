@@ -339,9 +339,70 @@ pub fn preview_args(args: &str) -> String {
     args.chars().take(80).collect()
 }
 
+/// 结果文本进任何审计/可见性 sink（tool.return preview、子 agent 动作流、
+/// 执行痕迹 span）前的脱敏：`来源：` 行的 final_url 去掉查询串与 fragment——
+/// 那是模型塞进请求 URL 的数据（可带 token），与 tool.call 入参「不记完整
+/// URL」同一口径；正文节选里的第三方链接是页面内容，不在此列。
+/// 模型可见的 tool result 不经此函数：模型需要知道重定向后的最终落点。
+pub fn redact_result_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (i, seg) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if seg.starts_with("来源：") {
+            out.push_str(&strip_url_query(seg));
+        } else {
+            out.push_str(seg);
+        }
+    }
+    out
+}
+
+/// 「来源：{url}」行的 URL 裁剪：保 scheme://host/path，自 `?` 或 `#` 起整段
+/// 去掉并留「…」标记；无 URL 或无查询串原样返回。
+fn strip_url_query(line: &str) -> String {
+    let Some(pos) = line.find("://") else {
+        return line.to_string();
+    };
+    let (prefix, rest) = line.split_at(pos + 3);
+    let Some(cut) = rest.find(['?', '#']) else {
+        return line.to_string();
+    };
+    let mut out = String::with_capacity(line.len() + 4);
+    out.push_str(prefix);
+    out.push_str(&rest[..cut]);
+    out.push('…');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 锚点：来源行的查询串/fragment 不得进任何审计 sink。
+    #[test]
+    fn redact_result_text_strips_query_on_source_line() {
+        let t = "HTTP 200 · text/html\n来源：https://api.example.com/v1/data?token=secret123&page=2\n正文里的链接 https://cdn.example.com/x.js?ver=1 是页面内容";
+        let r = redact_result_text(t);
+        assert!(!r.contains("secret123"), "来源行查询串必须去掉：{r}");
+        assert!(!r.contains("page=2"), "查询参数也不得残留：{r}");
+        assert!(
+            r.contains("来源：https://api.example.com/v1/data…"),
+            "来源行只留 scheme://host/path：{r}"
+        );
+        assert!(
+            r.contains("cdn.example.com/x.js?ver=1"),
+            "正文里的第三方链接是页面内容，不脱敏：{r}"
+        );
+    }
+
+    /// 锚点：无查询串的结果文本原样往返（脱敏不得顺手改写正文）。
+    #[test]
+    fn redact_result_text_keeps_clean_text_intact() {
+        let t = "HTTP 200 · application/json\n来源：https://api.example.com/v1/data\n{\"ok\":true}";
+        assert_eq!(redact_result_text(t), t);
+    }
 
     /// 锚点：查询串（可夹带数据/凭据）不得进 preview。
     #[test]

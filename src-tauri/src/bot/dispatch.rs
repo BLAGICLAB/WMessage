@@ -14,10 +14,34 @@ use crate::bot::tools::{broadcast_after_mutation, files_audit_kv};
 
 // 工具调度核心（execute_tool dispatch）
 
+/// 审计/可见性 sink 面（tool.call、tool.return、动作流、执行痕迹）共用的
+/// 入参预览：http_request 的入参前 80 字符必含完整 URL（含查询串，可夹带
+/// 数据/凭据），与该工具「不记完整 URL」的口径冲突——裁成方法 + host + 路径。
+/// 新增 sink 消费入参预览时必须走这里，不许再写裸的 chars().take(80)。
+fn sink_args_preview(name: &str, args: &str) -> String {
+    if name == "http_request" {
+        crate::bot::tools::preview_http_request_args(args)
+    } else {
+        args.chars().take(80).collect::<String>()
+    }
+}
+
+/// sink 面共用的结果文本：http_request 的「来源：」行去掉查询串与 fragment
+/// （final_url 是模型塞的请求 URL 的最终落点）。模型可见的 tool result 不经
+/// 此函数——模型需要知道重定向后的最终 URL。
+fn sink_result_text(name: &str, text: &str) -> String {
+    if name == "http_request" {
+        crate::bot::tools::redact_http_result_text(text)
+    } else {
+        text.to_string()
+    }
+}
+
 /// 子 agent 动作流（右侧栏实时可见性）：dispatch 在 call / return 两个相位
 /// 各旁路一条 UI 事件，前端按 toolCallId 合并成一行。事件即焚不落库——
 /// 历史回看走详情面板的结果与 digest，不另存流。
-/// preview 与审计同源同截断（80 字），不另开脱敏面。
+/// preview 与审计同源同截断（80 字）：http_request 走 sink_args_preview /
+/// sink_result_text 的同一份脱敏，不另开第四个口径。
 fn emit_subagent_activity(
     app: &AppHandle,
     ctx: &crate::tool_guard::SubagentSessionCtx,
@@ -479,13 +503,8 @@ async fn execute_tool_impl(
 ) -> crate::bot::registry::ToolResult {
     let start = std::time::Instant::now();
     // 0. tool.call 结构化（含 session_id / turn / tool_call_id，供整轮回放）。
-    // http_request 特例：入参前 80 字符必含完整 URL（含查询串，可夹带数据），
-    // 与该工具自身审计「不记完整 URL」的口径冲突——preview 裁成方法 + host + 路径。
-    let args_preview = if name == "http_request" {
-        crate::bot::tools::preview_http_request_args(args)
-    } else {
-        args.chars().take(80).collect::<String>()
-    };
+    // 入参预览走 sink_args_preview：http_request 的查询串不进任何审计面。
+    let args_preview = sink_args_preview(name, args);
     let mut call_kv: Vec<(&str, String)> =
         vec![("tool", name.to_string()), ("args_preview", args_preview)];
     call_kv.extend(trace_kv(trace, session_id));
@@ -603,7 +622,7 @@ async fn execute_tool_impl(
             "call",
             None,
             None,
-            &args.chars().take(80).collect::<String>(),
+            &sink_args_preview(name, args),
         );
         // 工具调用的阶梯（软告警 / 收尾窗 / 硬停）在模型循环层统一判定
         // （fuse::gate_call），这里不设预算闸、不设墙钟。
@@ -727,11 +746,17 @@ async fn execute_tool_impl(
     // 各话。事件移到截断发生的地方发（bot_model_loop 的 execute_tool 闭包），
     // 审计阈值与真实 cap 是同一个数。
     // create_task/edit_task 带 files 参数时补 files_count/truncated kv（多文件绑定）
+    // 三个 return 侧 sink（tool.return preview / 动作流 / 执行痕迹）共用的
+    // 脱敏文本：http_request 的「来源：」行去查询串，其余工具原样。
+    let result_for_sink = sink_result_text(name, &result.text);
     let mut kv: Vec<(&str, String)> = vec![
         ("tool", name.to_string()),
         ("ms", dur_ms.to_string()),
         ("refs", result.refs.len().to_string()),
-        ("preview", result.text.chars().take(80).collect::<String>()),
+        (
+            "preview",
+            result_for_sink.chars().take(80).collect::<String>(),
+        ),
     ];
     if matches!(name, "create_task" | "edit_task") {
         if let Some((cnt, truncated)) = files_audit_kv(args) {
@@ -754,7 +779,7 @@ async fn execute_tool_impl(
             "return",
             Some(result.status.is_success()),
             Some(dur_ms),
-            &result.text,
+            &result_for_sink,
         );
     }
     //  执行痕迹采集（Agent 透明化设计 §4.2）：会话在跑 trace 时逐调用落 span，
@@ -767,8 +792,18 @@ async fn execute_tool_impl(
             turn: trace.turn.unwrap_or(0) as i64,
             tool_call_id: trace.tool_call_id.clone(),
             name: name.to_string(),
-            args: crate::trace_sink::clamp_span_text(app, name, "args", args.to_string()),
-            result: crate::trace_sink::clamp_span_text(app, name, "result", result.text.clone()),
+            args: crate::trace_sink::clamp_span_text(
+                app,
+                name,
+                "args",
+                sink_args_preview(name, args),
+            ),
+            result: crate::trace_sink::clamp_span_text(
+                app,
+                name,
+                "result",
+                result_for_sink.clone(),
+            ),
             ok,
             // error_class 只做子类细分（timeout/permission/gate_denied…），成败
             // 由上面的 ok 决定；拿不到 status 的 MCP 工具靠这里兜住子类
