@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::bot::constants::{APPS_MAX_TIMEOUT_SECS, PY_MAX_TIMEOUT_SECS};
+use crate::bot::constants::PY_MAX_TIMEOUT_SECS;
 use crate::bot::StopToken;
 use crate::error::CommandError;
 use crate::py::audit::py_audit;
@@ -758,6 +758,7 @@ pub fn rlimit_warn_line(s: &SetrlimitSupport) -> Option<String> {
 #[cfg(unix)]
 pub fn run_setrlimit_probe(py: &str) -> SetrlimitSupport {
     // 与 run_python_at 同一构造器（参数列表传参，无 shell 参与，无注入面）。
+    use crate::bot::constants::APPS_MAX_TIMEOUT_SECS;
     let mut cmd = silent_cmd(py);
     cmd.arg("-c")
         .arg(SETRLIMIT_PROBE_SCRIPT)
@@ -1182,6 +1183,7 @@ fn prune_stale_run_dirs(audit: &mut dyn FnMut(&str)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bot::constants::APPS_MAX_TIMEOUT_SECS;
 
     /// 子进程不继承宿主全量环境：宿主进程里放一个伪造密钥，脚本打印自己的
     /// 环境里是否可见——白名单裁剪后必须不可见；PATH 这类地基变量仍在。
