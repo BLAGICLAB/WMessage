@@ -7,6 +7,21 @@
 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
 
+## 2026-10-31（周六）Windows 绿色版 2026-10-31 出包
+
+**为什么记**：按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程日更出包，基线
+main @ `588aab54`。产物：仓库根 `wmessage-portable-2026-10-31.zip`
+（110,610,500 字节 / 205 文件，SHA256
+`9fbf1c645442862b8be54d6ec7700c90b50be2ff48a115a4e2666313bbcb8f1e`），
+exe 76,451,334 字节（`src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe`）。
+相对 10-28 版新增 92 个提交，主线：Python 执行断网（macOS seatbelt fail-closed）+
+http_request 工具与目的地白名单闸 + 凭据不过模型 + 子 agent 三段式权限档激活
+（max_turn 退役、probe 补 http_request）+ 五条超时天花板收单一真相源 +
+10-30 三线审计稳定性修复批。构建期顺手修掉 Windows 目标独有的一条未使用
+导入警告（host 门禁看不见，交叉编译才暴露）。上一版固定文件与 dotnet/ 复用
+（源码零改动）；README 更新记录链续写。Windows 实机验收（解压、便携锚定、
+语义检索肉眼确认、ocr_image）仍待人工。
+
 ## 2026-10-30（周五）整体验收方案：按功能条目重建验收面 + 三方对拍门禁
 
 **为什么要换方向**：此前的验收是**按改动窗口**做的——每批提交配一份实机场景卡
