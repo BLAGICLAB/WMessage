@@ -944,7 +944,16 @@ pub async fn run_doc_script(
 ) -> Result<PyRunResult, String> {
     let handle = app.clone();
     match spawn_blocking_map(move || {
-        run_python(&handle, script, Some(&input), &[], Some(120), None).map_err(|e| e.to_string())
+        run_python(
+            &handle,
+            script,
+            Some(&input),
+            &[],
+            Some(120),
+            MAX_TIMEOUT_SECS,
+            None,
+        )
+        .map_err(|e| e.to_string())
     })
     .await
     {
@@ -992,9 +1001,17 @@ pub async fn run_doc_revisions(
                 ),
             }
         }
-        run_python_ungated(&handle, script, Some(&input), &[], Some(120), None)
-            .map(|res| (res, "python"))
-            .map_err(|e| e.to_string())
+        run_python_ungated(
+            &handle,
+            script,
+            Some(&input),
+            &[],
+            Some(120),
+            MAX_TIMEOUT_SECS,
+            None,
+        )
+        .map(|res| (res, "python"))
+        .map_err(|e| e.to_string())
     })
     .await
     {
@@ -1035,7 +1052,7 @@ pub fn py_exec_sync(
             crate::audit::escape_for_log(&code, 300)
         ),
     );
-    let r = match run_python(app, &code, None, &[], timeout_secs, stop) {
+    let r = match run_python(app, &code, None, &[], timeout_secs, MAX_TIMEOUT_SECS, stop) {
         Ok(r) => r,
         Err(e) => {
             py_audit(

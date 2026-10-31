@@ -41,10 +41,18 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = crate::bot::constants::PYTHON_TIMEOUT_SECS
 pub const MAX_TIMEOUT_SECS: u64 = 600;
 pub const APPS_MAX_TIMEOUT_SECS: u64 = 1800;
 pub fn resolve_timeout(timeout_secs: Option<u64>) -> (u64, bool) {
+    resolve_timeout_with_cap(timeout_secs, MAX_TIMEOUT_SECS)
+}
+
+/// 带调用方天花板的钳制：工具路径传 `MAX_TIMEOUT_SECS`，apps 用户直跑传
+/// `APPS_MAX_TIMEOUT_SECS`——apps 声明的 1800s 天花板在执行层真实生效，
+/// 而不是声明完被这条统一钳制悄悄折回 600。cap 不得低于 `DEFAULT_TIMEOUT_SECS`
+/// （现役两个 cap 600/1800 都满足）。
+pub fn resolve_timeout_with_cap(timeout_secs: Option<u64>, cap: u64) -> (u64, bool) {
     match timeout_secs {
-        None => (DEFAULT_TIMEOUT_SECS, false),
-        Some(s) if s > MAX_TIMEOUT_SECS => (MAX_TIMEOUT_SECS, true),
+        Some(s) if s > cap => (cap, true),
         Some(s) => (s, false),
+        None => (DEFAULT_TIMEOUT_SECS, false),
     }
 }
 
@@ -520,6 +528,7 @@ pub fn run_python(
     input_json: Option<&str>,
     args: &[String],
     timeout_secs: Option<u64>,
+    timeout_cap: u64,
     stop: Option<&StopToken>,
 ) -> Result<PyRunResult, PyRunError> {
     // 有界并发闸（许可 2）。EXITING 与停止复查在闸门内完成（等待前/唤醒后/
@@ -528,7 +537,15 @@ pub fn run_python(
         kind: PyFailKind::StartFailed,
         msg: e.message(),
     })?;
-    run_python_ungated(app, script, input_json, args, timeout_secs, stop)
+    run_python_ungated(
+        app,
+        script,
+        input_json,
+        args,
+        timeout_secs,
+        timeout_cap,
+        stop,
+    )
 }
 
 pub fn run_python_ungated(
@@ -537,6 +554,7 @@ pub fn run_python_ungated(
     input_json: Option<&str>,
     args: &[String],
     timeout_secs: Option<u64>,
+    timeout_cap: u64,
     stop: Option<&StopToken>,
 ) -> Result<PyRunResult, PyRunError> {
     // 看门狗不再拼进脚本正文：拼接会让 traceback 行号整体下移，模型按报错
@@ -575,6 +593,7 @@ pub fn run_python_ungated(
             gen.as_deref(),
             args,
             timeout_secs,
+            timeout_cap,
             &mut audit_sink,
             stop,
         ) {
@@ -842,13 +861,14 @@ pub fn run_python_at(
     gen_dir: Option<&std::path::Path>,
     args: &[String],
     timeout_secs: Option<u64>,
+    timeout_cap: u64,
     audit: &mut dyn FnMut(&str),
     stop: Option<&StopToken>,
 ) -> Result<PyRunResult, RunFail> {
-    let (timeout_eff, clamped) = resolve_timeout(timeout_secs);
+    let (timeout_eff, clamped) = resolve_timeout_with_cap(timeout_secs, timeout_cap);
     if clamped {
         audit(&format!(
-            "run_python | timeout clamped | requested={} cap={MAX_TIMEOUT_SECS}",
+            "run_python | timeout clamped | requested={} cap={timeout_cap}",
             timeout_secs.unwrap_or(0)
         ));
     }
@@ -1189,6 +1209,7 @@ mod tests {
             None,
             &[],
             Some(20),
+            MAX_TIMEOUT_SECS,
             &mut audit,
             None,
         )
@@ -1256,6 +1277,7 @@ mod tests {
             None,
             &[],
             Some(1),
+            MAX_TIMEOUT_SECS,
             &mut audit,
             None,
         )

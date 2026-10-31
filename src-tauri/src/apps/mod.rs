@@ -154,6 +154,7 @@ pub fn run(
         params_for_py,
         &app_dir_arg,
         timeout_secs,
+        runtime::APPS_MAX_TIMEOUT_SECS,
         stop,
     )
     .map_err(|e| {

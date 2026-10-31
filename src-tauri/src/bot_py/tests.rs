@@ -182,6 +182,7 @@ fn run_python_at_grandchild_pipe_readers_joined() {
         None,
         &[],
         Some(30),
+        MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     );
@@ -229,6 +230,28 @@ fn resolve_timeout_clamps_over_ceiling() {
     // 传入超上限的数应被钳到上限并报告 clamped
     assert_eq!(resolve_timeout(Some(10000)), (MAX_TIMEOUT_SECS, true));
     assert_eq!(resolve_timeout(Some(u64::MAX)), (MAX_TIMEOUT_SECS, true));
+}
+
+#[test]
+fn resolve_timeout_with_cap_lets_apps_ceiling_through() {
+    // apps 直跑的 1800s 天花板要在执行层真实生效：cap=1800 时声明值放行、
+    // 超声明值仍钳；同一声明值走工具 cap（600）必须被钳——两条路径只有 cap 不同
+    assert_eq!(
+        resolve_timeout_with_cap(Some(1800), APPS_MAX_TIMEOUT_SECS),
+        (APPS_MAX_TIMEOUT_SECS, false)
+    );
+    assert_eq!(
+        resolve_timeout_with_cap(Some(9999), APPS_MAX_TIMEOUT_SECS),
+        (APPS_MAX_TIMEOUT_SECS, true)
+    );
+    assert_eq!(
+        resolve_timeout_with_cap(Some(1800), MAX_TIMEOUT_SECS),
+        (MAX_TIMEOUT_SECS, true)
+    );
+    assert_eq!(
+        resolve_timeout_with_cap(None, APPS_MAX_TIMEOUT_SECS),
+        (DEFAULT_TIMEOUT_SECS, false)
+    );
 }
 
 /// 修订测试共用：最小 docx 夹具（标题样式段 + 加粗段 + 待改段 + tab/超链接混合段）。
@@ -347,6 +370,7 @@ fn run_python_revisions(dir: &std::path::Path, params: &serde_json::Value) -> Py
         None,
         &[],
         Some(120),
+        MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     )
@@ -439,6 +463,7 @@ fn dotnet_revisions_tool_generates_valid_track_changes() {
         None,
         &["params.json".to_string()],
         Some(120),
+        MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     )
@@ -488,6 +513,7 @@ fn dotnet_revisions_in_place_preserves_formatting() {
         None,
         &["params.json".to_string()],
         Some(120),
+        MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     )
@@ -609,6 +635,7 @@ fn run_python_at_timeout_writes_audit_line() {
         None,
         &[],
         Some(1),
+        MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     );
@@ -639,6 +666,7 @@ fn run_python_at_spawn_fail_writes_audit_line() {
         None,
         &[],
         Some(1),
+        MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     );
@@ -674,6 +702,7 @@ fn spawn_fail_cleans_populated_dir_and_audits() {
         None,
         &[],
         Some(1),
+        MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     );
@@ -783,6 +812,7 @@ fn failed_run_keeps_script_readable() {
         None,
         &[],
         Some(10),
+        MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     ) {
@@ -818,6 +848,7 @@ fn successful_run_clears_run_dir() {
         None,
         &[],
         Some(10),
+        MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     ) {
@@ -849,6 +880,7 @@ fn traceback_line_numbers_match_script_body() {
         None,
         &[],
         Some(10),
+        MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     ) {
@@ -887,6 +919,7 @@ fn script_runs_as_main_module() {
         None,
         &[],
         Some(10),
+        MAX_TIMEOUT_SECS,
         &mut |l: &str| lines.push(l.to_string()),
         None,
     ) {
@@ -1074,6 +1107,7 @@ fn spawn_not_found_flagged_for_cache_retry() {
         None,
         &[],
         Some(1),
+        MAX_TIMEOUT_SECS,
         &mut |_| {},
         None,
     );
@@ -1112,6 +1146,7 @@ fn run_python_at_stop_token_interrupts_promptly() {
             None,
             &[],
             Some(60),
+            MAX_TIMEOUT_SECS,
             &mut |l: &str| lines.push(l.to_string()),
             Some(&token),
         );
