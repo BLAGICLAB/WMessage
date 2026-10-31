@@ -25,3 +25,5 @@ mod gate;
 pub mod harvest;
 pub mod io;
 pub mod runtime;
+#[cfg(target_os = "macos")]
+pub mod seatbelt;

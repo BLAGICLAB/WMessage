@@ -857,7 +857,54 @@ pub fn run_python_at(
     let cpu_secs = cpu_limit_secs(timeout_eff);
     let limits = RunLimits::new(mem_bytes, cpu_secs);
 
-    let mut cmd = silent_cmd(py);
+    let mut cmd = {
+        #[cfg(target_os = "macos")]
+        {
+            // seatbelt 包装把 python 变成 sandbox-exec 的参数——python 路径坏时
+            // spawn 恒成功（退出码 71 走脚本失败路径），NotFound 语义被吞。
+            // 包装前对**含路径分隔符**的 py 做 metadata 校验（裸名走 PATH 解析，
+            // 与未包装时语义一致，不能拿 metadata 误杀）；保住 spawn_not_found
+            // 的缓存重试语义。
+            if py.contains('/') {
+                if let Err(e) = std::fs::metadata(py) {
+                    audit(&format!(
+                        "run_python err | kind=spawn_fail | {}",
+                        crate::audit::escape_for_log(&e.to_string(), 200)
+                    ));
+                    cleanup_after_spawn_fail(dir, &limits);
+                    return Err(RunFail {
+                        kind: PyFailKind::StartFailed,
+                        msg: format!("启动 Python 失败：{e}"),
+                        spawn_not_found: e.kind() == std::io::ErrorKind::NotFound,
+                    });
+                }
+            }
+            // seatbelt 出网硬闸（fail-closed）：闸失效拒绝执行，无放行开关。
+            // apps 与 run_python 走同一组装函数，闸自动同享。
+            if let Err(why) = crate::py::seatbelt::seatbelt_probe_cached(audit) {
+                audit(&format!(
+                    "run_python err | kind=seatbelt_unavailable | {why}"
+                ));
+                cleanup_after_spawn_fail(dir, &limits);
+                return Err(RunFail {
+                    kind: PyFailKind::StartFailed,
+                    msg: format!(
+                        "Python 出网闸（macOS 沙箱）未生效，已拒绝执行：{why}；这是安全失败（fail-closed），请反馈开发者"
+                    ),
+                    spawn_not_found: false,
+                });
+            }
+            let mut c = silent_cmd("sandbox-exec");
+            c.arg("-p")
+                .arg(crate::py::seatbelt::SEATBELT_PROFILE)
+                .arg(py);
+            c
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            silent_cmd(py)
+        }
+    };
     apply_child_env(&mut cmd);
     #[cfg(unix)]
     {
