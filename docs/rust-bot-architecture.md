@@ -199,18 +199,18 @@ src-tauri/src/
 ├── bot/registry.rs (221)  **工具单源真相（阶段 2）** 的门面：类型（ToolCtx / ToolStatus /
 │                        ToolResult / ToolDef）+ 逐项 re-export——实现按面拆到下面三个子模块，
 │                        `crate::bot::registry::X` 旧路径与旧可见性保持不变
-│   ├── bot/registry/schemas.rs (1202)  65 个 SCHEMA_* 字面量 + TOOLS_TABLE（name/schema/mutating/call，
+│   ├── bot/registry/schemas.rs (1226)  65 个 SCHEMA_* 字面量 + TOOLS_TABLE（name/schema/mutating/call，
 │   │                        数目以 BUILTIN_TOOL_COUNT 为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │   │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
-│   ├── bot/registry/handlers.rs (437)   65 个 call_* 一行转发（ToolCtx + args → 工具实现）
+│   ├── bot/registry/handlers.rs (443)   65 个 call_* 一行转发（ToolCtx + args → 工具实现）
 │   ├── bot/registry/claims.rs (792)     声明判据面：模型「声称做了」的提取与判定
 │   │                        （变更声称 / 执行声称 / 数值 / 文档路径 / 工具点名）
 │   ├── bot/registry/mentioned_tool_names_tests.rs (77)  工具点名整词匹配单测
 │   ├── bot/registry/claimed_executed_tools_tests.rs (63) 执行声称单测
 │   ├── bot/registry/result_claim_tests.rs (98)  结果值抽取与回声判定单测
-│   └── bot/registry/registry_tests.rs (1135)  工具表基线守卫（表长 / 条目顺序 / schema 字面量 /
+│   └── bot/registry/registry_tests.rs (1230)  工具表基线守卫（表长 / 条目顺序 / schema 字面量 /
 │                        profile 白名单 / tools JSON 形状）+ TOOLS_TABLE 无 cfg-gated 条目守卫
-├── bot/dispatch.rs (914)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
+├── bot/dispatch.rs (984)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计；
 │                        工具调用预算的阶梯不在这里（单点在模型循环层 fuse::gate_call），
 │                        dispatch 只留执行计数仪表，不设预算闸、不设墙钟
@@ -218,9 +218,9 @@ src-tauri/src/
 │   │                        fail_prefix 可被 classify_tool_failure 认出（7 处任务卡工具）
 │   ├── bot/dispatch/early_return_events_tests.rs (109) 早退事件序列单测：规则闸 deny 与 skill
 │   │                        熔断两条路径的 tool.return 配平 + trace 键集
-│   ├── bot/dispatch/invalid_args_tests.rs (95)        入参 JSON 闸单测：空参/非对象 JSON 放行、
+│   ├── bot/dispatch/invalid_args_tests.rs (123)        入参 JSON 闸单测：空参/非对象 JSON 放行、
 │   │                        坏 JSON 拒绝并回可解释文案 + 闸位接线守卫（源码文本）
-│   ├── bot/dispatch/pre_tool_hook_tests.rs (515)      pre_tool 钩子接线守卫（语句存在 + 三点相对位置）+
+│   ├── bot/dispatch/pre_tool_hook_tests.rs (542)      pre_tool 钩子接线守卫（语句存在 + 三点相对位置）+
 │                        panic 隔离守卫 + 收尾窗放行清单漂移 + 门禁早退 Denied 口径（10 处）
 │   └── bot/dispatch/allowed_tools_tests.rs (109)      allowed-tools 交互路径闸：集合内外/未声明/跨会话
 │                        判定单测（mock handle + 真注册表）+ 接线守卫（闸在规则表之前）
@@ -364,12 +364,14 @@ src-tauri/src/
 │   │                     按模型族/协议的 ReasoningWire（OpenAI effort/GLM thinking/
 │   │                     Anthropic budget），resolve 装配 + describe 审计展示
 │   └── audit.rs         audit_log
-├── bot/tools.rs (96)      工具实现门面：23 个 tool_* 逐项转出（crate::bot::tools::X 旧路径 1:1 保持）
+├── bot/tools.rs (101)      工具实现门面：23 个 tool_* 逐项转出（crate::bot::tools::X 旧路径 1:1 保持）
 │   ├── bot/tools/task.rs (1110)   任务面：查询族（view/过滤/渲染/query）+ 管理族（增删改/子任务/绑文件）
-│   ├── bot/tools/doc.rs (835)     文档面：提取文档 / Word·Excel·PPT·PDF 生成 / 联网搜索 / 抓页 / 自由 Python
+│   ├── bot/tools/doc.rs (847)     文档面：提取文档 / Word·Excel·PPT·PDF 生成 / 联网搜索 / 抓页 / 自由 Python
 │   ├── bot/tools/service.rs (277) 受管服务面：start/stop/list 长驻进程 + 集成测试钩子
 │   ├── bot/tools/common.rs (153)  公共杂项面：时间工具 / files 参数解析与安全校验 / 审计补充 kv / 改库广播
 │   ├── bot/tools/trace.rs (231)    凭证召回面：按 tool_call_id/span_id/trace_id 调回历史工具结果（只读、零新表）
+│   ├── bot/tools/http.rs (479)     专用 HTTP 工具面：http_request（方法/请求体/自定义头/下载落产物目录；
+│   │                                目的地闸每跳都判、凭据引用真值不过模型、args_preview 裁 method+host）
 │   ├── bot/tools/plan.rs (155)      计划面：update_plan 整表替换写会话内计划状态 + 广播 bot-plan 事件
 │   ├── bot/tools/task_files_arg_tests.rs (180)     files 参数解析与安全校验单测
 │   ├── bot/tools/query_tasks_tests.rs (153)        查询族纯函数单测

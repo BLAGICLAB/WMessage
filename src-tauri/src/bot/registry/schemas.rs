@@ -1,4 +1,4 @@
-//! 工具 schema 字面量与工具表：65 个 `SCHEMA_*` 常量 + `TOOLS_TABLE` 接线 +
+//! 工具 schema 字面量与工具表：`BUILTIN_TOOL_COUNT` 个 `SCHEMA_*` 常量 + `TOOLS_TABLE` 接线 +
 //! tools JSON 拼装与子 agent profile 白名单。
 
 use std::sync::OnceLock;
