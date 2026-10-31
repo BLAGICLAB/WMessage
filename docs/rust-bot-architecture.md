@@ -677,7 +677,7 @@ src-tauri/src/
  → ② bot::read_bypass_llm_switch（旧链路降级开关）
  → ③ pre-step 路由（intent_router 固定两步直调）      [intent_router.rs]
      is_chat_execute_trigger → RouteAction::ExecuteTasks → chat_execute_tasks
-         （每卡走 run_task_in_chat → run_model_loop，50 轮工具循环）
+         （每卡走 run_task_in_chat → run_model_loop，最多 200 轮工具循环）
      route_user_input 正则命中 → bot_skills::start_skill
          ├─ mode=auto → run_skill_scheduler（DSL 逐步执行，
          │   FailedButRecoverable 时带 recovery_hint 落入 ⑤ 让 LLM 兜底）
@@ -768,7 +768,7 @@ flowchart TD
     I -- interactive --> K2[技能正文拼入 system prompt] --> L
     H -- PassThrough --> L
 
-    L[⑤ bot_model_loop::run_model_loop<br/>装配 LlmHttp + ModelLoopDeps] --> M[run_model_loop_core 循环<br/>≤50 轮]
+    L[⑤ bot_model_loop::run_model_loop<br/>装配 LlmHttp + ModelLoopDeps] --> M[run_model_loop_core 循环<br/>≤200 轮]
     M --> N{bot_plan: 复杂任务?}
     N -- 是 --> N1[Planner 生成计划注入 prompt]
     N -- 否 --> O

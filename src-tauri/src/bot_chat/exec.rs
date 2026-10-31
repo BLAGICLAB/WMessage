@@ -15,7 +15,7 @@ pub enum BatchPolicy {
 }
 
 /// 聊天模式批量执行：每张卡调一次 run_task_in_chat（每卡独立新会话，
-/// EXECUTE_SYSTEM_PROMPT + 50 轮工具循环），单卡失败不污染其他卡的执行记录。
+/// EXECUTE_SYSTEM_PROMPT + 最多 200 轮工具循环），单卡失败不污染其他卡的执行记录。
 /// 顺序执行（避免文件写冲突）；一卡失败继续（任一卡失败不阻断后续）。
 /// /stop 语义：外层 stop 只在**卡片之间**判定——每卡内部用自己新建的
 /// StopGuard（新会话 id，/stop 按会话匹配不到它），故 /stop 只阻止下一张卡
