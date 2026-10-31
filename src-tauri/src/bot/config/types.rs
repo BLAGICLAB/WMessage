@@ -197,6 +197,11 @@ pub struct BotConfig {
     /// None = 老配置无此字段 = 未配置任何服务器。结构见 bot::mcp::config。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub mcp_servers: Option<Vec<crate::bot::mcp::config::McpServerConfig>>,
+    /// 目的地白名单（http_request 等联网工具的用户信任域）：精确 host 或
+    /// `*.suffix`。None/空 = 无白名单，全靠按次授权。provider base_url 与
+    /// MCP http 端点天然在信任域内（bot_web::destination 收集），不必在这里重复登记。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub allowed_domains: Option<Vec<String>>,
     /// 厂商级禁用列表（厂商详情页总开关）：名单内厂商的模型行在设置页变淡、
     /// 启用开关禁用，聊天选模型入口过滤。空 = 全部启用；
     /// 老配置缺字段 → 空 Vec（struct 级 #[serde(default)] + 字段级 default）。
@@ -298,6 +303,7 @@ impl Default for BotConfig {
             memory_control: None,       // 未配置 = 注入/主动记忆全开（与 Default 一致）
             memory_tuning: None,        // 未配置 = 参数全默认（U17 前行为）
             mcp_servers: None,          // 未配置 = 无外部 MCP 服务器（老配置零影响）
+            allowed_domains: None,      // 未配置 = 无目的地白名单（白名单外按次授权）
             final_selfcheck_round_gap: None, // 未配置 = 8 默认终稿自检间隔（0 = 关闭）
             guard_claim_keywords: None, // 未配置 = 内置默认触发词表
             selfcheck_model_id: None,   // 未配置 = 自检在主循环内跑（现状）
@@ -410,6 +416,8 @@ pub struct BotConfigView {
     pub bypass_llm_on_pre_step_hit: bool,
     /// 本地文件工具白名单目录（原样透传；空 = 后端用内置默认）
     pub allowed_dirs: Vec<String>,
+    /// 目的地白名单（原样透传；空 = 无白名单，白名单外按次授权）
+    pub allowed_domains: Vec<String>,
     /// Tavily key 是否已存系统凭据存储（key 本体不进 view）
     pub has_tavily_key: bool,
     /// 「Tavily 搜索」开关原样透传（None = 未显式设置，前端按 key 有无显示自动态）

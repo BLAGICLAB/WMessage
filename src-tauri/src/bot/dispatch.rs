@@ -478,11 +478,16 @@ async fn execute_tool_impl(
     trace: &ToolCallTrace,
 ) -> crate::bot::registry::ToolResult {
     let start = std::time::Instant::now();
-    // 0. tool.call 结构化（含 session_id / turn / tool_call_id，供整轮回放）
-    let mut call_kv: Vec<(&str, String)> = vec![
-        ("tool", name.to_string()),
-        ("args_preview", args.chars().take(80).collect::<String>()),
-    ];
+    // 0. tool.call 结构化（含 session_id / turn / tool_call_id，供整轮回放）。
+    // http_request 特例：入参前 80 字符必含完整 URL（含查询串，可夹带数据），
+    // 与该工具自身审计「不记完整 URL」的口径冲突——preview 裁成方法 + host + 路径。
+    let args_preview = if name == "http_request" {
+        crate::bot::tools::preview_http_request_args(args)
+    } else {
+        args.chars().take(80).collect::<String>()
+    };
+    let mut call_kv: Vec<(&str, String)> =
+        vec![("tool", name.to_string()), ("args_preview", args_preview)];
     call_kv.extend(trace_kv(trace, session_id));
     crate::audit::write_event(app, crate::audit::AuditLevel::Info, "tool.call", &call_kv);
     // 0.5  L4 pre_tool 钩子层（本期唯一接线点）：三道闸的入口——规则表、子 agent

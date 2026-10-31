@@ -104,6 +104,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         has_api_key,
         bypass_llm_on_pre_step_hit: cfg.bypass_llm_on_pre_step_hit,
         allowed_dirs: cfg.allowed_dirs,
+        allowed_domains: cfg.allowed_domains.unwrap_or_default(),
         has_tavily_key,
         tavily_enabled: cfg.tavily_enabled,
         has_brave_key,
@@ -139,6 +140,24 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
 /// tool_rules 落盘清洗（纯函数单测直打）：tool 名 trim 后非空、action ∈
 /// {allow, ask, deny}、同 tool 首条保留（评估本就首中即停，存重复无意义）；
 /// 清洗后为空 → None（文件不留空数组）。
+/// 目的地白名单清洗：trim / 去空 / 去重（按归一前字面，与评估侧宽松匹配不冲突——
+/// 重复条目只是噪声）；空表归一 None。条目合法性（可否 parse 成 host）不在写入侧拦：
+/// 编辑到一半的条目报错是噪声，匹配侧对无效条目静默失效。
+pub(crate) fn sanitize_allowed_domains(list: Option<Vec<String>>) -> Option<Vec<String>> {
+    let list = list?;
+    let mut seen = std::collections::HashSet::new();
+    let out: Vec<String> = list
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && seen.insert(s.clone()))
+        .collect();
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 pub(crate) fn sanitize_tool_rules(
     rules: Option<Vec<super::types::ToolRule>>,
 ) -> Option<Vec<super::types::ToolRule>> {
@@ -343,6 +362,8 @@ pub fn bot_set_config(
         .map(crate::bot::params::clamp_verifier_retry_max);
     // tool_rules 清洗——空 tool 名/非法 action/重复 tool 剔除；空表归一 None
     config.tool_rules = sanitize_tool_rules(config.tool_rules.take());
+    // 目的地白名单清洗：trim / 去空 / 去重；空表归一 None（与 tool_rules 同款）
+    config.allowed_domains = sanitize_allowed_domains(config.allowed_domains.take());
     // 前端整体替换写不丢「设置页无编辑入口」的字段。读盘回填必须与写**同锁**
     //（评审 HIGH：无锁 load → 有锁 write 之间 persist_last_run 等并发写会被
     // 本写覆盖——丢更新窗口）；write_bot_config_file 自带加锁不可重入，走 _locked 变体
@@ -370,6 +391,8 @@ pub fn bot_set_config(
         })
         .unwrap_or_default();
     super::io::write_bot_config_file_locked(&crate::db::data_dir(&app), config)?;
+    // 配置一变，按它发出去的会话授权就不能再信（白名单/provider/MCP/授权档都变了）
+    crate::bot_web::invalidate_grants();
     let mut kv: Vec<(&'static str, String)> = vec![
         ("models_openai", n_openai.to_string()),
         ("models_anthropic", n_anthropic.to_string()),
@@ -457,6 +480,8 @@ pub fn bot_set_active_model(app: AppHandle, model_id: String) -> CommandResult<B
         .as_str()
         .to_string();
     io::write_bot_config_file_locked(&crate::db::data_dir(&app), cfg)?;
+    // active 模型切换会换 provider base_url——信任域变了，会话授权随之失效
+    crate::bot_web::invalidate_grants();
     crate::audit::write_event(
         &app,
         crate::audit::AuditLevel::Info,
@@ -495,6 +520,8 @@ pub fn bot_set_perm_mode(app: AppHandle, mode: String) -> CommandResult<BotConfi
     let mut cfg = io::load_config(&app);
     let applied = apply_perm_mode(&mut cfg, &mode);
     io::write_bot_config_file_locked(&crate::db::data_dir(&app), cfg)?;
+    // 授权档变化直接改变目的地判定行为（yolo↔ask↔strict），会话授权不再可信
+    crate::bot_web::invalidate_grants();
     crate::audit::write_event(
         &app,
         crate::audit::AuditLevel::Info,

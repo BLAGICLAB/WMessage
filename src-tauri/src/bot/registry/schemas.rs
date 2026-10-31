@@ -216,6 +216,19 @@ pub const SCHEMA_WEB_SEARCH: &str = r##"{"type":"function","function":{"name":"w
     "timeRange":{"type":"string","enum":["day","week","month","year"],"description":"时间范围，可选：day=24小时内 / week=一周内 / month=一月内 / year=一年内（Tavily/Brave 原生支持；Bing+百度抓取模式不支持并会明确提示）"},
     "site":{"type":"string","description":"限定站点域名，可选，如 github.com（不要带 https:// 前缀）"}
   },"required":["query"]}}}"##;
+
+/// http_request：通用 HTTP 客户端（调外部 API / POST JSON / 带鉴权头）。
+/// 读网页正文仍走 fetch_url——两者分工与边界都在描述里教给模型。
+pub const SCHEMA_HTTP_REQUEST: &str = r##"{"type":"function","function":{"name":"http_request","description":"发一个 HTTP 请求（GET/POST/PUT/PATCH/DELETE/HEAD），返回状态码、响应头（脱敏）与正文（30K 字符切片，offset 续读；超 maxBytes 传输截断）。只允许 http/https 公网地址（环回/私网一律拒）。目的地默认走用户设置页的域名白名单，白名单外的每次都要弹窗问用户，批准仅本会话内有效——优先请求用户已配过的域名，弹窗前先说明为什么需要访问它。鉴权头的值支持引用形式：\"keyring:厂商名\"（该厂商在设置页配置过的 key）或 \"env:环境变量名\"，引用形式下凭据不会出现在任何返回值与日志里。请求头与响应中的凭据一律不回显。读公开网页正文用 fetch_url；调外部 API、POST JSON、带鉴权头才用它。","parameters":{"type":"object","properties":{
+    "url":{"type":"string","description":"目标 URL（http/https 公网地址）"},
+    "method":{"type":"string","enum":["GET","POST","PUT","PATCH","DELETE","HEAD"],"default":"GET","description":"HTTP 方法，默认 GET"},
+    "headers":{"type":"object","description":"请求头（字符串键值对）。鉴权值建议用引用形式：keyring:厂商名 / env:变量名——明文值会留在对话上下文里，能不用就不用"},
+    "body":{"type":"string","description":"请求体（配合 bodyType：text 原样 / json 需合法 JSON / form 须是 JSON 对象，按键值对编码）"},
+    "bodyType":{"type":"string","enum":["text","json","form"],"default":"text","description":"请求体类型"},
+    "timeoutSecs":{"type":"integer","description":"请求超时秒数（默认 30，上限 120）"},
+    "maxBytes":{"type":"integer","description":"响应体传输上限（默认 10MB，上限 50MB；超限即中断）"},
+    "offset":{"type":"integer","description":"正文续读偏移（与 fetch_url 同形；注意每次调用都会重新发请求）"}
+  },"required":["url"]}}}"##;
 pub const SCHEMA_FETCH_URL: &str = r##"{"type":"function","function":{"name":"fetch_url","description":"抓取网页正文（仅 http/https 公网地址；返回纯文本，用于读链接/总结网页内容；长网页带「已截断」提示时用 offset 参数续读）","parameters":{"type":"object","properties":{
     "url":{"type":"string","description":"要抓取的网页地址；示例：返回 403/429 说明站点拦自动化，改抓该页的原始文件或 API 地址；Content-Type 不是网页文本（JSON / PDF）会被拒"},
     "offset":{"type":"integer","description":"字符偏移（可选，默认 0；上一页返回的「已截断」提示里给了 offset 值，用它续读）"}
@@ -338,7 +351,7 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
 /// 内置工具总数（= TOOLS_TABLE 条目数 = SCHEMA_* 常量数）。
 /// 注释与文档一律引用本常量而不另写数字；增删工具时只改这里一处，
 /// `builtin_tool_count_matches_table` 单测负责在数目对不上时红灯。
-pub const BUILTIN_TOOL_COUNT: usize = 65;
+pub const BUILTIN_TOOL_COUNT: usize = 66;
 
 // TOOLS_TABLE（内置工具单源真相：BUILTIN_TOOL_COUNT 个，其中 SUBAGENT_ONLY_TOOLS
 // 那几个仅子 agent 可见，主 agent 少这么多）
@@ -580,6 +593,14 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         claims_patterns: &[],
         max_output_bytes: 65536,
         call: call_fetch_url,
+    },
+    ToolDef {
+        name: "http_request",
+        schema: SCHEMA_HTTP_REQUEST,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 65536,
+        call: call_http_request,
     },
     ToolDef {
         name: "get_current_time",
@@ -1010,6 +1031,7 @@ pub const SUBAGENT_ONLY_TOOLS: &[&str] = &["write_artifact_file", "read_own_card
 pub const RESEARCH_TOOLS: &[&str] = &[
     "web_search",
     "fetch_url",
+    "http_request",
     "list_files",
     "read_text_file",
     "grep_files",
@@ -1033,6 +1055,7 @@ pub const CODER_TOOLS: &[&str] = &[
 pub const GENERAL_TOOLS: &[&str] = &[
     "web_search",
     "fetch_url",
+    "http_request",
     "read_text_file",
     "list_files",
     "grep_files",

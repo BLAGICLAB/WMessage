@@ -689,7 +689,19 @@ pub(crate) async fn tool_fetch_url(
         &format!("fetch_url | url: {}", escape_for_log(&u, 100)),
     );
     match crate::bot_web::fetch_text(&u).await {
-        Ok(text) => ToolResult::ok(slice_fetch_output(&text, offset), Vec::new()),
+        Ok(fetched) => {
+            // 经渲染代理取得 = 目标 URL 发给了第三方（r.jina.ai）——这是隐私
+            // 边界的既知例外，留结构化事件供事后核查（stderr 三路记录只在进程日志）
+            if fetched.via_jina {
+                crate::audit_event!(
+                    app,
+                    crate::audit::AuditLevel::Info,
+                    "web.jina_fallback",
+                    "url" => escape_for_log(&u, 100),
+                );
+            }
+            ToolResult::ok(slice_fetch_output(&fetched.text, offset), Vec::new())
+        }
         Err(e) => ToolResult::error(format!("抓取失败：{e}"), Vec::new()),
     }
 }

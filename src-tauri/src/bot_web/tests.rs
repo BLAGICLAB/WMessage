@@ -531,8 +531,8 @@ fn network_search_and_fetch() {
     match tauri::async_runtime::block_on(fetch_text("https://example.com")) {
         Ok(t) => eprintln!(
             "FETCH OK, {} chars, head: {}",
-            t.chars().count(),
-            t.chars().take(80).collect::<String>()
+            t.text.chars().count(),
+            t.text.chars().take(80).collect::<String>()
         ),
         Err(e) => eprintln!("fetch failed (环境相关): {e}"),
     }

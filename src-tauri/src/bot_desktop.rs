@@ -80,7 +80,14 @@ fn open_url_gate_result(err: &crate::bot_web::UrlGateError) -> ToolResult {
 
 /// 用系统默认浏览器打开网页。URL 准入门与 fetch_text 同一公网闸
 /// （仅 http/https；DNS 解析后拒绝本机/内网/保留地址）。
-pub async fn tool_open_url(app: &AppHandle, args: &str) -> ToolResult {
+/// 后台执行（无人值守）一律拒：窗口弹出来没人看，链接查询串还可能把数据
+/// 带出去且不可见——「给用户看」的动作没有用户在场就没有意义。
+pub async fn tool_open_url(app: &AppHandle, args: &str, interactive: bool) -> ToolResult {
+    if !interactive {
+        return ToolResult::denied(
+            "后台执行不打开浏览器（无人值守时窗口没人看，链接查询串也可能带出数据）；请在用户在场时使用",
+        );
+    }
     let v = crate::bot::parse_args(args);
     let Some(u) = v["url"].as_str().map(|s| s.trim().to_string()) else {
         return ToolResult::denied("open_url 缺少 url 参数");

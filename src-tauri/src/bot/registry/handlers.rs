@@ -217,6 +217,12 @@ pub(super) fn call_fetch_url<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFut
     Box::pin(async move { tool_fetch_url(ctx.app, args).await })
 }
 
+pub(super) fn call_http_request<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move {
+        crate::bot::tools::tool_http_request(ctx.app, args, ctx.interactive, ctx.session_id).await
+    })
+}
+
 pub(super) fn call_lookup_receipt<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     let session_id = ctx.session_id;
     Box::pin(async move { crate::bot::tools::tool_lookup_receipt(ctx.app, args, session_id).await })
@@ -346,7 +352,7 @@ pub(super) fn call_reveal_path<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolF
 }
 
 pub(super) fn call_open_url<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
-    Box::pin(async move { crate::bot_desktop::tool_open_url(ctx.app, args).await })
+    Box::pin(async move { crate::bot_desktop::tool_open_url(ctx.app, args, ctx.interactive).await })
 }
 
 pub(super) fn call_clipboard_write<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {

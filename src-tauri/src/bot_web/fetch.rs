@@ -178,19 +178,21 @@ pub(super) fn status_worth_proxy_retry(status: u16) -> bool {
 /// 「本机到某个站点不通」直接等于「这个页面抓不到」，哪怕换个出口就能拿到。
 /// 隐私边界不变：目标 URL 会发给 r.jina.ai（公网地址本身，低风险），
 /// 且只发到公网代理一处，不做二次转发。
-pub async fn fetch_text(raw_url: &str) -> Result<String, CommandError> {
+pub async fn fetch_text(raw_url: &str) -> Result<FetchedText, CommandError> {
     let (mut plain, why_thin) = match fetch_direct(raw_url).await {
         Ok(text) => (text, "正文过短（多半是 JS 渲染的空壳）".to_string()),
         Err(FetchErr::Rejected(e)) => return Err(e),
         Err(FetchErr::Unreachable(why)) => (String::new(), why),
     };
     // 留痕：回退属基本审计面——采用/未采用/失败三路 stderr 记录。
+    let mut via_jina = false;
     if plain.chars().count() < THIN_BODY_CHARS {
         match fetch_jina_reader(raw_url).await {
             Ok(jina) => {
                 if jina.chars().count() > plain.chars().count() {
                     eprintln!("[bot_web] Jina Reader 回退并采用：{raw_url}");
                     plain = jina;
+                    via_jina = true;
                 } else {
                     eprintln!("[bot_web] Jina Reader 回退未采用（不优于直连）：{raw_url}");
                 }
@@ -205,7 +207,18 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, CommandError> {
             "两条路都没拿到内容：直连{why_thin}；渲染代理回退也没成功（免费公共代理限流/超时时会这样）"
         )));
     }
-    Ok(plain)
+    Ok(FetchedText {
+        text: plain,
+        via_jina,
+    })
+}
+
+/// fetch_text 的产物：正文 + 是否经渲染代理取得。
+/// via_jina 单独上抛是因为目标 URL 会发给 r.jina.ai 第三方——这层是纯函数层
+/// 拿不到 AppHandle 记不了审计，由调用方（工具层）留结构化事件。
+pub struct FetchedText {
+    pub text: String,
+    pub via_jina: bool,
 }
 
 /// 直连抓取：逐跳校验公网地址、钉 IP、手工跟随重定向、HTML→纯文本。

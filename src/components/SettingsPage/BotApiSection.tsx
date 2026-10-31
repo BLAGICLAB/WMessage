@@ -168,6 +168,26 @@ export function BotApiSection({
             白名单内静默放行；白名单外按授权模式处理（见上）。授权弹窗点「始终允许该目录」会自动追加到这里。
           </p>
         </div>
+        {/* 目的地白名单（http_request 等联网工具的用户信任域）：
+        命中静默放行；白名单外弹窗按次授权（批准仅本会话内有效）。
+        模型 API 与 MCP 端点的域名天然在信任域，不必在此登记 */}
+        <div className="space-y-1">
+          <p className="text-xs text-[var(--t5)]">
+            联网工具目的地白名单（一行一个域名，支持 *.example.com）
+          </p>
+          <textarea
+            value={config.allowedDomains}
+            onChange={(e) =>
+              setConfig((c) => ({ ...c, allowedDomains: e.target.value }))
+            }
+            placeholder={"api.example.com\n*.githubusercontent.com\n空 = 无白名单，白名单外每次弹窗授权"}
+            rows={3}
+            className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none resize-y"
+          />
+          <p className="text-xs text-[var(--t6)] leading-snug">
+            只按域名判断（不看内容）：*.example.com 是域名级信任，同域下若有恶意内容仍可经它转发——别把不认识的泛域名加进来。
+          </p>
+        </div>
         {/* 白名单 textarea 等 setConfig 字段靠本卡保存钮落盘 */}
         {renderSaveButton("mt-3 flex justify-end")}
       </div>

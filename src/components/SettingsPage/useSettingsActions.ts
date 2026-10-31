@@ -58,6 +58,8 @@ export function useSettingsActions(params: SettingsActionsParams) {
     bypassLlmOnPreStepHit: true, // F-1 [P0] pre-step 路由外层是否跳过主 LLM；老配置默认 true
     // 本地文件工具白名单目录（textarea 一行一个；空 = 后端内置默认 桌面/下载/文档+绑定文件夹）
     allowedDirs: "",
+    // 目的地白名单（textarea 一行一个 host 或 *.suffix；空 = 无白名单，白名单外按次授权）
+    allowedDomains: "",
     // 幻觉守卫「执行类谎报」触发词表（textarea 一行一个；GuardKeywordsPanel 编辑）
     guardClaimKeywords: "",
     // 内置默认词表：只读参照 + 「恢复默认」取值来源（后端 view 带下来）
@@ -269,6 +271,7 @@ export function useSettingsActions(params: SettingsActionsParams) {
         // 老后端版本（没返 bypass 字段）默认 true，避免意外走 LEGACY 路径
         bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit ?? true,
         allowedDirs: (c.allowedDirs ?? []).join("\n"),
+        allowedDomains: (c.allowedDomains ?? []).join("\n"),
         guardClaimKeywords: (c.guardClaimKeywords ?? []).join("\n"),
         guardClaimKeywordsDefault: c.guardClaimDefaultKeywords ?? [],
         // view 只给 has 标志；key 本体不回填（与 hasApiKey/keyInput 同模式）。

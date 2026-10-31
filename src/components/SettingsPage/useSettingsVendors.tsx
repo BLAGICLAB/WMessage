@@ -242,6 +242,11 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
             .split("\n")
             .map((s) => s.trim())
             .filter((s) => s.length > 0),
+          // 目的地白名单一行一个 host / *.suffix；空数组 = 无白名单（按次授权兜底）
+          allowedDomains: c.allowedDomains
+            .split("\n")
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0),
           // 触发词表全量落盘（删词即失效，所以不能省字段——空数组是
           // 「显式关掉这道触发器」的合法取值，必须能写上去）
           guardClaimKeywords: c.guardClaimKeywords

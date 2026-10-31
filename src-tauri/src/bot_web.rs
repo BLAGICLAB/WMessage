@@ -12,8 +12,10 @@ use crate::error::CommandError;
 use futures_util::StreamExt;
 use std::time::Duration;
 
+mod destination;
 mod fetch;
 mod html;
+mod http;
 mod search;
 
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -128,7 +130,10 @@ pub(crate) fn http_client_pinned(
 /// 有界流式读取响应体：累计超限即中断——
 /// Content-Length 撒谎（声明小/缺省 chunked）时全量读进内存会在超时窗口内收进数百 MB；
 /// 超限立即中断，不进内存。
-async fn read_body_capped(resp: reqwest::Response, max: usize) -> Result<Vec<u8>, String> {
+pub(crate) async fn read_body_capped(
+    resp: reqwest::Response,
+    max: usize,
+) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
@@ -153,8 +158,10 @@ pub use search::web_search_with_config;
 // search.rs 内部的 web_search_with_config 调用，crate 内没有第二个调用方——
 // 但旧路径 `crate::bot_web::web_search` 要原样留住（它是搬走前就有的公开入口），
 // 所以显式压制 unused 警告。
+pub(crate) use destination::invalidate_grants;
 pub(crate) use fetch::check_public_url;
 pub(crate) use fetch::ensure_public_http_url;
+pub(crate) use http::{execute as execute_http, GateCtx, HttpError, RequestSpec, MAX_TIMEOUT_SECS};
 #[allow(unused_imports)]
 pub use search::web_search;
 

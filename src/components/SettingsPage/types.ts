@@ -334,6 +334,7 @@ export type SettingsConfig = {
   vendorKeys: string[];
   bypassLlmOnPreStepHit: boolean;
   allowedDirs: string;
+  allowedDomains: string;
   guardClaimKeywords: string;
   guardClaimKeywordsDefault: string[];
   hasTavilyKey: boolean;

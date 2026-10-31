@@ -166,6 +166,7 @@ fn tools_table_count_matches_constant() {
         "run_python",
         "web_search",
         "fetch_url",
+        "http_request",
         "get_current_time",
         "lookup_receipt",
         "remember_fact",
@@ -246,6 +247,7 @@ fn tools_table_count_matches_constant() {
         "run_python",
         "web_search",
         "fetch_url",
+        "http_request",
         "get_current_time",
         "lookup_receipt",
         "remember_fact",
@@ -386,8 +388,8 @@ fn tools_json_matches_baseline() {
     );
     assert_eq!(
         der_arr.len(),
-        base_arr.len() + 35,
-        "主可见应为 28+3+4+2+1+1+3+1+13+3+2+1+1（末位 +13 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具 + UI 六件套；+3 = 受管服务三工具；+2 = 远程技能安装与搜索两工具；+1 = 凭证召回工具 lookup_receipt；+1 = 计划工具 update_plan）"
+        base_arr.len() + 36,
+        "主可见应为 28+3+4+2+1+1+3+1+13+3+2+1+1+1（末位 +13 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具 + UI 六件套；+3 = 受管服务三工具；+2 = 远程技能安装与搜索两工具；+1 = 凭证召回工具 lookup_receipt；+1 = 计划工具 update_plan；+1 = 专用 HTTP 工具 http_request）"
     );
 }
 
@@ -702,6 +704,7 @@ fn profile_whitelists_match_design_mapping() {
         &[
             "web_search",
             "fetch_url",
+            "http_request",
             "list_files",
             "read_text_file",
             "grep_files",
@@ -709,6 +712,10 @@ fn profile_whitelists_match_design_mapping() {
             "write_artifact_file",
             "read_own_card",
         ]
+    );
+    assert!(
+        !CODER_TOOLS.contains(&"http_request"),
+        "coder 是执行阶段 profile，联网工具不进（三段式分工：联网属 recon）"
     );
     assert!(
         !RESEARCH_TOOLS.contains(&"ast_inspect"),

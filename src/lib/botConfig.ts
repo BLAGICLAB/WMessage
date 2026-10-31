@@ -18,6 +18,8 @@ export interface BotConfigView {
   hasApiKey?: boolean;
   bypassLlmOnPreStepHit?: boolean;
   allowedDirs?: string[];
+  /** 目的地白名单（http_request 等联网工具的信任域）；空 = 无白名单 */
+  allowedDomains?: string[];
   hasTavilyKey?: boolean;
   tavilyEnabled?: boolean | null;
   hasBraveKey?: boolean;
