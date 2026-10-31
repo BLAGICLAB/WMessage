@@ -1091,7 +1091,14 @@ where
             *last_selfcheck_round = Some(round);
             // 长历史 + 配了侧调模型 → 侧调判定，省掉主循环整段历史重付的那一轮；
             // 侧调没给出可判定的答案就回落 in-loop（这道闸不丢）。
-            match side_selfcheck_verdict(deps, msgs, user_intent, &sc_name, &sc_snippet).await {
+            // 用户已停止：不再发起侧调（与终稿自检同闸——侧调一次最多烧 60s，
+            // 期间 UI 停在「收尾中 · 校验答复」，用户看着像停止失灵）。回落 in-loop。
+            let sidecall = if stop.stopped() {
+                None
+            } else {
+                side_selfcheck_verdict(deps, msgs, user_intent, &sc_name, &sc_snippet).await
+            };
+            match sidecall {
                 Some(true) => {
                     // 侧调已裁决：问句不再悬着，主模型后续的 Y/N 是自己的答复
                     *selfcheck_question_pending = false;
