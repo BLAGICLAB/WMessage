@@ -651,23 +651,6 @@ async fn execute_tool_impl(
             None,
             &sink_args_preview(name, args),
         );
-        // 工具调用的阶梯（软告警 / 收尾窗 / 硬停）在模型循环层统一判定
-        // （fuse::gate_call），这里不设预算闸、不设墙钟。
-        // 执行计数仪表：read_own_card 的实时余量与收尾时的预算触达判定读它。
-        // 强制点在模型循环层的阶梯，这里只记数。
-        ctx.used_tool_calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let mut prog_kv: Vec<(&str, String)> = vec![
-            ("subagent_id", ctx.subagent_id.clone()),
-            ("task_id", ctx.task_id.clone().unwrap_or_default()),
-        ];
-        prog_kv.extend(trace_kv(trace, session_id));
-        crate::audit::write_event(
-            app,
-            crate::audit::AuditLevel::Info,
-            "subagent_progress",
-            &prog_kv,
-        );
     }
     let ctx = ToolCtx {
         app,
@@ -713,6 +696,26 @@ async fn execute_tool_impl(
             );
         }
         return crate::bot::registry::ToolResult::denied(msg);
+    }
+    // 执行计数仪表：放在入参 JSON 闸**之后**——被闸拒掉的调用没有执行，
+    // 与熔断侧「计数守的是实际执行」同一口径（core.rs 对 Counted+Denied 做
+    // 回退，这台仪表不回退就得在正确位置计数）。read_own_card 的实时余量
+    // 与收尾时的预算触达判定读它；强制点在模型循环层的阶梯（fuse::
+    // gate_call），这里不设预算闸、不设墙钟。
+    if let Some(ctx) = crate::tool_guard::subagent_ctx(session_id) {
+        ctx.used_tool_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut prog_kv: Vec<(&str, String)> = vec![
+            ("subagent_id", ctx.subagent_id.clone()),
+            ("task_id", ctx.task_id.clone().unwrap_or_default()),
+        ];
+        prog_kv.extend(trace_kv(trace, session_id));
+        crate::audit::write_event(
+            app,
+            crate::audit::AuditLevel::Info,
+            "subagent_progress",
+            &prog_kv,
+        );
     }
     // 工具仍返 (String, Vec<TaskRef>) 元组；From 过渡层默认 Ok。
     //  cleanup 会删除 From impl，工具届时改为显式 ok/warn/error。

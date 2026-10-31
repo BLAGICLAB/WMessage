@@ -84,6 +84,34 @@ fn invalid_args_gate_is_wired_into_execute_tool_impl() {
 }
 
 #[test]
+fn used_tool_calls_counter_sits_after_args_gate() {
+    // 计数守「实际执行」：被入参闸拒掉的调用没有执行，不得占 read_own_card
+    // 的实时余量（与熔断侧 Counted+Denied 回退同一口径）。计数点若被挪回
+    // 闸前，纯函数单测全绿、余量悄悄失真——以源码形状钉住位置关系。
+    let src = include_str!("../dispatch.rs")
+        .split_once("#[cfg(test)]")
+        .expect("dispatch.rs 应有测试模块")
+        .0;
+    let body = src
+        .split_once("async fn execute_tool_impl(")
+        .expect("找不到 execute_tool_impl")
+        .1
+        .split("\n}\n")
+        .next()
+        .expect("execute_tool_impl 应以顶格 } 收尾");
+    let gate = body
+        .find("if let Some(msg) = invalid_args_message(name, args)")
+        .expect("入参 JSON 闸应接在执行路径上");
+    let counter = body
+        .find(".fetch_add(1, std::sync::atomic::Ordering::SeqCst)")
+        .expect("执行计数仪表（used_tool_calls.fetch_add）应留在 execute_tool_impl 内");
+    assert!(
+        gate < counter,
+        "执行计数必须在入参 JSON 闸之后：坏 JSON 被拒的调用没有执行，不该占余量"
+    );
+}
+
+#[test]
 fn skill_variable_breakage_is_rejected_not_silently_nulled() {
     // bot_skills::vars 的已知限制（见该文件同名单测）：占位符紧邻转义引号时
     // 原样插入，结果是非合法 JSON。这里必须拒绝（原先静默 Null 后按缺参跑工具）
