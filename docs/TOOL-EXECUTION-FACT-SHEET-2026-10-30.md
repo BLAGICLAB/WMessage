@@ -37,13 +37,13 @@
 
 | 序 | 闸 | 位置 | 判定 | 失败方向 | 审计事件 |
 |---|---|---|---|---|---|
-| 0 | `tool.call` 记账 | `dispatch.rs:481` | — | — | `tool.call` |
-| 0.5 | L4 `pre_tool` 钩子层 | `dispatch.rs:270` `run_pre_tool_layer` | 外部注册的钩子只读拦截 | **钩子返 Err / panic → fail-open 放行**（只记审计）；只有 `Interrupt` 才拒 | `pre_tool.hook_failed` / `pre_tool.hook_interrupt` |
-| 0.55 | 活动技能 `allowed-tools` | `dispatch.rs:498` | 技能作者自限的工具集合 | 硬拒 | `skill.allowed_tools_violation` |
-| 0.6 | per-tool 规则表 | `dispatch.rs:323` `tool_rule_gate` → `bot_fs::tool_rule_for` | 设置页授权卡：`deny` / `ask` / `allow` | `deny` 硬拒；`ask` 弹确认，被拒则拒 | `tool_rule.hit` |
-| 2 | Skill 步骤钩子 | `dispatch.rs:535` `skill_on_step` | 活动技能的计数 / 熔断 | 熔断 = Denied（不是 Warn） | `skill_on_step_error` |
-| 1.6 | 子 agent 会话白名单 | `dispatch.rs:557` | 判据是 `ctx.tools`（profile ∩ per-onion 的交集） | 硬拒 | `subagent_whitelist_deny` |
-| 3 | 入参 JSON 闸 | dispatch 内 | 参数合法 | 硬拒 | — |
+| 0 | `tool.call` 记账 | `dispatch.rs:538` | — | — | `tool.call` |
+| 0.5 | L4 `pre_tool` 钩子层 | `dispatch.rs:542` `run_pre_tool_layer` | 外部注册的钩子只读拦截 | **钩子返 Err / panic → fail-open 放行**（只记审计）；只有 `Interrupt` 才拒 | `pre_tool.hook_failed` / `pre_tool.hook_interrupt` |
+| 0.55 | 活动技能 `allowed-tools` | `dispatch.rs:570` | 技能作者自限的工具集合 | 硬拒 | `skill.allowed_tools_violation` |
+| 0.6 | per-tool 规则表 | `dispatch.rs:580` `tool_rule_gate` → `bot_fs::tool_rule_for` | 设置页授权卡：`deny` / `ask` / `allow` | `deny` 硬拒；`ask` 弹确认，被拒则拒 | `tool_rule.hit` |
+| 2 | Skill 步骤钩子 | `dispatch.rs:587` `skill_on_step` | 活动技能的计数 / 熔断 | 熔断 = Denied（不是 Warn） | `skill_on_step_error` |
+| 1.6 | 子 agent 会话白名单 | `dispatch.rs:636` | 判据是 `ctx.tools`（profile ∩ per-onion 的交集） | 硬拒 | `subagent_whitelist_deny` |
+| 3 | 入参 JSON 闸 | `dispatch.rs:681` | 参数合法 | 硬拒 | — |
 | 4 | **工具本体的闸** | 各工具自己 | 路径 / 目的地 / 开关 / 确认弹窗 | 拒 | 各工具自记 |
 
 **两条必须记住的结构事实：**
@@ -52,11 +52,12 @@
    本体里各写各的：`bot_fs` 的路径闸、`bot_web` 的公网闸、`py::commands::ensure_py_enabled`
    的 Python 开关、`bot/services` 的端口闸……**这正是口径容易漂移的根源**——新增一个能碰
    同一类资源的工具，旧工具的闸不会自动套用到它身上。
-2. dispatch 层的早退恰好 **7 处**（`dispatch/pre_tool_hook_tests.rs:404-412` 用计数断言锁
-   住）：pre_tool 钩子拒绝 / allowed-tools 集合外 / 规则 deny / 确认被拒 / skill 熔断 /
-   子 agent 白名单外 / arguments 非法 JSON。工具本体的拒绝不在这 7 处计数里。
+2. dispatch 层的早退恰好 **8 处**（`dispatch/pre_tool_hook_tests.rs` 用计数断言锁住）：
+   pre_tool 钩子拒绝 / allowed-tools 集合外 / 规则 deny / **规则 ask 分支对子 agent 直接拒** /
+   确认被拒 / skill 熔断 / 子 agent 白名单外 / arguments 非法 JSON。工具本体的拒绝不在这
+   8 处计数里。
 
-## 三、事实表 A：65 个工具逐条
+## 三、事实表 A：66 个工具逐条
 
 > 工具数 66 = `bot::registry::TOOLS_TABLE` 条目数（`registry/schemas.rs` 头部自述，2026-10-31 增 http_request）；
 > `read_own_card` / `write_artifact_file` 仅子 agent 可见，不进主 agent 清单。
@@ -210,9 +211,9 @@ stdlib）。按「能力面 × 强制缺口」排，真正排在前面的是 `st
 
 ## 七、核查口径与已知空白
 
-- 工具清单以 `bot::registry::TOOLS_TABLE` 为准（65 条）；本文按 13 组归类，组内同名工具
+- 工具清单以 `bot::registry::TOOLS_TABLE` 为准（66 条）；本文按 13 组归类，组内同名工具
   共用一行闸与边界。
-- 闸序以 `bot/dispatch.rs` 的 `execute_tool_impl` 为准；早退点数 7 由
+- 闸序以 `bot/dispatch.rs` 的 `execute_tool_impl` 为准；早退点数 8 由
   `dispatch/pre_tool_hook_tests.rs` 的计数断言锁住。
 - **已对齐（2026-10-31）**：MCP http 端点 host 与 provider base_url 已并入目的地闸的
   统一判定源（`bot_web/destination.rs::user_configured_hosts`）——用户配的出口天然属
