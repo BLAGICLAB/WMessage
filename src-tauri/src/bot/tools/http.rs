@@ -45,22 +45,59 @@ fn sanitize_save_name(raw: &str) -> Result<String, String> {
 
 /// 解析凭据引用前缀：真值在宿主侧解开，模型上下文从头到尾只见条目名。
 /// 读不到明确报错——静默去掉头会让「以为带了鉴权」的请求裸奔。
+///
+/// 支持 `Bearer <引用>` 组合形态：Authorization 头的书写惯例就是
+/// `Bearer <token>`，若只认整值前缀，带 scheme 的引用会被整体跳过原样
+/// 透传（实测 httpbin 回显字面量 `Bearer env:XXX`——key 根本没带上）。
+/// 解析成功后把 scheme 拼回去，模型面与审计面见到的仍是引用原文。
 fn resolve_secret(raw: &str) -> Result<String, String> {
+    let (scheme, core) = match raw.split_once(' ') {
+        // 只认大写 Bearer（HTTP 规范形态）；小写/bear 之类不碰，留给原样透传
+        Some((s, rest)) if s == "Bearer" => (Some(s), rest.trim()),
+        _ => (None, raw),
+    };
+    let resolved = resolve_secret_core(core)?;
+    Ok(match scheme {
+        Some(s) => format!("{s} {resolved}"),
+        None => resolved,
+    })
+}
+
+fn resolve_secret_core(raw: &str) -> Result<String, String> {
     if let Some(vendor) = raw.strip_prefix(KEYRING_PREFIX) {
         let vendor = vendor.trim();
         if vendor.is_empty() {
             return Err(format!("{KEYRING_PREFIX} 后面要跟厂商名"));
         }
-        return crate::bot::config::keyring::read_vendor_key(vendor)
-            .map_err(|e| format!("读厂商 {vendor} 的 key 失败：{e}"));
+        let key = crate::bot::config::keyring::read_vendor_key(vendor)
+            .map_err(|e| format!("读厂商 {vendor} 的 key 失败：{e}"))?;
+        // NoEntry 在 keyring 层走良性空串 fallback（「未配置」语义）——
+        // 落到这里就是「该厂商没配 key」：发一个空鉴权头出去等于裸奔，
+        // 还让服务端把它当成无效凭据，报错让模型改走明文或先去设置页配 key。
+        if key.trim().is_empty() {
+            return Err(format!("厂商 {vendor} 未配置 API Key"));
+        }
+        return Ok(key);
     }
     if let Some(name) = raw.strip_prefix(ENV_PREFIX) {
         let name = name.trim();
         if name.is_empty() {
             return Err(format!("{ENV_PREFIX} 后面要跟环境变量名"));
         }
-        return std::env::var(name)
-            .map_err(|_| format!("环境变量 {name} 不存在（须在启动应用前设好）"));
+        let value = std::env::var(name)
+            .map_err(|_| format!("环境变量 {name} 不存在（须在启动应用前设好）"))?;
+        // 存在但为空与不存在同罪：空鉴权头同样裸奔
+        if value.trim().is_empty() {
+            return Err(format!("环境变量 {name} 存在但值为空"));
+        }
+        return Ok(value);
+    }
+    // 值里带着没被解析的引用子串（如 `token=env:X` 这类拼接形态）——说明
+    // 模型想用引用但写法不在支持范围，原样透传会把引用名当真值发出去。
+    if raw.contains(KEYRING_PREFIX) || raw.contains(ENV_PREFIX) {
+        return Err(format!(
+            "值含未解析的凭据引用：{raw}（引用须独立成值，或写成 \"Bearer {ENV_PREFIX}变量名\"）"
+        ));
     }
     Ok(raw.to_string())
 }
@@ -433,8 +470,38 @@ mod tests {
         );
         let err = resolve_secret("env:WM_TEST_HTTP_NO_SUCH_VAR").unwrap_err();
         assert!(err.contains("不存在"), "读不到要说明：{err}");
+        // Bearer 组合形态：scheme 后的引用要被解析，scheme 拼回去
+        assert_eq!(
+            resolve_secret("Bearer env:WM_TEST_HTTP_SECRET").unwrap(),
+            "Bearer the-real-value",
+            "HTTP 惯例的 Bearer <引用> 必须解析，静默透传 = key 没带上"
+        );
+        // 引用解析失败时错误也要穿透 Bearer 前缀浮出来
+        let err = resolve_secret("Bearer env:WM_TEST_HTTP_NO_SUCH_VAR").unwrap_err();
+        assert!(
+            err.contains("不存在"),
+            "Bearer 包着的引用读不到也要报错：{err}"
+        );
+        // 值里夹着没解析的引用子串：拒发，不把引用名当真值出门
+        let err = resolve_secret("token env:WM_TEST_HTTP_SECRET").unwrap_err();
+        assert!(err.contains("未解析的凭据引用"), "拼接形态要报错：{err}");
         std::env::remove_var("WM_TEST_HTTP_SECRET");
         assert!(resolve_secret("keyring:").is_err(), "空前缀要报错");
+    }
+
+    /// 锚点：keyring 引用指向未配置厂商 / env 存在但值为空——都报错拒发，
+    /// 不静默发空鉴权头（空 header 让请求裸奔还骗服务端返回 401）。
+    #[test]
+    fn empty_credential_resolution_is_an_error() {
+        let err = resolve_secret("keyring:这个厂商不存在XYZ").unwrap_err();
+        assert!(
+            err.contains("未配置"),
+            "keyring NoEntry 是「厂商未配置」要报错，不能发空头：{err}"
+        );
+        std::env::set_var("WM_TEST_HTTP_EMPTY", "   ");
+        let err = resolve_secret("env:WM_TEST_HTTP_EMPTY").unwrap_err();
+        assert!(err.contains("值为空"), "空值等同未配置：{err}");
+        std::env::remove_var("WM_TEST_HTTP_EMPTY");
     }
 
     /// 锚点：body 编码三形态 + 非法 JSON 拒绝。
