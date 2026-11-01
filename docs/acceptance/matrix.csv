@@ -107,7 +107,7 @@
 6-106,6 数据、集成与平台,SQLite,D6,ACC-P-01,"M57,M69,M70,M71,冒烟4/4b",部分,src-tauri/src/db/tests.rs; src/storage.test.ts,L1+L2,未验,WAL 与 busy_timeout、单写者行级增量未专卡
 6-107,6 数据、集成与平台,本地 HTTP API,D6,ACC-P-02,M85,部分,src-tauri/src/api_handlers/mod.rs(18例); src-tauri/src/api_auth.rs(11例),L1+L2,未验,只验了端口采集金丝雀：端点面、token 鉴权、多用户信封、SSE 未专卡
 6-108,6 数据、集成与平台,便携模式,D6,ACC-P-03,"W01,W10,S31",全,(无),L1+L2,未验,—
-6-109,6 数据、集成与平台,交付给用户的产物不带「来自互联网」标记,D6,ACC-P-04,W03,全,src-tauri/src/py/document/download_mark_guard_tests.rs,L1+L2,未验,—
+6-109,6 数据、集成与平台,交付给用户的产物不带「来自互联网」标记,D6,ACC-P-04,W03,部分,src-tauri/src/py/document/download_mark_guard_tests.rs; src-tauri/src/platform/zone_id_guard_tests.rs,L1+L2,未验,复制 / 搬运路径（manage_file 复制移动、桌面清理归档跨卷拷贝、技能导入）2026-11-02 才接收口，实机复验未跑
 6-110,6 数据、集成与平台,本机运行环境监测,D6,ACC-P-05,"S07,S31,S32,M31,M34",部分,src-tauri/src/env_probe.rs(18例); src/components/SettingsPage/EnvPanel.test.tsx,L1+L2,未验,18 Python 包 / 3 Node 包 / 16 运行时三组的缺项与安装命令未全验
 6-111,6 数据、集成与平台,桌面清理,D6,ACC-P-06,—,无,src-tauri/src/migration/rules.rs(8例); ops.rs(13例),L1+L2,未验,无实机卡：CSV 规则表、{year} 占位、move/delete 两动作、10 分钟轮询
 6-112,6 数据、集成与平台,日志体系,D6,ACC-P-07,M87,全,src-tauri/src/audit/tests.rs,L1+L2,未验,—

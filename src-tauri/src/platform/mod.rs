@@ -11,3 +11,6 @@
 
 pub mod copy_file;
 pub mod zone_id;
+
+#[cfg(test)]
+mod zone_id_guard_tests;

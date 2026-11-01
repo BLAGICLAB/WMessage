@@ -528,7 +528,7 @@ pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
     })?;
     // 递归拷贝（技能可能带 scripts/ 等资源）；拷贝失败移除占位目录，
     // 不留半拷贝残骸堵死重试
-    if let Err(e) = copy_dir_all(&src, &dest) {
+    if let Err(e) = copy_dir_all(&src, &dest, &mut |m| crate::bot::audit_log(&app, m)) {
         let _ = std::fs::remove_dir_all(&dest);
         return Err(e.into());
     }
@@ -589,14 +589,19 @@ pub fn skills_delete(app: AppHandle, name: String) -> CommandResult<()> {
 /// 无界递归会在异常构造的深嵌套上耗尽栈
 const COPY_DIR_MAX_DEPTH: usize = 16;
 
-fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
-    copy_dir_all_at(src, dst, 0)
+fn copy_dir_all(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    audit: &mut dyn FnMut(&str),
+) -> Result<(), String> {
+    copy_dir_all_at(src, dst, 0, audit)
 }
 
 fn copy_dir_all_at(
     src: &std::path::Path,
     dst: &std::path::Path,
     depth: usize,
+    audit: &mut dyn FnMut(&str),
 ) -> Result<(), String> {
     if depth >= COPY_DIR_MAX_DEPTH {
         return Err(format!(
@@ -614,9 +619,11 @@ fn copy_dir_all_at(
             continue; // 跳过符号链接，防拷贝越界
         }
         if ty.is_dir() {
-            copy_dir_all_at(&s, &d, depth + 1)?;
+            copy_dir_all_at(&s, &d, depth + 1, audit)?;
         } else if ty.is_file() {
-            std::fs::copy(&s, &d).map_err(|e| e.to_string())?;
+            // 复制走 CopyFileEx，标记流跟着一起复制：技能包可能带用户下载的
+            // 文档/模板，收口掉「来自互联网」标记，别让它进 Office 受保护视图
+            crate::platform::zone_id::copy_file(&s, &d, audit).map_err(|e| e.to_string())?;
         } else {
             // 只放行普通文件：FIFO/socket/device 落 fs::copy 会以读端打开，
             // FIFO 无写端时 read 永久挂起 IPC 线程——fail-closed 拒绝

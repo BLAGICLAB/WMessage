@@ -14,6 +14,11 @@
 //! Zone.Identifier 这一条流，主数据流与其余流不动。
 //!
 //! 非 Windows 平台没有这个概念，整层是 no-op。
+//!
+//! 本模块给出三类原语：
+//! - `strip_zone_identifier` / `strip_zone_identifier_rec`：剥单个文件 / 整棵树
+//! - `copy_file`：复制并按「文档/图片」口径收口副本
+//! - `strip_after_move`：搬运（改名）之后按同一口径收口
 
 use std::path::Path;
 
@@ -107,6 +112,88 @@ pub fn strip_zone_identifier(path: &Path) -> Result<bool, String> {
 #[cfg(not(windows))]
 pub fn strip_zone_identifier(_path: &Path) -> Result<bool, String> {
     Ok(false)
+}
+
+/// 「文档/图片」类扩展名白名单（按扩展名判定，不看内容）。
+///
+/// 覆盖：Office 文档 / 表格 / 演示（doc·xls·ppt 族 + csv）、WPS 与 OpenDocument
+/// （wps·et·dps·odt·ods·odp·odg）、PDF 与电子书（pdf·rtf·epub·mobi·azw）、
+/// 纯文本与网页（txt·htm·html——Word 能直接打开，同样走受保护视图）、图片
+/// （jpg·png·gif·tif·webp·heic·svg·psd 等）。
+///
+/// 口径 = 360 主动防御「修改 文档或图片文件」那条规则的同一把尺：
+/// - 文档与图片带标记的唯一后果，是被 Office / 看图软件当成「外来的文件」，
+///   进受保护视图，在文档缓存里留一份副本、关闭时删掉——杀软随即把那次
+///   「写文档」按风险程序连坐拦掉。剥掉标记不损失实质安全。
+/// - 可执行文件、脚本、压缩包、镜像**不在表内**：那里的标记是实质安全信号
+///   （SmartScreen、杀软、解压继承），app 不擅自替用户改安全策略。
+const DOC_IMAGE_EXTS: &[&str] = &[
+    "doc", "docx", "docm", "dot", "dotx", "dotm", "docb", "xls", "xlsx", "xlsm", "xlt", "xltx",
+    "xlsb", "xlam", "ppt", "pptx", "pptm", "pps", "ppsx", "pot", "potx", "ppam", "csv", "wps",
+    "et", "dps", "odt", "ods", "odp", "odg", "pdf", "rtf", "epub", "mobi", "azw", "azw3", "fb2",
+    "txt", "htm", "html", "jpg", "jpeg", "jpe", "png", "gif", "bmp", "tif", "tiff", "webp", "heic",
+    "heif", "avif", "svg", "ico", "psd", "ai", "eps", "raw", "cr2", "nef", "arw", "dng",
+];
+
+/// 这个路径是不是「文档/图片」类（扩展名口径）。
+pub fn is_doc_or_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .map(|e| DOC_IMAGE_EXTS.contains(&e.as_str()))
+        .unwrap_or(false)
+}
+
+/// 剥一个文件的标记；剥不掉只记审计不中断（标记只影响打开路径，文件本身是好的）。
+fn strip_one(path: &Path, audit: &mut dyn FnMut(&str)) {
+    if let Err(e) = strip_zone_identifier(path) {
+        audit(&format!(
+            "剥「来自互联网」标记失败 | {} | {e}",
+            path.display()
+        ));
+    }
+}
+
+/// 复制文件；文档/图片类顺带剥掉副本的「来自互联网」标记。
+///
+/// 复制走 Win32 `CopyFileEx`，备用数据流跟着一起复制——副本于是带着
+/// 「来自互联网」标记，Office 打开它走受保护视图，杀软再把那次「写文档」
+/// 按风险程序连坐拦掉。收口放在复制之后：副本是 app 新建的文件，它带不带
+/// 标记由 app 决定。
+///
+/// 剥不掉只记审计不中断——标记只影响打开路径，文件本身是好的。
+pub fn copy_file(src: &Path, dst: &Path, audit: &mut dyn FnMut(&str)) -> std::io::Result<u64> {
+    let n = std::fs::copy(src, dst)?;
+    if is_doc_or_image(dst) {
+        strip_one(dst, audit);
+    }
+    Ok(n)
+}
+
+/// 搬运（改名）之后按同一口径收口：文件剥自己，目录递归剥文档/图片类。
+///
+/// 改名是同一个文件（标记原样跟着走），但落点已经换成 app 交付/归档的位置——
+/// 留在那里就等于把「受保护视图 → 写文档缓存 → 杀软连坐」这条链原样搬过去。
+/// 非文档/图片类不动：那里的标记是实质安全信号。
+pub fn strip_after_move(path: &Path, audit: &mut dyn FnMut(&str)) {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if meta.file_type().is_symlink() {
+        return;
+    }
+    if meta.is_dir() {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            strip_after_move(&entry.path(), audit);
+        }
+        return;
+    }
+    if is_doc_or_image(path) {
+        strip_one(path, audit);
+    }
 }
 
 /// 递归剥掉路径下所有文件的「来自互联网」标记，返回剥掉的个数。
@@ -244,6 +331,44 @@ mod tests {
         assert!(msgs.is_empty(), "不该有失败审计：{msgs:?}");
     }
 
+    /// 「文档/图片」判定只看扩展名，大小写不敏感；认不出来的一律 false。
+    #[test]
+    fn doc_image_predicate_by_extension() {
+        assert!(is_doc_or_image(Path::new("报告.DOCX")));
+        assert!(is_doc_or_image(Path::new("/a/b/报告.pdf")));
+        assert!(is_doc_or_image(Path::new("photo.JPEG")));
+        assert!(is_doc_or_image(Path::new("表格.xlsx")));
+        assert!(!is_doc_or_image(Path::new("setup.exe")));
+        assert!(!is_doc_or_image(Path::new("bundle.zip")));
+        assert!(!is_doc_or_image(Path::new("noext")));
+        assert!(!is_doc_or_image(Path::new("archive.tar.gz")));
+    }
+
+    /// 复制原语：内容照搬，剥标记失败才进审计通道。
+    #[test]
+    fn copy_file_copies_bytes() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let src = dir.path().join("a.docx");
+        let dst = dir.path().join("b.docx");
+        std::fs::write(&src, b"PK\x03\x04 payload").expect("写源");
+        let mut msgs: Vec<String> = Vec::new();
+        let n = copy_file(&src, &dst, &mut |m| msgs.push(m.to_string())).expect("复制");
+        assert_eq!(n, 12);
+        assert_eq!(std::fs::read(&dst).unwrap(), b"PK\x03\x04 payload");
+        assert!(msgs.is_empty(), "不该有失败审计：{msgs:?}");
+    }
+
+    /// 搬运收口对普通文件是 no-op（没有标记可剥），不报错。
+    #[test]
+    fn strip_after_move_on_plain_file_is_quiet() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let f = dir.path().join("a.docx");
+        std::fs::write(&f, b"x").expect("写文件");
+        let mut msgs: Vec<String> = Vec::new();
+        strip_after_move(&f, &mut |m| msgs.push(m.to_string()));
+        assert!(msgs.is_empty(), "不该有失败审计：{msgs:?}");
+    }
+
     /// Windows 真逻辑：带标记的文件剥完标记消失，主数据流一个字节没动。
     ///
     /// 这是本次修复的复现测试——修之前标记留在产物上，
@@ -276,6 +401,66 @@ mod tests {
             std::fs::write(&f, b"x").expect("写文件");
             assert_eq!(strip_zone_identifier(&f), Ok(false));
             assert!(!test_has_mark(&f));
+        }
+
+        /// 复现测试：复制会连带复制标记流（CopyFileEx 复制全部备用数据流），
+        /// 文档类副本必须收口掉——不然 Word 打开副本走受保护视图，
+        /// 写文档缓存时杀软按风险程序连坐拦掉。
+        #[test]
+        fn copy_file_strips_mark_on_doc_copy() {
+            let dir = tempfile::tempdir().expect("临时目录");
+            let src = dir.path().join("报告.docx");
+            let dst = dir.path().join("副本.docx");
+            std::fs::write(&src, b"PK\x03\x04 payload").expect("写源");
+            test_mark_file(&src);
+            assert!(test_has_mark(&src), "造标记失败");
+
+            let mut msgs: Vec<String> = Vec::new();
+            copy_file(&src, &dst, &mut |m| msgs.push(m.to_string())).expect("复制");
+            assert!(!test_has_mark(&dst), "副本还带着「来自互联网」标记");
+            assert!(msgs.is_empty(), "不该有失败审计：{msgs:?}");
+            assert_eq!(
+                std::fs::read(&dst).unwrap(),
+                b"PK\x03\x04 payload",
+                "收口不该动主数据流"
+            );
+        }
+
+        /// 非文档类（可执行文件）的副本**保留**标记——那里是实质安全信号，
+        /// app 不擅自替用户改安全策略。
+        #[test]
+        fn copy_file_keeps_mark_on_non_doc_copy() {
+            let dir = tempfile::tempdir().expect("临时目录");
+            let src = dir.path().join("setup.exe");
+            let dst = dir.path().join("setup-copy.exe");
+            std::fs::write(&src, b"MZ").expect("写源");
+            test_mark_file(&src);
+
+            let mut msgs: Vec<String> = Vec::new();
+            copy_file(&src, &dst, &mut |m| msgs.push(m.to_string())).expect("复制");
+            assert!(test_has_mark(&dst), "可执行文件的标记不该被剥");
+            assert!(msgs.is_empty(), "不该有失败审计：{msgs:?}");
+        }
+
+        /// 搬运（改名）之后收口：文档类剥掉标记，内容一个字节不动。
+        #[test]
+        fn strip_after_move_strips_doc_mark() {
+            let dir = tempfile::tempdir().expect("临时目录");
+            let src = dir.path().join("a.docx");
+            let dst = dir.path().join("b.docx");
+            std::fs::write(&src, b"PK\x03\x04 payload").expect("写源");
+            test_mark_file(&src);
+
+            std::fs::rename(&src, &dst).expect("改名");
+            let mut msgs: Vec<String> = Vec::new();
+            strip_after_move(&dst, &mut |m| msgs.push(m.to_string()));
+            assert!(!test_has_mark(&dst), "搬运后标记还在");
+            assert!(msgs.is_empty(), "不该有失败审计：{msgs:?}");
+            assert_eq!(
+                std::fs::read(&dst).unwrap(),
+                b"PK\x03\x04 payload",
+                "收口不该动主数据流"
+            );
         }
     }
 }

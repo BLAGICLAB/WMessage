@@ -292,6 +292,11 @@ pub async fn doc_make_word_revisions(
         input,
     )
     .await?;
+    // 收口放在失败判定**之前**：两个引擎都是「先复制原文再就地修订」，
+    // 失败时那份带标记的副本已经躺在产物目录里了（复制走 CopyFileEx，
+    // 标记流跟着一起复制）——不收口它就带着「来自互联网」标记留在交付目录，
+    // 用户打开它照样走受保护视图、写文档缓存，杀软按风险程序连坐拦掉。
+    strip_download_mark(&app, Path::new(&out), "doc_make_word_revisions");
     if r.exit_code != Some(0) {
         py_audit(
             &app,
@@ -313,7 +318,6 @@ pub async fn doc_make_word_revisions(
             "脚本退出正常但文件未生成（{out}），已拦截本次假成功"
         )));
     }
-    strip_download_mark(&app, Path::new(&out), "doc_make_word_revisions");
     py_audit(
         &app,
         &format!("doc_make_word_revisions | engine: {engine} | src: {src} | out: {out}"),

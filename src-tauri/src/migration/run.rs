@@ -251,7 +251,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                             continue;
                         }
                     };
-                    if let Err(e) = move_entry(&src, &dst) {
+                    if let Err(e) = move_entry(&src, &dst, &mut |m| log_line(app, m)) {
                         // move 未启动 / 明确失败 → clear journal，下次重试不需要修复
                         journal_cleared(&jconn, journal_id).ok();
                         // dst 已存在且 src 仍在 = copy 成功但 remove 失败

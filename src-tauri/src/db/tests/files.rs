@@ -14,7 +14,7 @@ fn copy_dir_recursive_rejects_existing_dst() {
     fs::create_dir_all(&src).unwrap();
     fs::create_dir_all(&dst).unwrap();
     fs::write(src.join("file.txt"), b"x").unwrap();
-    let result = copy_dir_recursive(&src, &dst);
+    let result = copy_dir_recursive(&src, &dst, &mut |_| {});
     assert!(result.is_err(), "dst 已存在应返 Err，实际 {result:?}");
     assert!(dst.exists(), "dst 路径应原样未变（无半截内容）");
     fs::remove_dir_all(&dir).ok();
@@ -34,7 +34,7 @@ fn copy_dir_recursive_rejects_symlink_src() {
     let sym_src = dir.join("sym_src");
     std::os::unix::fs::symlink(&real_src, &sym_src).unwrap();
     let dst = dir.join("dst");
-    let result = copy_dir_recursive(&sym_src, &dst);
+    let result = copy_dir_recursive(&sym_src, &dst, &mut |_| {});
     assert!(result.is_err(), "src 是 symlink 应返 Err，实际 {result:?}");
     fs::remove_dir_all(&dir).ok();
 }

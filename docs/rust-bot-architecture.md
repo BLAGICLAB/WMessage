@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 318 个文件、约 13.7 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 319 个文件、约 13.7 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -513,7 +513,7 @@ src-tauri/src/
 │                        64MB、整包 256MB、条目 5000 条上限（超限报「疑似压缩炸弹」），放大比
 │                        200:1 封顶；已存在的文件不覆盖（跳过并列出）；解包只认源在读白名单、
 │                        落点在写白名单
-├── bot_manage_file.rs (426) 文件复制/移动/删除 manage_file：copy 复制（源保留）/
+├── bot_manage_file.rs (444) 文件复制/移动/删除 manage_file：copy 复制（源保留）/
 │                        move 移动（同卷 rename、跨卷复制后源入回收站）/ delete 删除
 │                        （进系统回收站，删前弹窗确认、60s 无响应默认拒）；源走读
 │                        白名单、目标走写白名单；目标已存在一律不覆盖；目录树里的
@@ -1150,6 +1150,7 @@ flowchart TD
 - `platform/copy_file.rs`
 - `platform/mod.rs`
 - `platform/zone_id.rs`
+- `platform/zone_id_guard_tests.rs`
 
 ### `prompts/`
 - `prompts/consolidate.rs`

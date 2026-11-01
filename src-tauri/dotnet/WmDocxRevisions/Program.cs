@@ -83,6 +83,10 @@ if (canInPlace)
     {
         // 就地失败（文件损坏/结构异常）不硬挂：回退新建模式，保证有产物
         Console.Error.WriteLine($"就地修订失败（回退新建模式）：{ex.Message}");
+        // 上面那份是复制来的原文（带「来自互联网」标记），OpenXML Create 对
+        // 已存在路径直接抛异常——不清掉的话回退新建模式也会失败，
+        // 而它留在产物目录里就是一份带标记的文件
+        try { if (File.Exists(outPath)) File.Delete(outPath); } catch { /* 尽力清理 */ }
     }
 }
 

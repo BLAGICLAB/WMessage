@@ -620,7 +620,7 @@ mod tests {
         std::fs::create_dir_all(src.join("子")).unwrap();
         std::fs::write(src.join("a.txt"), "A").unwrap();
         std::fs::write(src.join("子").join("b.txt"), "B").unwrap();
-        copy_dir_recursive(&src, &dst).unwrap();
+        copy_dir_recursive(&src, &dst, &mut |_| {}).unwrap();
         assert_eq!(std::fs::read_to_string(dst.join("a.txt")).unwrap(), "A");
         assert_eq!(
             std::fs::read_to_string(dst.join("子").join("b.txt")).unwrap(),
@@ -639,7 +639,7 @@ mod tests {
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("a.txt"), "x").unwrap();
         std::fs::create_dir_all(base.join("归档")).unwrap();
-        move_entry(&src, &dst).unwrap();
+        move_entry(&src, &dst, &mut |_| {}).unwrap();
         assert!(dst.join("a.txt").exists());
         assert!(!src.exists());
         std::fs::remove_dir_all(&base).unwrap();
@@ -698,7 +698,7 @@ mod tests {
         std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
         std::fs::write(&src, b"hello world").unwrap();
 
-        move_entry(&src, &dst).unwrap();
+        move_entry(&src, &dst, &mut |_| {}).unwrap();
         assert!(dst.exists(), "目标文件应存在");
         assert!(!src.exists(), "源文件应已被移走");
         assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hello world");
@@ -766,7 +766,7 @@ mod tests {
         let src = base.join("ghost.txt"); // 从未创建
         let dst = base.join("归档").join("ghost.txt");
 
-        let err = move_entry(&src, &dst);
+        let err = move_entry(&src, &dst, &mut |_| {});
         assert!(err.is_err(), "源不存在应返回 Err");
         assert!(!dst.exists(), "目标未被创建");
         std::fs::remove_dir_all(&base).unwrap();
@@ -783,7 +783,7 @@ mod tests {
         std::fs::write(&src, b"x").unwrap();
         std::fs::create_dir_all(&dst_dir).unwrap();
 
-        move_entry(&src, &dst_dir.join("input.pdf")).unwrap();
+        move_entry(&src, &dst_dir.join("input.pdf"), &mut |_| {}).unwrap();
         assert!(dst_dir.join("input.pdf").exists());
         assert!(!src.exists());
         std::fs::remove_dir_all(&base).unwrap();
@@ -798,7 +798,7 @@ mod tests {
         let dst = base.join("dest.bin");
         std::fs::write(&src, vec![1u8, 2, 3, 4, 5]).unwrap();
 
-        move_entry(&src, &dst).unwrap();
+        move_entry(&src, &dst, &mut |_| {}).unwrap();
         assert!(dst.exists());
         assert!(!src.exists());
         assert_eq!(std::fs::read(&dst).unwrap(), vec![1u8, 2, 3, 4, 5]);

@@ -276,7 +276,11 @@ pub(crate) fn claim_dst_name(dir: &Path, file_name: &str) -> Option<PathBuf> {
 /// 3. 顶层建 staging sibling（dst.parent().join(format!("{}.copying", file_name))，
 ///    显式追加不用 with_extension），递归直写 staging，顶层 fs::rename 原子 commit
 /// 4. 失败 fs::remove_dir_all(&staging) 清 staging，dst 未被触碰
-pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), CommandError> {
+pub(crate) fn copy_dir_recursive(
+    src: &Path,
+    dst: &Path,
+    audit: &mut dyn FnMut(&str),
+) -> Result<(), CommandError> {
     // 1. top-level src symlink 检查（read_dir 跟读目标 = move 语义失控）
     if src
         .symlink_metadata()
@@ -320,7 +324,7 @@ pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), CommandEr
         });
     }
     // 4. 递归直写 staging，失败清 staging
-    if let Err(e) = copy_dir_recursive_into(src, &staging) {
+    if let Err(e) = copy_dir_recursive_into(src, &staging, audit) {
         let _ = fs::remove_dir_all(&staging);
         return Err(e);
     }
@@ -334,7 +338,11 @@ pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), CommandEr
 }
 
 /// 内部 helper：直写目标路径（不建子级 staging，完整镜像 src 目录结构）
-fn copy_dir_recursive_into(src: &Path, dst: &Path) -> Result<(), CommandError> {
+fn copy_dir_recursive_into(
+    src: &Path,
+    dst: &Path,
+    audit: &mut dyn FnMut(&str),
+) -> Result<(), CommandError> {
     fs::create_dir_all(dst).map_err(|e| format!("创建目录失败：{e}"))?;
     for entry in fs::read_dir(src).map_err(|e| format!("读取目录失败：{e}"))? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -348,16 +356,24 @@ fn copy_dir_recursive_into(src: &Path, dst: &Path) -> Result<(), CommandError> {
         let s = entry.path();
         let d = dst.join(entry.file_name());
         if ty.is_dir() {
-            copy_dir_recursive_into(&s, &d)?;
+            copy_dir_recursive_into(&s, &d, audit)?;
         } else {
-            fs::copy(&s, &d).map_err(|e| format!("复制文件失败：{e}"))?;
+            // 复制走 CopyFileEx，标记流跟着一起复制：归档目录里的文档会带着
+            // 「来自互联网」标记，用户打开它走受保护视图 → 写文档缓存 →
+            // 杀软按风险程序连坐拦掉。收口在复制之后（副本是 app 新建的文件）
+            crate::platform::zone_id::copy_file(&s, &d, audit)
+                .map_err(|e| format!("复制文件失败：{e}"))?;
         }
     }
     Ok(())
 }
 
 /// 移动文件/目录：先 rename（同卷）；失败（如跨卷 EXDEV）退化 copy+remove
-pub(crate) fn move_entry(src: &Path, dst: &Path) -> Result<(), String> {
+pub(crate) fn move_entry(
+    src: &Path,
+    dst: &Path,
+    audit: &mut dyn FnMut(&str),
+) -> Result<(), String> {
     if let Err(e) = fs::rename(src, dst) {
         // 回退会替代掉 rename 的原始错误，失败原因必须留痕（EXDEV 跨卷属预期，
         // 权限/占用类异常只有这里看得到）；不可收紧为仅 EXDEV 回退——dst 父目录
@@ -369,14 +385,18 @@ pub(crate) fn move_entry(src: &Path, dst: &Path) -> Result<(), String> {
         );
         // 跨卷回退：文件 copy+remove；目录递归拷贝后再删源
         if src.is_dir() {
-            copy_dir_recursive(src, dst).map_err(|e| format!("跨卷复制失败：{e}"))?;
+            copy_dir_recursive(src, dst, audit).map_err(|e| format!("跨卷复制失败：{e}"))?;
             fs::remove_dir_all(src).map_err(|e| format!("跨卷复制成功但删除源目录失败：{e}"))?;
             return Ok(());
         }
-        fs::copy(src, dst).map_err(|e| format!("复制失败：{e}"))?;
+        crate::platform::zone_id::copy_file(src, dst, audit)
+            .map_err(|e| format!("复制失败：{e}"))?;
         fs::remove_file(src).map_err(|e| format!("复制成功但删除源文件失败：{e}"))?;
         return Ok(());
     }
+    // 改名是同一个文件（标记原样跟着走），但落点已经换成归档位置：
+    // 文档类在这儿收口，可执行文件等保留标记（那是实质安全信号）
+    crate::platform::zone_id::strip_after_move(dst, audit);
     Ok(())
 }
 
@@ -650,7 +670,7 @@ mod tests {
         let staging = base.join("dst.copying");
         std::fs::create_dir_all(&staging).unwrap();
         std::fs::write(staging.join("old.txt"), b"stale").unwrap();
-        let err = copy_dir_recursive(&src, &dst).unwrap_err();
+        let err = copy_dir_recursive(&src, &dst, &mut |_| {}).unwrap_err();
         assert!(
             err.to_string().contains("残留"),
             "错误须指向残留暂存目录，got: {err}"

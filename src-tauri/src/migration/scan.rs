@@ -132,7 +132,7 @@ fn run_scan_inner(app: &AppHandle) -> Result<MigrationReport, CommandError> {
                         log_line(app, &line);
                         continue;
                     };
-                    if let Err(e) = move_entry(&path, &dst) {
+                    if let Err(e) = move_entry(&path, &dst, &mut |m| log_line(app, m)) {
                         if path.exists() && dst.exists() {
                             let n = record_move_remove_failure(&path_str);
                             if n >= MAX_MOVE_REMOVE_FAILURES {

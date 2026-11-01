@@ -675,7 +675,7 @@ fn copy_dir_all_copies_nested_files() {
     std::fs::write(src.join("scripts/run.py"), b"p").unwrap();
     std::fs::write(src.join("scripts/sub/a.txt"), b"a").unwrap();
     let dst = tmp.0.join("dst");
-    copy_dir_all(&src, &dst).unwrap();
+    copy_dir_all(&src, &dst, &mut |_| {}).unwrap();
     assert_eq!(std::fs::read(dst.join("SKILL.md")).unwrap(), b"m");
     assert_eq!(std::fs::read(dst.join("scripts/run.py")).unwrap(), b"p");
     assert_eq!(std::fs::read(dst.join("scripts/sub/a.txt")).unwrap(), b"a");
@@ -692,7 +692,7 @@ fn copy_dir_all_rejects_deep_nesting() {
         std::fs::create_dir_all(&cursor).unwrap();
     }
     let dst = tmp.0.join("dst");
-    let err = copy_dir_all(&src, &dst).unwrap_err();
+    let err = copy_dir_all(&src, &dst, &mut |_| {}).unwrap_err();
     assert!(err.contains("层"), "错误须说明深度上限，got: {err}");
 }
 
@@ -713,7 +713,7 @@ fn copy_dir_all_rejects_fifo_without_hanging() {
         "mkfifo 失败"
     );
     let dst = tmp.0.join("dst");
-    let r = copy_dir_all(&src, &dst);
+    let r = copy_dir_all(&src, &dst, &mut |_| {});
     assert!(r.is_err(), "含 FIFO 的目录必须被拒");
     assert!(!dst.join("pipe").exists(), "FIFO 不得出现在目标");
 }

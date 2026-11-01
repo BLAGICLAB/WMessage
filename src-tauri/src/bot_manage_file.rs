@@ -128,11 +128,16 @@ async fn copy_or_move(
     let is_move = action == "move";
     // 文件 IO 走 spawn_blocking：同步 syscall 压在 async worker 上会卡住整条工具链
     let (src2, dst2) = (src.clone(), dst.clone());
+    let app2 = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
+        // 收口副本的「来自互联网」标记：复制会连带复制标记流，副本落在用户
+        // 会双击打开的位置，不收口就会把「受保护视图 → 写文档缓存 → 杀软连坐」
+        // 这条链原样搬过去。剥不掉只记审计，不中断复制。
+        let mut audit = |m: &str| crate::bot::audit_log(&app2, m);
         if is_move {
-            move_impl(&src2, &dst2)
+            move_impl(&src2, &dst2, &mut audit)
         } else {
-            copy_tree(&src2, &dst2)
+            copy_tree(&src2, &dst2, &mut audit)
                 .map(|(entries, bytes)| format!("已复制 {entries} 项 / {bytes} 字节"))
         }
     })
@@ -164,15 +169,18 @@ async fn copy_or_move(
 ///
 /// 返回摘要文本（条目数 / 字节数）。跨卷时源进回收站而非物理删除——
 /// 回收站失败则报半成状态（源仍在原处），不吞错。
-fn move_impl(src: &Path, dst: &Path) -> Result<String, String> {
+fn move_impl(src: &Path, dst: &Path, audit: &mut dyn FnMut(&str)) -> Result<String, String> {
     match std::fs::rename(src, dst) {
         Ok(()) => {
+            // 改名是同一个文件（标记原样跟着走），但落点已经换成 app 交付的位置：
+            // 文档类在这儿收口，可执行文件等保留标记（那是实质安全信号）
+            crate::platform::zone_id::strip_after_move(dst, audit);
             let md = std::fs::symlink_metadata(dst).ok();
             let size = md.as_ref().map(|m| m.len()).unwrap_or(0);
             Ok(format!("已移动（同一卷，直接重命名），大小 {size} 字节"))
         }
         Err(e) if is_cross_device(&e) => {
-            let (entries, bytes) = copy_tree(src, dst)?;
+            let (entries, bytes) = copy_tree(src, dst, audit)?;
             // 源入回收站：失败则报半成状态——目标已在，源还在，不算数据丢失
             if let Err(te) = trash_context().delete(src) {
                 return Err(format!(
@@ -192,10 +200,10 @@ fn move_impl(src: &Path, dst: &Path) -> Result<String, String> {
 ///
 /// 返回 (条目数, 总字节数)。目录自环由调用方的 dest_inside_src 拦掉，
 /// MAX_TREE_ENTRIES 是第二道兜底。
-fn copy_tree(src: &Path, dst: &Path) -> Result<(usize, u64), String> {
+fn copy_tree(src: &Path, dst: &Path, audit: &mut dyn FnMut(&str)) -> Result<(usize, u64), String> {
     let mut entries = 0usize;
     let mut bytes = 0u64;
-    copy_tree_inner(src, dst, &mut entries, &mut bytes)?;
+    copy_tree_inner(src, dst, &mut entries, &mut bytes, audit)?;
     Ok((entries, bytes))
 }
 
@@ -204,6 +212,7 @@ fn copy_tree_inner(
     dst: &Path,
     entries: &mut usize,
     bytes: &mut u64,
+    audit: &mut dyn FnMut(&str),
 ) -> Result<(), String> {
     if *entries >= MAX_TREE_ENTRIES {
         return Err(format!("复制条目数超过上限 {MAX_TREE_ENTRIES}，已中止"));
@@ -218,7 +227,13 @@ fn copy_tree_inner(
         let rd = std::fs::read_dir(src).map_err(|e| format!("读取目录失败：{e}"))?;
         for entry in rd {
             let entry = entry.map_err(|e| format!("读取目录项失败：{e}"))?;
-            copy_tree_inner(&entry.path(), &dst.join(entry.file_name()), entries, bytes)?;
+            copy_tree_inner(
+                &entry.path(),
+                &dst.join(entry.file_name()),
+                entries,
+                bytes,
+                audit,
+            )?;
             if *bytes > MAX_TREE_BYTES {
                 return Err(format!("复制总字节超过上限 {MAX_TREE_BYTES}，已中止"));
             }
@@ -227,7 +242,10 @@ fn copy_tree_inner(
         let _ = std::fs::set_permissions(dst, md.permissions());
         *entries += 1;
     } else {
-        let n = std::fs::copy(src, dst).map_err(|e| format!("复制失败：{e}"))?;
+        // 复制走 CopyFileEx，标记流跟着一起复制：副本落在用户会双击打开的位置，
+        // 文档类必须收口（否则 Word 走受保护视图写文档缓存，杀软按风险程序连坐拦掉）
+        let n = crate::platform::zone_id::copy_file(src, dst, audit)
+            .map_err(|e| format!("复制失败：{e}"))?;
         *bytes += n;
         *entries += 1;
     }
@@ -360,7 +378,7 @@ mod tests {
         std::fs::write(src.join("a.txt"), "A").unwrap();
         std::fs::write(src.join("sub/b.txt"), "B").unwrap();
         let dst = root.join("dst");
-        let (entries, bytes) = copy_tree(&src, &dst).unwrap();
+        let (entries, bytes) = copy_tree(&src, &dst, &mut |_| {}).unwrap();
         assert_eq!(entries, 4, "src 目录 + sub 目录 + 两个文件");
         assert_eq!(bytes, 2);
         assert_eq!(std::fs::read_to_string(dst.join("a.txt")).unwrap(), "A");
@@ -379,7 +397,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, src.join("link.txt")).unwrap();
         let dst = root.join("dst");
-        let (entries, _) = copy_tree(&src, &dst).unwrap();
+        let (entries, _) = copy_tree(&src, &dst, &mut |_| {}).unwrap();
         assert!(!dst.join("link.txt").exists(), "软链不得被复制");
         assert!(dst.join("real.txt").exists());
         assert!(entries <= 2, "软链不计入条目");
