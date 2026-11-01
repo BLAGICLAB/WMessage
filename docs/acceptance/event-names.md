@@ -245,6 +245,8 @@
 - `trace.retired`
 - `trace.span_overflow`
 - `trace.start`
+- `web.deepseek_fetch_failed`
+- `web.deepseek_fetch_used`
 - `web.jina_fallback`
 - `ui_automation_toggle`
 - `user.correction`

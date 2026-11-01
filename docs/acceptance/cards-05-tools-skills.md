@@ -409,3 +409,28 @@
 - **证据**：弹窗截图（含剩余时长）+ bot.log 的 `bot.http_request` 行 + saveAs 文件 ls 输出 + run_python 网络报错截图
 - **失败处置**：先用 `cargo test --lib bot_web::destination py::seatbelt` 分层——自动档红 = 代码问题；自动档绿而实机不符 = 配置/环境问题（白名单拼写、python 未装）
 - **缺口补验**：白名单弹窗在场的视觉形态、会话授权跨重启行为、saveAs 慢网 300s 上限未验
+
+### ACC-P-12 · DeepSeek 搜索引擎接入
+
+- **SPEC**：6-117
+- **层级**：L1+L2（自动档 `src-tauri/src/bot_web/tests.rs`、`src/components/SettingsPage.test.tsx`）
+- **前置**：应用已启动；机器人总开关已开；已配可用模型；已申请 DeepSeek 平台 API key（platform.deepseek.com）；本机可出网
+- **步骤**：
+  1. 【自动】`cd src-tauri && cargo test --lib bot_web` 全绿——路由互斥（DeepSeek/Tavily/Brave 单开/多开/缺 key）+ query 映射（site/after:/count）+ 结果解析 + 抓取模式决策。
+  2. 设置页「MCP 服务」分区：填 DeepSeek API Key 点「保存配置」→ 开启「DeepSeek 搜索」→ 让机器人「搜一下最近的 Rust 新闻」→ 结果带 `[DeepSeek]` 标签，摘要行尾带（发布：YYYY-MM-DD）。
+  3. 时间过滤：让机器人搜「最近一周的 …」（模型应传 timeRange=week）→ 结果落在时间窗内。
+  4. 站点限定：让机器人限定 github.com 搜 → 结果全部来自该域。
+  5. 多开互斥：再开启「Tavily 搜索」→ web_search 明确报错「DeepSeek 与 Tavily 搜索不能同时开启」；设置页同名红字警告提前可见；关掉一个恢复。
+  6. 计费对账：记 DeepSeek 平台余额，跑 5 次搜索后再看 → 扣费 ≈ 5×0.005 元；断网跑一次（失败请求）→ 不扣费。
+  7. 抓取开关：开启「DeepSeek 抓取」→ 让机器人 fetch_url 抓一个直连拿不到正文的 JS 渲染页 → 返回整页 Markdown；bot.log 出现 `web.deepseek_fetch_used`。
+  8. 抓取失败回退：抓一个 DeepSeek 拿不到的 URL → 自动回退直连+Jina 原链路，bot.log 有 `web.deepseek_fetch_failed`；关闭开关后 fetch_url 行为与改动前完全一致。
+  9. 缺 key 链路：开启「DeepSeek 搜索」但不填 key → web_search 报「DeepSeek 搜索已开启，但设置页还没填 DeepSeek API Key」；只开「DeepSeek 抓取」不填 key → fetch_url 照常走原链路（不报错不阻断）。
+- **判据**：
+  1. 【可核对】步骤 2/3/4 的行为与 `bot_web/search.rs` 的 `deepseek_query_and_time` / `parse_deepseek_results` / `format_deepseek_results` 纯函数一致（锚点测试锁死）。
+  2. 【可核对】步骤 5：`resolve_search_route` 多开报 Conflict（携带引擎名列表），单开缺 key 报 Missing*；前端 MCP 卡同名警告同源。
+  3. 【可审计】步骤 6：Search/Fetch 按「成功请求」计费，失败/空结果/超时不扣费；余额变动与成功调用次数一致。
+  4. 【可核对】步骤 7/8：`fetch_text` 的 DeepSeek 优先路径（`deepseek_fetch_mode` 严格手动：Some(true)+key 才启用）与失败回退（`deepseek: Some(Err)` 上抛给工具层记审计）。
+  5. 【可审计】走第三方时审计事件 `web.deepseek_fetch_used` / `web.deepseek_fetch_failed`（已收录 event-names.md）。
+- **证据**：搜索结果截图（含日期行）+ 平台计费页余额截图 + bot.log 的 deepseek_fetch_used/failed 行 + 设置页开关状态截图
+- **失败处置**：先 `cargo test --lib bot_web` 分层——自动档红 = 代码问题；自动档绿而实机不符 = key/网络/余额问题（401/402/429 错误文案可直接定位）
+- **缺口补验**：中文搜索质量横向对比（vs Tavily/Brave）、query 128 字符超限时模型的自纠行为未验
