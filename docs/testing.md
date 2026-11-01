@@ -77,12 +77,15 @@ bash scripts/realmachine/smoke.sh        # 实机冒烟（macOS）：启动/静�
 ## 一致性对拍（tests-audit/，已在 test-all.sh 门禁内）
 
 源码文本断言式检查（不跑业务代码，读源码断言结构/协议），`scripts/test-all.sh` 第 3 步会跑，
-pre-push 自动触发。前六个是 pytest 用例，末一个是独立守卫脚本，两种形态分开跑：
+pre-push 自动触发。前七个是 pytest 用例，末一个是独立守卫脚本，两种形态分开跑：
 
 ```bash
 python3 -m pytest tests-audit/audit_error_codes.py tests-audit/audit_module_map.py \
                   tests-audit/audit_tauri_bridge.py tests-audit/audit_doc_claims.py \
-                  tests-audit/audit_bot_namespace.py tests-audit/audit_file_size.py -q   # pytest 用例：必须逐个点名
+                  tests-audit/audit_bot_namespace.py tests-audit/audit_file_size.py \
+                  tests-audit/audit_constants_single_source.py \
+                  tests-audit/audit_acceptance_matrix.py \
+                  tests-audit/audit_sop_baseline.py -q   # pytest 用例：必须逐个点名
 python3 tests-audit/audit_no_eval.py                     # 独立守卫脚本：看退出码
 ```
 
@@ -103,8 +106,25 @@ python3 tests-audit/audit_no_eval.py                     # 独立守卫脚本：
   与 `docs/realmachine-rerun-2026-10-22.md` 里引用的每个 `a.b` 形事件名都必须在源码里真的
   存在）。卡片与代码分家时，执行者在机器上 grep 不到那一行，只能靠猜是「应用坏了」还是
   「文档过期」——附录 D-3 就是这么被实机否证的。中文期望文案不在这道闸里：它们多是
-  `format!` 拼出来的运行时文本，整句比对会得到一堆假失败
+  `format!` 拼出来的运行时文本，整句比对会得到一堆假失败。**验收方案的新卡集
+  （`docs/acceptance/cards-*.md`）按 glob 纳入这道闸**，新增卡文件自动进对拍范围
+- `audit_acceptance_matrix.py`：**验收方案 ↔ SPEC ↔ 卡片三方对拍**（`docs/ACCEPTANCE-PLAN-2026-10-30.md`）。
+  查五件事：① 矩阵的功能 ID 与 SPEC「功能规格」节解析出的条目**逐条相等**（只比数量会漏掉错位）；
+  ② 每条功能都有卡；③ 卡号全局唯一；④ 卡里标的 SPEC 编号与矩阵该行一致（防张冠李戴）；
+  ⑤ 卡里引用的审计事件名真实存在（复用 `audit_doc_claims.py` 的扫描器，事件名规则单源）。
+  改 SPEC 功能条目时，矩阵与卡要同步改——否则这道闸当场报
 - `audit_no_eval.py`：前端禁动态求值静态守卫（CSP 配套）
+- `audit_sop_baseline.py`：**审计 SOP 的真值表对拍**（`docs/agent-audit-sop-zcode.md` ↔ 代码）。
+  查四件事：① `bot/constants.rs` 的每个 `pub const` 都必须在 SOP 的常量表里，
+  且值表达式一致（漏 = 审计者不知道这个限额；多 = SOP 写了不存在的常量，
+  审计者会去找一个不存在的约束）；② SOP 里的结构计数（工具总数 66 / 调度早退点 8 /
+  子 agent profile 档数 / 内置 onion 档数）与代码一致；③ 早退点数与仓库自己的
+  计数断言（`dispatch/pre_tool_hook_tests.rs`）一致——两边都从同一处读，不各说各话；
+  ④ SOP 引用的审计事件名在源码里真存在。
+  **这道闸的理由**：审计 SOP 里那张「定稿值」表一旦过期，审计就会对着**不存在的规格**
+  找问题——旧版 SOP 写着「三档 turn 预算 60/100/250 + 墙钟 3600s」，而那套模型
+  2026-10-28 已整套撤销，于是 12 条「缺失项」全是假发现。SOP 自己不能过期，
+  这是它唯一的长期有效性来源
 - `audit_bot_namespace.py`：bot 族命名空间守卫（族外不得直接摸 `crate::bot_*::`
   深层路径，跨族引用必须走 `crate::bot::` 门面；族内互引豁免——豁免的边界是
   「文件在族内」不是「路径在族内」）。同一条目只留一条合法路径，新代码不必猜

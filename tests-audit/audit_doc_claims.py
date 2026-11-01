@@ -4,7 +4,7 @@
 - 真相源：`src-tauri/src/**/*.rs` + `src/**/*.{ts,tsx}`
 - 被查文档：`docs/realmachine-regression-test.md`、`docs/realmachine-rerun-2026-10-22.md`、
   `docs/realmachine-mutation-test-2026-10-23.md`、`docs/realmachine-mutation-test-2026-10-24.md`、
-  `docs/realmachine-smoke-test-2026-10-25.md`
+  `docs/realmachine-smoke-test-2026-10-25.md`、`docs/agent-audit-sop-zcode.md`（审计 SOP）
 
 **为什么要有这道闸**：实机卡片的判据大半落在「审计里出现哪条事件」上。
 卡片写的事件名一旦和代码分家（改名、删除、压根没写过），执行者在机器上
@@ -26,12 +26,18 @@ import re
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+# 验收方案新起的卡集：glob 收进去，新增卡文件自动进对拍范围（漏加 = 事件名分家不被拦）
+ACCEPTANCE_DOCS = sorted((ROOT / "docs/acceptance").glob("cards-*.md"))
 DOCS = [
     ROOT / "docs/realmachine-regression-test.md",
     ROOT / "docs/realmachine-rerun-2026-10-22.md",
     ROOT / "docs/realmachine-mutation-test-2026-10-23.md",
     ROOT / "docs/realmachine-mutation-test-2026-10-24.md",
     ROOT / "docs/realmachine-smoke-test-2026-10-25.md",
+    ROOT / "docs/realmachine-smoke-test-2026-10-29.md",
+    ROOT / "docs/ACCEPTANCE-PLAN-2026-10-30.md",
+    ROOT / "docs/agent-audit-sop-zcode.md",
+    *ACCEPTANCE_DOCS,
 ]
 SRC_DIRS = [ROOT / "src-tauri/src", ROOT / "src"]
 
@@ -57,6 +63,7 @@ FILE_EXTS = (
 # 逐条写明理由：这些 token 形似事件名，实则不是事件
 NOT_EVENTS = {
     "http.server": "Python 标准库模块名（python -m http.server）",
+    "urllib.request": "Python 标准库模块名（run_python 联网探测示例里的 import）",
     "meta.rollback": "技能 frontmatter 的字段名，不是审计事件",
     "subagent.max_wall_secs": "已退役的参数表键（墙钟整套取消），只在历史实机方案里出现",
     "loop.tool_window_trigger_chars": "已删的参数表只读行（随参数卡退役），只在历史实机方案里出现",
