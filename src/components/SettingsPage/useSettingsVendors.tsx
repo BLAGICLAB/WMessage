@@ -26,6 +26,7 @@ export type SettingsVendorsParams = {
   configBusy: boolean;
   configSaved: boolean;
   confirm: (messageOrOptions: string | ConfirmOptions) => Promise<boolean>;
+  deepseekKeyInput: string;
   loadConfig: () => Promise<void>;
   loadParamViews: () => Promise<void>;
   paramNumber: (key: string, raw: string) => number | null;
@@ -35,6 +36,7 @@ export type SettingsVendorsParams = {
   setConfig: Dispatch<SetStateAction<SettingsConfig>>;
   setConfigBusy: Dispatch<SetStateAction<boolean>>;
   setConfigSaved: Dispatch<SetStateAction<boolean>>;
+  setDeepseekKeyInput: Dispatch<SetStateAction<string>>;
   setTavilyKeyInput: Dispatch<SetStateAction<string>>;
   tavilyKeyInput: string;
 };
@@ -46,6 +48,7 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
     configBusy,
     configSaved,
     confirm,
+    deepseekKeyInput,
     loadConfig,
     loadParamViews,
     paramNumber,
@@ -55,6 +58,7 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
     setConfig,
     setConfigBusy,
     setConfigSaved,
+    setDeepseekKeyInput,
     setTavilyKeyInput,
     tavilyKeyInput,
   } = params;
@@ -262,6 +266,11 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
           braveKey: null,
           // 开关显式落盘：开 = Brave，关 = 不走 Brave（与 Tavily 互斥，双开后端报错）
           braveEnabled: c.braveEnabled,
+          deepseekKey: null,
+          // 开关显式落盘：开 = DeepSeek，关 = 不走 DeepSeek（与 Tavily/Brave 互斥，多开后端报错）
+          deepseekEnabled: c.deepseekEnabled,
+          // 「DeepSeek 抓取」手动开关：显式落盘（开 = fetch_url 优先走 DeepSeek Fetch）
+          deepseekFetchEnabled: c.deepseekFetchEnabled,
           // 空 = 用内置默认；非法输入按未配置处理（后端 resolve_timeout 硬钳到上限）
           pythonTimeoutSecs: paramNumber(
             "tools.python_timeout_secs",
@@ -294,15 +303,17 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
           keyInput.trim() && activeVendor
             ? { vendor: activeVendor, key: keyInput.trim() }
             : null,
-        // Tavily/Brave key 同主 key 模式——非空才覆盖写入系统凭据存储，
-        // null = 不动已存 key（开关切换走 toggleTavily/toggleBrave → saveConfig，
-        // 此时输入框为空 → keyring 不受任何影响）
+        // Tavily/Brave/DeepSeek key 同主 key 模式——非空才覆盖写入系统凭据存储，
+        // null = 不动已存 key（开关切换走 toggleTavily/toggleBrave/toggleDeepseek →
+        // saveConfig，此时输入框为空 → keyring 不受任何影响）
         tavilyKey: tavilyKeyInput.trim() ? tavilyKeyInput.trim() : null,
         braveKey: braveKeyInput.trim() ? braveKeyInput.trim() : null,
+        deepseekKey: deepseekKeyInput.trim() ? deepseekKeyInput.trim() : null,
       });
       setKeyInput("");
       setTavilyKeyInput("");
       setBraveKeyInput("");
+      setDeepseekKeyInput("");
       // skipReload=true 用于点档即时落盘场景：末尾 loadConfig 会拿 mock/磁盘上的旧值覆盖刚点的字段
       if (!opts?.skipReload) {
         await loadConfig();

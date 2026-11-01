@@ -90,6 +90,7 @@ export function SettingsPage({
     clearTraces,
     config,
     configBusy,
+    deepseekKeyInput,
     configSaved,
     deleteNonSelfBusy,
     deleteNonSelfDone,
@@ -116,6 +117,7 @@ export function SettingsPage({
     setConfig,
     setConfigBusy,
     setConfigSaved,
+    setDeepseekKeyInput,
     setTavilyKeyInput,
     setTraceRetainDays,
     tavilyKeyInput,
@@ -193,6 +195,7 @@ export function SettingsPage({
     configBusy,
     configSaved,
     confirm,
+    deepseekKeyInput,
     loadConfig,
     loadParamViews,
     paramNumber,
@@ -202,6 +205,7 @@ export function SettingsPage({
     setConfig,
     setConfigBusy,
     setConfigSaved,
+    setDeepseekKeyInput,
     setTavilyKeyInput,
     tavilyKeyInput,
   });
@@ -233,6 +237,8 @@ export function SettingsPage({
     toggle,
     toggleAutostart,
     toggleBrave,
+    toggleDeepseek,
+    toggleDeepseekFetch,
     toggleTavily,
   } = useSettingsOps({
     activeVendor,
@@ -519,6 +525,10 @@ export function SettingsPage({
                 toggleBrave={toggleBrave}
                 braveKeyInput={braveKeyInput}
                 setBraveKeyInput={setBraveKeyInput}
+                toggleDeepseek={toggleDeepseek}
+                toggleDeepseekFetch={toggleDeepseekFetch}
+                deepseekKeyInput={deepseekKeyInput}
+                setDeepseekKeyInput={setDeepseekKeyInput}
                 renderSaveButton={renderSaveButton}
               />
             </section>

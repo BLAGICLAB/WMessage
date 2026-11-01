@@ -84,6 +84,19 @@ export function useSettingsOps(params: SettingsOpsParams) {
     setConfig(next);
     await saveConfig(next);
   };
+  const toggleDeepseek = async () => {
+    const next = { ...config, deepseekEnabled: !config.deepseekEnabled };
+    setConfig(next);
+    await saveConfig(next);
+  };
+  const toggleDeepseekFetch = async () => {
+    const next = {
+      ...config,
+      deepseekFetchEnabled: !config.deepseekFetchEnabled,
+    };
+    setConfig(next);
+    await saveConfig(next);
+  };
   const setPermMode = async (mode: "strict" | "ask" | "auto" | "yolo") => {
     if (configBusy || config.permMode === mode) return;
     const next = { ...config, permMode: mode };
@@ -346,6 +359,8 @@ export function useSettingsOps(params: SettingsOpsParams) {
     toggle,
     toggleAutostart,
     toggleBrave,
+    toggleDeepseek,
+    toggleDeepseekFetch,
     toggleTavily,
   };
 }

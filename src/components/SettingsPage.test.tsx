@@ -665,6 +665,206 @@ describe("SettingsPage", () => {
     });
   });
 
+  it("DeepSeek 搜索开关：点击 → bot_set_config 持久化 deepseekEnabled；key 在 keyring 不动", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_set_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "https://api.deepseek.com/v1",
+          model: "deepseek-v4-flash",
+          hasApiKey: true,
+          bypassLlmOnPreStepHit: true,
+          allowedDirs: [],
+          hasDeepseekKey: true,
+          deepseekEnabled: false, // 显式关闭：配了 key 也应走双引擎
+          deepseekFetchEnabled: false,
+          pythonTimeoutSecs: null,
+        };
+      if (cmd === "bot_set_config") return null;
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
+        };
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "MCP 服务" }));
+    const title = await screen.findByText("DeepSeek 搜索");
+    const row = title.closest("div")?.parentElement;
+    const toggle = row?.querySelector("button");
+    expect(toggle).not.toBeNull();
+    if (!toggle) return;
+    expect(toggle.textContent).toMatch(/已关闭/);
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          deepseekKey: null,
+          config: expect.objectContaining({
+            deepseekEnabled: true,
+            deepseekKey: null,
+            deepseekFetchEnabled: false,
+          }),
+        }),
+      );
+    });
+  });
+
+  it("DeepSeek 搜索开关：开启但没填 key → 显示缺 key 提示", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "",
+          model: "",
+          hasApiKey: false,
+          bypassLlmOnPreStepHit: true,
+          allowedDirs: [],
+          hasDeepseekKey: false,
+          deepseekEnabled: true, // 开了但没 key
+          deepseekFetchEnabled: false,
+          pythonTimeoutSecs: null,
+        };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
+        };
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "MCP 服务" }));
+    expect(await screen.findByText("DeepSeek 搜索")).not.toBeNull();
+    expect(
+      await screen.findByText(/已开启但未填 key：web_search 会报错提示/),
+    ).not.toBeNull();
+  });
+
+  it("DeepSeek 抓取开关：开启但缺 key → 提示走原链路；点关 → 持久化 deepseekFetchEnabled=false", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_set_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "",
+          model: "",
+          hasApiKey: false,
+          bypassLlmOnPreStepHit: true,
+          allowedDirs: [],
+          hasDeepseekKey: false, // 抓取开着但 key 没配
+          deepseekEnabled: false,
+          deepseekFetchEnabled: true, // 初始就开（loadConfig 重读也是开，避开重载竞态）
+          pythonTimeoutSecs: null,
+        };
+      if (cmd === "bot_set_config") return null;
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
+        };
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "MCP 服务" }));
+    // 缺 key 的抓取警告（说明走原链路 + 指回搜索 key 输入框）
+    expect(
+      await screen.findByText(/已开启但未配置 DeepSeek API Key：fetch_url/),
+    ).not.toBeNull();
+    // 点关开关：持久化 deepseekFetchEnabled=false；config 里 deepseekKey 固定 null
+    const title = await screen.findByText("DeepSeek 抓取");
+    const row = title.closest("div")?.parentElement;
+    const toggle = row?.querySelector("button");
+    expect(toggle).not.toBeNull();
+    if (!toggle) return;
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          config: expect.objectContaining({
+            deepseekFetchEnabled: false,
+            deepseekKey: null,
+          }),
+        }),
+      );
+    });
+  });
+
+  it("搜索引擎多开冲突：DeepSeek+Tavily+Brave 同开 → 列名警告", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "",
+          model: "",
+          hasApiKey: false,
+          bypassLlmOnPreStepHit: true,
+          allowedDirs: [],
+          hasTavilyKey: true,
+          tavilyEnabled: true,
+          hasBraveKey: true,
+          braveEnabled: true,
+          hasDeepseekKey: true,
+          deepseekEnabled: true,
+          deepseekFetchEnabled: false,
+          pythonTimeoutSecs: null,
+        };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
+        };
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "MCP 服务" }));
+    // 三个引擎同开 → 警告列出全部名字（与后端 Conflict 报错同源）
+    expect(
+      await screen.findByText(/DeepSeek、Tavily、Brave 只能开启一个/),
+    ).not.toBeNull();
+  });
+
   it("Tavily 开关：开启但没填 key → 显示缺 key 提示（不静默走百度）", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_enabled") return true;

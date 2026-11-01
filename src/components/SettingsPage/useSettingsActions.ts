@@ -73,6 +73,12 @@ export function useSettingsActions(params: SettingsActionsParams) {
     hasBraveKey: false,
     // 「Brave 搜索」开关：开 = web_search 走 Brave；与 Tavily 互斥，双开报错
     braveEnabled: false,
+    // DeepSeek 搜索/抓取 key 是否已存系统凭据存储（同 hasTavilyKey；搜索与抓取共用一把）
+    hasDeepseekKey: false,
+    // 「DeepSeek 搜索」开关：开 = web_search 走 DeepSeek；与 Tavily/Brave 互斥，多开报错
+    deepseekEnabled: false,
+    // 「DeepSeek 抓取」开关：开 = fetch_url 优先走 DeepSeek Fetch（手动，默认关）
+    deepseekFetchEnabled: false,
     // run_python 默认超时秒数（空 = 120s 默认；模型 timeoutSecs 参数优先；硬钳上限见后端参数表）
     pythonTimeoutSecs: "",
     // 任务卡归档天数（数据管理卡）：完成满 N 天自动归档；后端 migration 兜底归档同源
@@ -155,6 +161,7 @@ export function useSettingsActions(params: SettingsActionsParams) {
   };
   const [tavilyKeyInput, setTavilyKeyInput] = useState("");
   const [braveKeyInput, setBraveKeyInput] = useState("");
+  const [deepseekKeyInput, setDeepseekKeyInput] = useState("");
   const [configBusy, setConfigBusy] = useState(false);
   const [configSaved, setConfigSaved] = useState(false);
   const [pyEnabled, setPyEnabled] = useState(false);
@@ -280,6 +287,10 @@ export function useSettingsActions(params: SettingsActionsParams) {
         tavilyEnabled: c.tavilyEnabled ?? c.hasTavilyKey ?? false,
         hasBraveKey: c.hasBraveKey ?? false,
         braveEnabled: c.braveEnabled ?? c.hasBraveKey ?? false,
+        hasDeepseekKey: c.hasDeepseekKey ?? false,
+        deepseekEnabled: c.deepseekEnabled ?? c.hasDeepseekKey ?? false,
+        // 手动开关：无 key 自动态（None = 关）
+        deepseekFetchEnabled: c.deepseekFetchEnabled ?? false,
         pythonTimeoutSecs:
           c.pythonTimeoutSecs != null ? String(c.pythonTimeoutSecs) : "",
         // 归档天数：后端 None / 老版本没返 → 显示默认 7
@@ -536,6 +547,7 @@ export function useSettingsActions(params: SettingsActionsParams) {
     config,
     configBusy,
     configSaved,
+    deepseekKeyInput,
     deleteNonSelfBusy,
     deleteNonSelfDone,
     exposeNetAllowed,
@@ -561,6 +573,7 @@ export function useSettingsActions(params: SettingsActionsParams) {
     setConfig,
     setConfigBusy,
     setConfigSaved,
+    setDeepseekKeyInput,
     setTavilyKeyInput,
     setTraceRetainDays,
     tavilyKeyInput,

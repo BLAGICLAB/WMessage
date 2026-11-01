@@ -341,6 +341,10 @@ export type SettingsConfig = {
   tavilyEnabled: boolean;
   hasBraveKey: boolean;
   braveEnabled: boolean;
+  hasDeepseekKey: boolean;
+  deepseekEnabled: boolean;
+  /** DeepSeek 抓取：手动开关，默认关；开 = fetch_url 优先走 DeepSeek Fetch */
+  deepseekFetchEnabled: boolean;
   pythonTimeoutSecs: string;
   archiveAfterDays: string;
   permMode: "strict" | "ask" | "auto" | "yolo";

@@ -24,6 +24,10 @@ export interface BotConfigView {
   tavilyEnabled?: boolean | null;
   hasBraveKey?: boolean;
   braveEnabled?: boolean | null;
+  hasDeepseekKey?: boolean;
+  deepseekEnabled?: boolean | null;
+  /** 「DeepSeek 抓取」手动开关（None = 关，后端不做 key 自动态） */
+  deepseekFetchEnabled?: boolean | null;
   pythonTimeoutSecs?: number | null;
   /** 执行类谎报守卫触发词表（后端已把「没配过」回落成内置默认表）；
    *  guardClaimDefaultKeywords 是内置默认，只读参照 + 设置页「恢复默认」用 */
