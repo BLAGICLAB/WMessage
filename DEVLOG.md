@@ -7,6 +7,25 @@
 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
 
+## 2026-11-02（周一）Windows 绿色版 2026-11-02 出包
+
+**为什么记**：按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程出包，基线
+main @ `1bd468a6`。产物：仓库根 `wmessage-portable-2026-11-02.zip`
+（110,611,155 字节 / 205 文件，SHA256
+`ef3fb47c3fe27651e08c991bf24ec3d54e7dffb213775db0d97ff511a25feb9e`），
+exe 76,430,306 字节（`src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe`）。
+相对 11-01 版新增 11 个提交，主线：DeepSeek 搜索/抓取接入（`web_search`
+第三路由 + `fetch_url` 手动开关 + MCP 模块开关与共用 key）、Windows 复制/
+搬运路径补剥「来自互联网」标记（360 连坐链的另一半）、技能步数闸与预算
+软警告收归 auto 模式、DeepSeek 接入审计修复批。固定文件
+（WebView2Loader.dll / MicrosoftEdgeWebview2Setup.exe）与 ort DLL（1.28.0，
+与 ort 2.0.0-rc.13 的 dist.tsv 核对一致）从 11-01 包目录取，SHA 与
+`packaging/wmessage-portable-staging/` 逐个对齐；dotnet/ 未复用、重新
+发布（189 个文件）。交叉编译只有一条 tauri 配置弃用提示
+（`STATIC_VCRUNTIME`），非本仓代码问题；`cargo check --release` 通过，
+10-26 那条 release-only E0432 陷阱未复发。Windows 实机验收（解压、便携
+锚定、语义检索肉眼确认、ocr_image）仍待人工。
+
 ## 2026-11-02（周一）360 又拦了一次「写文档」：上一轮盯错了地方
 
 **为什么记**：2026-10-30 实机又挨了一次 360 主动防御——进程 WINWORD.EXE、
