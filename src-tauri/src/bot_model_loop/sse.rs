@@ -441,10 +441,15 @@ pub(crate) async fn read_sse_stream(
     let mut stream_error: Option<StreamError> = None;
 
     let mut stopped = false;
-    // data 攒批：SSE 规范允许一条事件拆多条 `data:` 行（按 \n 拼接成一条
-    // 载荷），逐行独立解析会把它当坏块跳过、丢内容。攒到事件边界（非 data
-    // 行）或流尾再拼成一条交给解析。跨 chunk 保留——事件边界行可能与它的
-    // data 行落在不同 chunk。
+    // data 攒批：代理会按传输边界把一条事件拆成多条 `data:` 行重发，逐行独立
+    // 解析会把它当坏块跳过、丢内容。攒到事件边界（非 data 行）或流尾再拼成
+    // 一条交给解析。跨 chunk 保留——事件边界行可能与它的 data 行落在不同 chunk。
+    //
+    // 拼接必须**无缝**（不补分隔符）：LLM 流式事件的载荷是单行 JSON，JSON
+    // 字符串值内不含裸换行（转义为 \n 两字符），被切断的 JSON 重拼时任何插入
+    // 的分隔符都会落进 token 中间把语法弄坏（实测 "delt\na" → 解析失败整块丢）。
+    // SSE 规范的「多行 data 按 \n 拼接」针对的是发送方主动分行的多行文本载荷，
+    // 在 JSON 事件流里不存在这种形状。
     let mut data_buf = String::new();
     {
         // 逐 chunk idle 超时——next() 单次等待超过 STREAM_CHUNK_IDLE_TIMEOUT
@@ -503,9 +508,7 @@ pub(crate) async fn read_sse_stream(
                     continue;
                 }
                 if let Some(rest) = line.strip_prefix("data:") {
-                    if !data_buf.is_empty() {
-                        data_buf.push('\n');
-                    }
+                    // 无缝拼接（见上）：切断的 JSON 重拼不加分隔符
                     data_buf.push_str(rest.trim_start());
                     // 攒批缓冲与单行同口径上限：切出的完整 data 行不占
                     // byte_buf 的 2MB 配额，故障/恶意流持续发短 data 行即可
@@ -566,9 +569,7 @@ pub(crate) async fn read_sse_stream(
                     continue;
                 }
                 if let Some(rest) = line.strip_prefix("data:") {
-                    if !data_buf.is_empty() {
-                        data_buf.push('\n');
-                    }
+                    // 无缝拼接（见上）：切断的 JSON 重拼不加分隔符
                     data_buf.push_str(rest.trim_start());
                     continue;
                 }
