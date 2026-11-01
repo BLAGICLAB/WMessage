@@ -7,6 +7,22 @@
 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
 
+## 2026-11-01（周六）Windows 绿色版 2026-11-01 出包
+
+**为什么记**：按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程出包，基线
+main @ `3d4828ab`。产物：仓库根 `wmessage-portable-2026-11-01.zip`
+（110,583,760 字节 / 205 文件，SHA256
+`6a36ed2aa24e2a74a37c231a5916b7d70585a9bd732ac45754d2a458cb050e6e`），
+exe 76,391,596 字节（`src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe`）。
+相对 10-31 版新增 7 个提交，主线：实机冒烟（M93–M115）+ 五条发现的修复批
+（汇报轮思考段 400、SSE 攒批拼接、凭据引用 Bearer 组合形态与空值报错、
+停滞看门狗口径落注释）。上一版包目录已随磁盘清理佚失：固定文件改从
+`packaging/wmessage-portable-staging/`（09-05 staging）取，README 更新
+记录链从 DEVLOG 各日出包记录重建（更早逐条记录佚失已注明）；dotnet/
+未复用 staging 旧件、重新发布（189 个文件）；ort DLL 重新从 NuGet 拉
+（1.28.0，/tmp 缓存已清）。构建期交叉编译零警告。Windows 实机验收
+（解压、便携锚定、语义检索肉眼确认、ocr_image）仍待人工。
+
 ## 2026-10-31（周六）Windows 绿色版 2026-10-31 出包
 
 **为什么记**：按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程日更出包，基线
