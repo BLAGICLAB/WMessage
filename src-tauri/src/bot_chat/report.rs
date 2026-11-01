@@ -18,11 +18,16 @@ pub(crate) enum ReportOutcome {
 /// 计划生成）在 `TurnOrigin::Report` 下由 `user_input` 统一空转，不需要各自分支。
 pub(crate) async fn report_subagent_result(app: &AppHandle, session_id: &str) -> ReportOutcome {
     let history = report_turn_history(app, session_id).await;
+    // reasoning 强制 off：汇报轮的历史从库里装配，assistant 行不带 thinking 块
+    // （落库与前端快照都不含），而 thinking mode 的请求要求历史 assistant 轮
+    // 原样回传思考段——实测 400「content[].thinking must be passed back」连环
+    // 重试全败。转述型任务不思考，body 不带 thinking 参数即不触发该规则。
+    // 库 thinking 列的持久化（跨回合真回灌）未做，见冒烟报告 D-M99-1 观察项。
     let out = match bot_chat_inner(
         app.clone(),
         history,
         Some(session_id.to_string()),
-        None,
+        Some("off".to_string()),
         TurnOrigin::Report,
     )
     .await
