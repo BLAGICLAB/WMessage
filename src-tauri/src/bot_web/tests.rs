@@ -8,9 +8,9 @@ use super::html::{
 };
 use super::search::{
     brave_query_and_params, clean_snippet, decode_search_body, deepseek_http_error,
-    deepseek_query_and_time, deepseek_time_suffix, domain_of, format_deepseek_results, http_client,
-    parse_brave_results, parse_deepseek_results, resolve_search_route, tavily_payload, DeepseekHit,
-    SearchRoute,
+    deepseek_query_and_time, deepseek_query_limit_error, deepseek_time_suffix, domain_of,
+    format_deepseek_results, http_client, parse_brave_results, parse_deepseek_results,
+    resolve_search_route, tavily_payload, DeepseekHit, SearchRoute,
 };
 use super::*;
 
@@ -615,6 +615,27 @@ fn deepseek_query_and_time_maps_opts() {
         ..Default::default()
     };
     assert_eq!(deepseek_query_and_time("hello", &plain, today), "hello");
+}
+
+#[test]
+fn deepseek_query_limit_rejects_over_128_chars() {
+    // 纯 query 超限：报错文案带上限与实际字数
+    let long = "测".repeat(129);
+    let err = deepseek_query_limit_error(&long).expect("超限必须报错");
+    assert!(err.contains("128"), "{err}");
+    assert!(err.contains("129"), "{err}");
+    // 128 恰好放行（官方口径 1–128）
+    assert_eq!(deepseek_query_limit_error(&"测".repeat(128)), None);
+    // 组装后超限：100 字 query + site 运算符 + after 后缀越线
+    let opts = SearchOpts {
+        count: 6,
+        time_range: Some(TimeRange::Day),
+        site: Some("a-very-long-domain-name.example.com".into()),
+    };
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 2).expect("合法日期");
+    let q = deepseek_query_and_time(&"x".repeat(100), &opts, today);
+    assert!(q.chars().count() > 128, "{q}");
+    assert!(deepseek_query_limit_error(&q).is_some(), "{q}");
 }
 
 #[test]

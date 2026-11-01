@@ -338,8 +338,8 @@ pub fn bot_set_config(
             }
         }
     }
-    // 文件里只留非敏感配置，三个 key 字段强制置 None（双保险：前端误把 key
-    // 塞进 config 对象也不落明文）
+    // 文件里只留非敏感配置，各明文 key 槽位（api/tavily/brave/deepseek）在写盘
+    // 路径强制剥除（双保险：前端误把 key 塞进 config 对象也不落明文）
     // 新结构（models_by_provider + active_model_id）落盘前回填
     // base_url/model/api_provider 三个派生字段——bot_model_loop 只看老字段。
     let mut config = config;

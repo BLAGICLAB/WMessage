@@ -276,10 +276,17 @@ pub async fn fetch_text(
         }
     }
     if plain.is_empty() {
+        // DeepSeek 腿也试过且失败：实因并入终错（审计事件在此路径不落——
+        // FetchedText 没构造出来；deepseek_fetch_used/failed 只覆盖「最终拿到
+        // 正文」的路径，全失败时 stderr + 错误文案是仅有的两处留痕）
+        let ds_note = match &deepseek_out {
+            Some(Err(e)) => format!("DeepSeek 抓取（{e}）也没成；"),
+            _ => String::new(),
+        };
         // 直连空正文 + 代理也没拿到：报直连的实因（超时/5xx），别报成
         // 「页面没有文本」——那会把排查引向目标页面，而真因在本机到目标的路上。
         return Err(CommandError::Internal(format!(
-            "两条路都没拿到内容：直连{why_thin}；渲染代理回退也没成功（免费公共代理限流/超时时会这样）"
+            "{ds_note}两条路都没拿到内容：直连{why_thin}；渲染代理回退也没成功（免费公共代理限流/超时时会这样）"
         )));
     }
     Ok(FetchedText {

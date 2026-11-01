@@ -859,9 +859,9 @@ describe("SettingsPage", () => {
     await userEvent
       .setup()
       .click(screen.getByRole("button", { name: "MCP 服务" }));
-    // 三个引擎同开 → 警告列出全部名字（与后端 Conflict 报错同源）
+    // 三个引擎同开 → 警告列出全部名字（与后端 Conflict 报错同源，「与」连接）
     expect(
-      await screen.findByText(/DeepSeek、Tavily、Brave 只能开启一个/),
+      await screen.findByText(/DeepSeek 与 Tavily 与 Brave 只能开启一个/),
     ).not.toBeNull();
   });
 

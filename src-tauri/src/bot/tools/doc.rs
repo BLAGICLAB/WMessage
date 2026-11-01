@@ -694,13 +694,12 @@ pub(crate) async fn tool_fetch_url(
     let cfg = load_config(app);
     let deepseek_key = match cfg.deepseek_fetch_enabled {
         Some(true) => match crate::bot::read_search_key(crate::bot::KeySlot::Deepseek) {
-            Ok(k) => crate::bot_web::deepseek_fetch_mode(Some(true), Some(&k))
-                .or_else(|| {
-                    eprintln!("[fetch_url] DeepSeek 抓取已开启但未配置 key，走直连+Jina");
-                    None
-                }),
-            Err(_) => {
-                eprintln!("[fetch_url] keyring 读取失败，DeepSeek 抓取按未启用处理");
+            Ok(k) => crate::bot_web::deepseek_fetch_mode(Some(true), Some(&k)).or_else(|| {
+                eprintln!("[fetch_url] DeepSeek 抓取已开启但未配置 key，走直连+Jina");
+                None
+            }),
+            Err(e) => {
+                eprintln!("[fetch_url] keyring 读取失败（{e}），DeepSeek 抓取按未启用处理");
                 None
             }
         },

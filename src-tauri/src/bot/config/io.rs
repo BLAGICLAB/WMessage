@@ -449,7 +449,7 @@ pub(crate) fn add_allowed_dir(app: &AppHandle, dir: &str) -> Result<(), String> 
     res
 }
 
-/// 明文 key 剥除前置验证：对三个槽位独立处理——
+/// 明文 key 剥除前置验证：对各明文槽位（api/tavily/brave/deepseek）独立处理——
 /// ① keyring 已有可读值 → 文件副本视为过期残留，可剥（keyring 值优先，
 ///   不覆盖用户新值也不要求等值）；
 /// ② keyring 为空 → 写入明文并读回，读回等值才剥（读回无关值=并发竞争/后端异常，不剥）；
@@ -570,7 +570,7 @@ fn write_bot_config_file_locked_with(
 
 /// 写盘前的明文把关：盘上残留的旧明文必须先安置进系统凭据存储
 ///
-/// 那三个 key 字段是 skip_serializing 的（明文永不落盘）——所以**每一次写盘都会
+/// 那些明文 key 字段是 skip_serializing 的（明文永不落盘）——所以**每一次写盘都会
 /// 把盘上残留的旧明文抹掉**。若那份明文还没落进凭据存储（keyring 故障窗口：
 /// 启动迁移按「保留明文下次再试」留下的残留），抹掉就是永久丢密钥。
 ///

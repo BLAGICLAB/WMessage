@@ -898,6 +898,7 @@ mod tests {
             api_key: Some("***".into()),
             tavily_key: Some("tvly-plain".into()),
             brave_key: Some("bsa-plain".into()),
+            deepseek_key: Some("sk-plain".into()),
             ..Default::default()
         };
         let _g = io::lock_config_write();
@@ -906,9 +907,15 @@ mod tests {
         assert!(!raw.contains("***"), "LLM key 不得落盘：{raw}");
         assert!(!raw.contains("tvly-plain"), "Tavily key 不得落盘：{raw}");
         assert!(!raw.contains("bsa-plain"), "Brave key 不得落盘：{raw}");
+        assert!(!raw.contains("sk-plain"), "DeepSeek key 不得落盘：{raw}");
         // 字段本身也应消失（skip_serializing 永不序列化 + 强制 None）
         let saved: BotConfig = serde_json::from_str(&raw).unwrap();
-        assert!(saved.api_key.is_none() && saved.tavily_key.is_none() && saved.brave_key.is_none());
+        assert!(
+            saved.api_key.is_none()
+                && saved.tavily_key.is_none()
+                && saved.brave_key.is_none()
+                && saved.deepseek_key.is_none()
+        );
     }
 
     // bot_log_read

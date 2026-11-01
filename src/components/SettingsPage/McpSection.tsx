@@ -51,10 +51,10 @@ function EngineToggle({
   );
 }
 
-/** 多开冲突提示文案：列出开启中的引擎（与后端 Conflict 报错同源） */
+/** 多开冲突提示文案：列出开启中的引擎（与后端 Conflict 报错同源，「与」连接） */
 function conflictText(enabled: string[]): string | null {
   if (enabled.length < 2) return null;
-  return `${enabled.join("、")} 只能开启一个，请关闭其中一个。`;
+  return `${enabled.join(" 与 ")} 只能开启一个，请关闭其中一个。`;
 }
 
 export function McpSection({

@@ -163,17 +163,23 @@ pub(super) fn deepseek_http_error(status: u16) -> String {
     }
 }
 
+/// DeepSeek query 超限判定（纯函数，可测）：超过 128 Unicode 字符（含
+/// site:/after: 运算符）返回明确报错文案——不静默截断改义。
+pub(super) fn deepseek_query_limit_error(q: &str) -> Option<String> {
+    let n = q.chars().count();
+    (n > DEEPSEEK_QUERY_MAX_CHARS).then(|| {
+        format!("DeepSeek 搜索要求 query 不超过 {DEEPSEEK_QUERY_MAX_CHARS} 字符（当前 {n}，含 site:/after: 运算符）。请缩短关键词后重试。")
+    })
+}
+
 /// DeepSeek Search API（设置页「DeepSeek 搜索」开关开启后 web_search 走这里）：
 /// POST https://api.deepseek.com/v1/tools/search，key 走 Bearer 头（与 DeepSeek
 /// 大模型 API 同一把平台 key）。query 上限 128 字符（含 site:/after: 运算符）——
 /// 超限明确报错让模型缩短关键词，不静默截断改义。
 async fn search_deepseek(key: &str, query: &str, opts: &SearchOpts) -> Result<String, String> {
     let q = deepseek_query_and_time(query, opts, chrono::Local::now().date_naive());
-    let n = q.chars().count();
-    if n > DEEPSEEK_QUERY_MAX_CHARS {
-        return Err(format!(
-            "DeepSeek 搜索要求 query 不超过 {DEEPSEEK_QUERY_MAX_CHARS} 字符（当前 {n}，含 site:/after: 运算符）。请缩短关键词后重试。"
-        ));
+    if let Some(msg) = deepseek_query_limit_error(&q) {
+        return Err(msg);
     }
     let resp = http_client()
         .post("https://api.deepseek.com/v1/tools/search")
@@ -518,7 +524,8 @@ pub async fn web_search_with_config(
     opts: &SearchOpts,
 ) -> Result<String, String> {
     let cfg = crate::bot::load_config(app);
-    let deepseek_key = crate::bot::read_search_key(crate::bot::KeySlot::Deepseek).unwrap_or_default();
+    let deepseek_key =
+        crate::bot::read_search_key(crate::bot::KeySlot::Deepseek).unwrap_or_default();
     let tavily_key = crate::bot::read_search_key(crate::bot::KeySlot::Tavily).unwrap_or_default();
     let brave_key = crate::bot::read_search_key(crate::bot::KeySlot::Brave).unwrap_or_default();
     match resolve_search_route(
