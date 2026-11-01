@@ -675,6 +675,39 @@ fn budget_warning_stays_quiet_for_small_budget() {
     assert!(skill_budget_warning(&r, 1000 + 1000).is_some());
 }
 
+// ── 技能文档头 ──
+
+/// 「最多 N 步」只对 auto 印出（步数闸/软警告仅 auto）；interactive 不给
+/// 模型教一个不存在的限制——否则它会在第 N 步前自掐（deepseek-web 实测）。
+#[test]
+fn skill_doc_hint_shows_step_budget_only_for_auto() {
+    let interactive = SkillMeta {
+        name: "doc-hint".into(),
+        mode: "interactive".into(),
+        max_steps: 12,
+        ..Default::default()
+    };
+    let hint = skill_doc_hint(&interactive);
+    assert!(
+        !hint.contains("最多"),
+        "interactive 文档头不得印步数预算: {hint}"
+    );
+    assert!(
+        hint.contains("运行模式 interactive · 回滚"),
+        "去掉步数段后格式仍是一段式: {hint}"
+    );
+
+    let auto = SkillMeta {
+        mode: "auto".into(),
+        ..interactive
+    };
+    let hint = skill_doc_hint(&auto);
+    assert!(
+        hint.contains("最多 12 步"),
+        "auto 文档头要印步数预算: {hint}"
+    );
+}
+
 // ── 技能出口兜底正文 ──
 
 /// 模型说过话就用它，没说话才兜底。

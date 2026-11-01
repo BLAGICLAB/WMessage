@@ -335,10 +335,39 @@ pub fn start_skill(
         "name" => meta.name.clone(),
         "risk" => meta.risk_level.clone(),
         "mode" => meta.mode.clone(),
-        "max_steps" => meta.max_steps,
+        // interactive 无步数闸（步数闸/软警告仅 auto），max_steps 对它不是预算；
+        // 照抄数字会让审计读者以为还挂着一道不存在的闸。
+        "max_steps" => if meta.mode == "auto" {
+            meta.max_steps.to_string()
+        } else {
+            "不限".into()
+        },
         "rollback" => meta.rollback.clone(),
     );
     Ok((meta, body))
+}
+
+/// 技能文档头（use_skill 返回首行）：模式与约束一眼可读。
+/// 「最多 N 步」只对 auto 印——步数闸与软警告都仅 auto 存在，给 interactive
+/// 印步数等于教模型一个不存在的限制，它会在第 N 步前自掐（deepseek-web 实测）。
+fn skill_doc_hint(meta: &SkillMeta) -> String {
+    let budget = if meta.mode == "auto" {
+        format!(" · 最多 {} 步", meta.max_steps)
+    } else {
+        String::new()
+    };
+    format!(
+        "【技能文档：{}】{}\n风险等级 {} · 运行模式 {}{} · 回滚 {}",
+        meta.name,
+        meta.version
+            .as_deref()
+            .map(|v| format!("v{v} "))
+            .unwrap_or_default(),
+        meta.risk_level,
+        meta.mode,
+        budget,
+        meta.rollback
+    )
 }
 
 /// 工具 use_skill：读取技能文档全文返回给模型。
@@ -353,25 +382,7 @@ pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> 
     let params = v.get("params").cloned().unwrap_or(serde_json::Value::Null);
     match start_skill(app, &name, params, session_id) {
         Ok((meta, body)) => {
-            // 「最多 N 步」只对 auto 有意义（步数闸与软警告都仅 auto）；
-            // interactive 印出来等于教模型一个不存在的限制，它会在第 N 步前自掐。
-            let budget = if meta.mode == "auto" {
-                format!(" · 最多 {} 步", meta.max_steps)
-            } else {
-                String::new()
-            };
-            let hint = format!(
-                "【技能文档：{}】{}\n风险等级 {} · 运行模式 {}{} · 回滚 {}",
-                meta.name,
-                meta.version
-                    .as_deref()
-                    .map(|v| format!("v{v} "))
-                    .unwrap_or_default(),
-                meta.risk_level,
-                meta.mode,
-                budget,
-                meta.rollback
-            );
+            let hint = skill_doc_hint(&meta);
             let mut out = hint + "\n\n" + &body;
             // 兼容审计——DSL 步骤引用了未内置的工具 → 头部警告（MCP 工具可忽略）
             if meta.mode == "auto" {
