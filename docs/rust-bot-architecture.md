@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 318 个文件、约 13.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 318 个文件、约 13.7 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -366,7 +366,7 @@ src-tauri/src/
 │   └── audit.rs         audit_log
 ├── bot/tools.rs (101)      工具实现门面：23 个 tool_* 逐项转出（crate::bot::tools::X 旧路径 1:1 保持）
 │   ├── bot/tools/task.rs (1110)   任务面：查询族（view/过滤/渲染/query）+ 管理族（增删改/子任务/绑文件）
-│   ├── bot/tools/doc.rs (847)     文档面：提取文档 / Word·Excel·PPT·PDF 生成 / 联网搜索 / 抓页 / 自由 Python
+│   ├── bot/tools/doc.rs (884)     文档面：提取文档 / Word·Excel·PPT·PDF 生成 / 联网搜索 / 抓页 / 自由 Python
 │   ├── bot/tools/service.rs (277) 受管服务面：start/stop/list 长驻进程 + 集成测试钩子
 │   ├── bot/tools/common.rs (153)  公共杂项面：时间工具 / files 参数解析与安全校验 / 审计补充 kv / 改库广播
 │   ├── bot/tools/trace.rs (231)    凭证召回面：按 tool_call_id/span_id/trace_id 调回历史工具结果（只读、零新表）
@@ -519,8 +519,9 @@ src-tauri/src/
 │                        白名单、目标走写白名单；目标已存在一律不覆盖；目录树里的
 │                        软链既不跟随也不复制
 ├── bot_web.rs + bot_web/search.rs + bot_web/html.rs + bot_web/fetch.rs
-│                        联网工具：web_search（Tavily/Brave 可配，Bing/百度抓取兜底）
-│                        + fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）。
+│                        联网工具：web_search（DeepSeek/Tavily/Brave 三选一可配，
+│                        Bing/百度抓取兜底）+ fetch_url（HTML→文本、GBK、SSRF 防护、
+│                        钉 IP；「DeepSeek 抓取」开关开启时优先走 DeepSeek Fetch）。
 │                        **门面**——实现按面拆到三个子模块（search 搜索 / html 页面解析 /
 │                        fetch 抓取与公网闸），门面只留类型 / 常量 / 共享工具 / 逐项转出
 ├── bot_web/destination.rs 目的地闸：产品自有出口 vs 用户目的地分层（allowed_domains
