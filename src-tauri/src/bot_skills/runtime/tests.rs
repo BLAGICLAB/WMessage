@@ -307,11 +307,25 @@ fn step_check_counts_and_records_actions() {
 fn step_check_fuses_on_max_steps() {
     let mut r = test_run(2);
     r.state = SkillState::Running;
+    r.mode = "auto".into(); // 步数熔断仅 auto（interactive 见下一条用例）
     assert!(step_check(&mut r, "create_task", "{}", 2000).is_ok());
     assert!(step_check(&mut r, "edit_task", "{}", 2000).is_ok());
     let e = step_check(&mut r, "complete_task", "{}", 2000).unwrap_err();
     assert!(e.to_string().contains("超过最大步数上限"));
     assert_eq!(r.state, SkillState::Failed);
+}
+
+/// interactive 无步数闸（与 frontmatter 解析口径一致）：超过 max_steps 继续
+/// 跑，计数照走、状态不变——正常收尾中的长流程不再被硬掐。
+#[test]
+fn step_check_interactive_has_no_step_fuse() {
+    let mut r = test_run(2); // test_run 默认即 interactive
+    r.state = SkillState::Running;
+    for _ in 0..5 {
+        assert!(step_check(&mut r, "list_tasks", "{}", 2000).is_ok());
+        assert_eq!(r.state, SkillState::Running);
+    }
+    assert_eq!(r.step, 5); // 计数照走（出口报「共 N 步」的来源）
 }
 
 #[test]
@@ -610,7 +624,8 @@ fn conflict_gate_lets_timed_out_running_pass() {
 fn budget_warning_fires_only_when_budget_nears_exhaustion() {
     let mut r = test_run(50);
     r.state = SkillState::Running;
-    // 刚起步：步数与墙钟都充裕
+    r.mode = "auto".into(); // 步数预算仅 auto 存在
+                            // 刚起步：步数与墙钟都充裕
     assert!(skill_budget_warning(&r, 1000 + 10 * 1000).is_none());
     // 步数余量 ≤ 5 → 提醒
     r.step = 46;
@@ -620,7 +635,18 @@ fn budget_warning_fires_only_when_budget_nears_exhaustion() {
     // 步数充裕 → 不提醒（技能无墙钟，软警告只剩步数一轴）
     let mut r2 = test_run(50);
     r2.state = SkillState::Running;
+    r2.mode = "auto".into();
     assert!(skill_budget_warning(&r2, 1000 + 10 * 1000).is_none());
+}
+
+/// interactive 无步数预算：软警告跟着硬闸一起不发——模型会照「立刻停止
+/// 展开新步骤」收尾，等于把已撤的硬闸换个形式回来。
+#[test]
+fn budget_warning_skips_interactive_mode() {
+    let mut r = test_run(2); // test_run 默认即 interactive
+    r.state = SkillState::Running;
+    r.step = 2; // 已过任何预算阈值
+    assert!(skill_budget_warning(&r, 1000 + 1000).is_none());
 }
 
 /// 软警告只对运行中的技能发：暂停/终态不在这里刷屏。
@@ -641,6 +667,7 @@ fn budget_warning_skips_non_running_states() {
 fn budget_warning_stays_quiet_for_small_budget() {
     let mut r = test_run(6);
     r.state = SkillState::Running;
+    r.mode = "auto".into();
     // 刚起步：6 步 / 30 秒都还充裕
     assert!(skill_budget_warning(&r, 1000 + 1000).is_none());
     // 走到只剩 1 步才提醒

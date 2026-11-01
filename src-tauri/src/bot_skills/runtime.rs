@@ -79,6 +79,11 @@ pub(crate) fn skill_budget_warning(run: &SkillRun, _now_ms: i64) -> Option<Strin
     if run.state != SkillState::Running {
         return None;
     }
+    // 步数预算只在 auto 模式存在（与硬闸同口径）。interactive 若照发这条
+    // 「立刻停止展开新步骤」，模型会照办收尾——等于把已撤的硬闸换个形式回来。
+    if run.mode != "auto" {
+        return None;
+    }
     let steps_limit = skill_budget_warn_limits(run.max_steps);
     let steps_left = run.max_steps.saturating_sub(run.step);
     if steps_left > steps_limit {
@@ -348,8 +353,15 @@ pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> 
     let params = v.get("params").cloned().unwrap_or(serde_json::Value::Null);
     match start_skill(app, &name, params, session_id) {
         Ok((meta, body)) => {
+            // 「最多 N 步」只对 auto 有意义（步数闸与软警告都仅 auto）；
+            // interactive 印出来等于教模型一个不存在的限制，它会在第 N 步前自掐。
+            let budget = if meta.mode == "auto" {
+                format!(" · 最多 {} 步", meta.max_steps)
+            } else {
+                String::new()
+            };
             let hint = format!(
-                "【技能文档：{}】{}\n风险等级 {} · 运行模式 {} · 最多 {} 步 · 回滚 {}",
+                "【技能文档：{}】{}\n风险等级 {} · 运行模式 {}{} · 回滚 {}",
                 meta.name,
                 meta.version
                     .as_deref()
@@ -357,7 +369,7 @@ pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> 
                     .unwrap_or_default(),
                 meta.risk_level,
                 meta.mode,
-                meta.max_steps,
+                budget,
                 meta.rollback
             );
             let mut out = hint + "\n\n" + &body;
@@ -440,8 +452,10 @@ fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<()
         });
     }
     run.step += 1;
-    // 步数熔断（Skill 独立上限）
-    if run.step > run.max_steps {
+    // 步数熔断（仅 auto）：DSL 调度器不经 LLM 直接执行步骤块，步数闸是这条
+    // 路径唯一的自停手段；interactive 每步都是模型当下决策，上有主循环安全网
+    // 兜底，硬熔断只会掐死正常收尾中的长流程。计数照走，供出口报「共 N 步」。
+    if run.mode == "auto" && run.step > run.max_steps {
         run.state = SkillState::Failed;
         run.end_reason = format!("超过最大步数上限（{} 步）", run.max_steps);
         return Err(CommandError::DomainRule {
