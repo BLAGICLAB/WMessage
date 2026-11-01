@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 314 个文件、约 13.4 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 318 个文件、约 13.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -125,7 +125,7 @@ src-tauri/src/
 │   ├── bot_chat/media.rs (152)  多模态图片组装：base64 入模 + 扩展名白名单 + 附件索引
 │   ├── bot_chat/summary.rs (322) 历史摘要面：截断点选择 + 摘要请求 + 压缩
 │   ├── bot_chat/inject.rs (96)  上下文注入面：摘要/记忆块并入末条消息（保缓存前缀稳定）
-│   ├── bot_chat/report.rs (154) 子任务汇报轮：回传结果 + 门控 + 历史映射
+│   ├── bot_chat/report.rs (159) 子任务汇报轮：回传结果 + 门控 + 历史映射
 │   ├── bot_chat/input.rs (110)  输入规范化面：不可见字符清洗 + 路由前判定 + 恢复提示
 │   ├── bot_chat/bot_chat_pure_helpers_tests.rs (716) 纯函数与接线守卫单测
 │   ├── bot_chat/inject_tests.rs (139)                 注入面单测（注入位置 + 前缀稳定性）
@@ -153,23 +153,23 @@ src-tauri/src/
 │                        （TOOLS schema 已移出，见 bot/registry.rs）
 │   ├── bot_model_loop/stream.rs (436)   SSE 解析层：parse_sse_chunk / feed_think（思考块拆分）/
 │   │                                    tool_call 增量累积 / token usage 归一
-│   ├── bot_model_loop/core.rs (1151)     核心循环：run_model_loop_core（可注入 mock）+
+│   ├── bot_model_loop/core.rs (1159)     核心循环：run_model_loop_core（可注入 mock）+
 │   │                                    dispatch_round（工具分发/回灌）
-│   ├── bot_model_loop/shell.rs (570)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
-│   ├── bot_model_loop/request.rs (727)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
-│   ├── bot_model_loop/sse.rs (819)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
+│   ├── bot_model_loop/shell.rs (577)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
+│   ├── bot_model_loop/request.rs (726)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
+│   ├── bot_model_loop/sse.rs (820)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
 │   ├── bot_model_loop/guard.rs (707)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
 │   │                                    guard_verdict）+ 自检回复判定 + 工具自检侧调路由
 │   ├── bot_model_loop/finalize.rs (381) 收尾层：无工具收尾 / 自检侧调（decide_selfcheck）/ 出口闸
 │   ├── bot_model_loop/fuse.rs (163)     熔断层：单轮 Function 调用上限 / 收尾窗阶梯判定（gate_call，
 │   │                                    工具轴 95% + 轮数轴「剩 3 轮」两路进窗）/ 收尾轮数出口 /
 │   │                                    轮数熔断 / 软警告注入
-│   ├── bot_model_loop/types.rs (326)    共享类型：ModelLoopDeps / 请求状态机 / 流结构 / 数据类
+│   ├── bot_model_loop/types.rs (324)    共享类型：ModelLoopDeps / 请求状态机 / 流结构 / 数据类
 │   ├── bot_model_loop/output.rs (170)   工具结果回灌体积漏斗：per-tool 预算与全局 cap 取小、
 │   │                                    超限转存溢出文件 + 只回灌节选与指针
 │   ├── bot_model_loop/context.rs (255)  上下文瘦身层：超限判定 / 历史裁剪 / 索引重排修正 /
 │   │                                    轮内工具结果滑动窗 / 用户意图抽取
-│   ├── bot_model_loop/evidence.rs (94)  证据来源层：从消息抽文本·来源，数字是否可溯源
+│   ├── bot_model_loop/evidence.rs (95)  证据来源层：从消息抽文本·来源，数字是否可溯源
 │   ├── bot_model_loop/tests.rs (74)     单元测试六桶的入口 + prod_src() 生产代码全景扫描源
 │   ├── bot_model_loop/tests/guard.rs (1123)   幻觉守卫 / 熔断 / 接线类测试
 │   ├── bot_model_loop/tests/parse.rs (596)   SSE 解析 / 增量累积 / schema 测试
@@ -177,7 +177,7 @@ src-tauri/src/
 │   ├── bot_model_loop/tests/tool_window.rs (231) 轮内工具结果滑动窗测试（裁剪口径 / 护栏 / 桩子）
 │   ├── bot_model_loop/tests/fail_hint.rs (58)   工具失败「换策略」提示按工具分流的单测
 │   ├── bot_model_loop/tests/intent.rs (113)  侧调自检测试（路由阈值两态 / 用户意图抽取）
-│   ├── bot_model_loop/tests/sse.rs (333)    读流层测试（叫停后不推流 / 正文照旧记账）
+│   ├── bot_model_loop/tests/sse.rs (390)    读流层测试（叫停后不推流 / 正文照旧记账）
 ├── bot.rs (213)         bot 族唯一对外门面：跨族 re-export（BotChatResult/TaskRef/ChatMsg/
 │                        model_loop/StopGuard/StopToken/AuditLevel/db::* 等）+ 子模块声明；
 │                        **跨族引用一律走 `crate::bot::`**，族外不得直接摸
@@ -370,7 +370,7 @@ src-tauri/src/
 │   ├── bot/tools/service.rs (277) 受管服务面：start/stop/list 长驻进程 + 集成测试钩子
 │   ├── bot/tools/common.rs (153)  公共杂项面：时间工具 / files 参数解析与安全校验 / 审计补充 kv / 改库广播
 │   ├── bot/tools/trace.rs (231)    凭证召回面：按 tool_call_id/span_id/trace_id 调回历史工具结果（只读、零新表）
-│   ├── bot/tools/http.rs (479)     专用 HTTP 工具面：http_request（方法/请求体/自定义头/下载落产物目录；
+│   ├── bot/tools/http.rs (546)     专用 HTTP 工具面：http_request（方法/请求体/自定义头/下载落产物目录；
 │   │                                目的地闸每跳都判、凭据引用真值不过模型、args_preview 裁 method+host）
 │   ├── bot/tools/plan.rs (155)      计划面：update_plan 整表替换写会话内计划状态 + 广播 bot-plan 事件
 │   ├── bot/tools/task_files_arg_tests.rs (180)     files 参数解析与安全校验单测
@@ -387,7 +387,7 @@ src-tauri/src/
 ├── bot/plan_state.rs (308)  Agent 计划状态（会话内 transient）：update_plan 的参数校验与状态存取
 │                        （整表替换、三态 pending/in_progress/completed、至多一条 in_progress）→
 │                        进程内会话表 → bot-plan 事件；bot_plan_state 命令给面板取当前快照
-├── bot/stream_log.rs (513) 会话级流式事件的统一出口 emit_recorded：**盖信封**（载荷顶层的
+├── bot/stream_log.rs (515) 会话级流式事件的统一出口 emit_recorded：**盖信封**（载荷顶层的
 │                        sessionId 由本函数统一注入，调用方不许自带同名键——盖章权分散到
 │                        各发射点时漏一处就静默丢事件）→ 分配序号（会话内跨轮次连续，
 │                        客户端据此去重）→ 写会话回放缓冲（2 万条 / 8MB 双上限，
@@ -478,7 +478,7 @@ src-tauri/src/
 │                     无 Invoke 才退回坐标点击）+ SendInput 注输入；
 │                     控件值读 UIA ValuePattern（密码框不读，避免读出明文）；
 │                     COM 生命周期同线程成对（CoInitializeEx / CoUninitialize）
-├── bot_desktop.rs (678) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
+├── bot_desktop.rs (685) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
 │                        （opener 定位，白名单闸）/ open_url（公网闸 ensure_public_http_url）/
 │                        clipboard_write（官方 clipboard-manager v2）/ copy_file_to_clipboard
 │                        （文件进系统剪贴板，读白名单闸，复用 platform::copy_file 的
@@ -523,12 +523,18 @@ src-tauri/src/
 │                        + fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）。
 │                        **门面**——实现按面拆到三个子模块（search 搜索 / html 页面解析 /
 │                        fetch 抓取与公网闸），门面只留类型 / 常量 / 共享工具 / 逐项转出
+├── bot_web/destination.rs 目的地闸：产品自有出口 vs 用户目的地分层（allowed_domains
+│                        白名单 + 白名单外按次弹窗、仅本会话生效、每跳都判）
+├── bot_web/http.rs        专用 HTTP 工具内核（方法/请求体/自定义头/下载落产物目录；
+│                        凭据引用真值不过模型、响应头凭据类只回名）
 ├── bot_web/tests.rs     联网单测（各搜索后端解析 / URL 闸 / 正文抽取）
 ├── bot_py.rs (42) + bot_py/tests.rs + bot_py/exiting_tests.rs + bot_py/platform_tests.rs
 │                        Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
 │                        （rlimit / Job Object）、固定脚本模板（`py/scripts/*.py`：extract/make_docx/xlsx/
 │                        pdf/pptx/harvest_proto/docx_revisions，Rust 侧 include_str! 载入）、
 │                        自由脚本 run_python
+│                        出网面（macOS seatbelt）：`py/seatbelt.rs` —— `(deny network*)` 前缀通配
+│                        拒 socket 全家（outbound/inbound/bind）+ 自证探测 + fail-closed 无放行开关
 ├── env_probe.rs         本机运行环境探测（设置页「本机运行环境」卡的数据源，env_check 命令）：
 │                        Python 包（18 个：办公文档族 + 数据/图表/抓取/模板）/
 │                        Node 全局包（3 个：pptxgenjs 是内置技能依赖，mermaid-cli /
@@ -912,8 +918,10 @@ flowchart TD
 - `bot_slash.rs`
 - `bot_ui.rs`
 - `bot_web.rs`
+- `bot_web/destination.rs`
 - `bot_web/fetch.rs`
 - `bot_web/html.rs`
+- `bot_web/http.rs`
 - `bot_web/search.rs`
 - `bot_web/tests.rs`
 - `due_notify.rs`
@@ -1031,6 +1039,7 @@ flowchart TD
 - `bot/tools/background_dialog_tests.rs`
 - `bot/tools/common.rs`
 - `bot/tools/doc.rs`
+- `bot/tools/http.rs`
 - `bot/tools/n3_toolpolish_tests.rs`
 - `bot/tools/phase4_facts_tests.rs`
 - `bot/tools/plan.rs`
@@ -1170,6 +1179,7 @@ flowchart TD
 - `py/io.rs`
 - `py/mod.rs`
 - `py/runtime.rs`
+- `py/seatbelt.rs`
 
 ### `ui/`
 - `ui/macos.rs`
