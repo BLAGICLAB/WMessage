@@ -160,6 +160,7 @@ pub use search::web_search_with_config;
 // 所以显式压制 unused 警告。
 pub(crate) use destination::invalidate_grants;
 pub(crate) use fetch::check_public_url;
+pub(crate) use fetch::deepseek_fetch_mode;
 pub(crate) use fetch::ensure_public_http_url;
 pub(crate) use http::{execute as execute_http, GateCtx, HttpError, RequestSpec};
 #[allow(unused_imports)]

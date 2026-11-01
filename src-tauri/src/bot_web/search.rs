@@ -1,4 +1,4 @@
-//! 搜索面：引擎路由（Tavily / Brave / Bing+百度双引擎）与结果拼装。
+//! 搜索面：引擎路由（DeepSeek / Tavily / Brave / Bing+百度双引擎）与结果拼装。
 
 use super::html::{parse_baidu, parse_bing};
 use super::*;
@@ -53,6 +53,151 @@ pub(super) fn brave_query_and_params(query: &str, opts: &SearchOpts) -> (String,
         params.push_str(&format!("&freshness={}", tr.brave_freshness()));
     }
     (encoded, params)
+}
+
+// DeepSeek Search API
+
+/// DeepSeek query 字符上限（官方：1–128 Unicode characters，运算符计入）
+const DEEPSEEK_QUERY_MAX_CHARS: usize = 128;
+
+/// DeepSeek `after:` 日期后缀（纯函数，可测）：Day/Week 按天差、Month/Year 按
+/// 月差（checked_sub_months 溢出按天近似回退，只影响极端日期的边界）；today
+/// 注入便于单测。DeepSeek 查询运算符原生支持 `after:YYYY-MM-DD`。
+pub(super) fn deepseek_time_suffix(tr: TimeRange, today: chrono::NaiveDate) -> String {
+    let after = match tr {
+        TimeRange::Day => today - chrono::Duration::days(1),
+        TimeRange::Week => today - chrono::Duration::days(7),
+        TimeRange::Month => today
+            .checked_sub_months(chrono::Months::new(1))
+            .unwrap_or(today - chrono::Duration::days(30)),
+        TimeRange::Year => today
+            .checked_sub_months(chrono::Months::new(12))
+            .unwrap_or(today - chrono::Duration::days(365)),
+    };
+    format!("after:{after}")
+}
+
+/// DeepSeek 查询串组装（纯函数，可测）：site 以 ` site:host` 追加、time_range
+/// 以 ` after:YYYY-MM-DD` 追加（查询运算符由引擎原样转发）
+pub(super) fn deepseek_query_and_time(
+    query: &str,
+    opts: &SearchOpts,
+    today: chrono::NaiveDate,
+) -> String {
+    let mut q = match &opts.site {
+        Some(site) => format!("{query} site:{site}"),
+        None => query.to_string(),
+    };
+    if let Some(tr) = opts.time_range {
+        q.push(' ');
+        q.push_str(&deepseek_time_suffix(tr, today));
+    }
+    q
+}
+
+/// DeepSeek 搜索结果条目（date 为 RFC 3339 取 YYYY-MM-DD 前缀的展示值）
+#[derive(Debug, PartialEq)]
+pub(super) struct DeepseekHit {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+    pub date: Option<String>,
+}
+
+/// DeepSeek 响应解析（纯函数，无网络可测）：`{"results":[{title,url,snippet,date}]}`
+/// → DeepseekHit 列表。results 字段缺失按空结果处理（防御）；JSON 非法明确报错。
+pub(super) fn parse_deepseek_results(body: &str) -> Result<Vec<DeepseekHit>, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("DeepSeek 响应解析失败：{e}"))?;
+    let arr = v["results"].as_array().cloned().unwrap_or_default();
+    Ok(arr
+        .iter()
+        .map(|r| DeepseekHit {
+            title: r["title"].as_str().unwrap_or("").to_string(),
+            url: r["url"].as_str().unwrap_or("").to_string(),
+            snippet: clean_snippet(r["snippet"].as_str().unwrap_or("")),
+            date: r["date"]
+                .as_str()
+                .map(|d| d.chars().take(10).collect::<String>())
+                .filter(|d| !d.is_empty()),
+        })
+        .collect())
+}
+
+/// DeepSeek 结果拼装（纯函数，可测）：与 Brave 同形（标题/链接/摘要行），
+/// 摘要行尾带「（发布：YYYY-MM-DD）」（date 存在时）；保持引擎排序不重排。
+pub(super) fn format_deepseek_results(hits: &[DeepseekHit]) -> String {
+    let mut out = String::new();
+    for (i, hit) in hits.iter().enumerate() {
+        let meta = match (&hit.date, hit.snippet.is_empty()) {
+            (Some(d), false) => format!("{}（发布：{d}）", hit.snippet),
+            (Some(d), true) => format!("发布：{d}"),
+            (None, _) => hit.snippet.clone(),
+        };
+        out.push_str(&format!(
+            "{}. [DeepSeek] {}\n{}\n{}\n\n",
+            i + 1,
+            hit.title,
+            hit.url,
+            meta
+        ));
+    }
+    out
+}
+
+/// DeepSeek Search/Fetch HTTP 状态 → 动作可指的错误文案（官方错误码表口径；
+/// 失败请求不计费，无需按计费口径特判）
+pub(super) fn deepseek_http_error(status: u16) -> String {
+    let hint = match status {
+        401 => "API key 缺失或无效，请到设置页检查「DeepSeek 搜索」key",
+        402 => "DeepSeek 账户余额不足，请到 DeepSeek 开放平台充值",
+        403 => "请求被 DeepSeek 安全策略拒绝",
+        404 => "目标不可用或没有可提取内容",
+        429 => "触发 DeepSeek 速率限制，请稍后重试",
+        _ => "",
+    };
+    if hint.is_empty() {
+        format!("DeepSeek 返回 HTTP {status}")
+    } else {
+        format!("DeepSeek 返回 HTTP {status}：{hint}")
+    }
+}
+
+/// DeepSeek Search API（设置页「DeepSeek 搜索」开关开启后 web_search 走这里）：
+/// POST https://api.deepseek.com/v1/tools/search，key 走 Bearer 头（与 DeepSeek
+/// 大模型 API 同一把平台 key）。query 上限 128 字符（含 site:/after: 运算符）——
+/// 超限明确报错让模型缩短关键词，不静默截断改义。
+async fn search_deepseek(key: &str, query: &str, opts: &SearchOpts) -> Result<String, String> {
+    let q = deepseek_query_and_time(query, opts, chrono::Local::now().date_naive());
+    let n = q.chars().count();
+    if n > DEEPSEEK_QUERY_MAX_CHARS {
+        return Err(format!(
+            "DeepSeek 搜索要求 query 不超过 {DEEPSEEK_QUERY_MAX_CHARS} 字符（当前 {n}，含 site:/after: 运算符）。请缩短关键词后重试。"
+        ));
+    }
+    let resp = http_client()
+        .post("https://api.deepseek.com/v1/tools/search")
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"))
+        .json(&serde_json::json!({ "query": q, "count": opts.count }))
+        .send()
+        .await
+        .map_err(|e| format!("DeepSeek 请求失败：{e}"))?;
+    if !resp.status().is_success() {
+        return Err(deepseek_http_error(resp.status().as_u16()));
+    }
+    let hits = parse_deepseek_results(&decode_search_body(
+        &read_body_capped(resp, SEARCH_BODY_CAP_BYTES)
+            .await
+            .map_err(|e| format!("DeepSeek 响应读取失败：{e}"))?,
+    ))?;
+    if hits.is_empty() {
+        return Err("DeepSeek 没有返回结果".into());
+    }
+    let mut out = format_deepseek_results(&hits);
+    if out.len() > SEARCH_OUTPUT_CAP_BYTES {
+        out = crate::bot::format::truncate_bytes(&out, SEARCH_OUTPUT_CAP_BYTES);
+    }
+    Ok(out)
 }
 
 /// 全局复用的 HTTP client（连接池复用，避免每请求新建）。
@@ -288,11 +433,13 @@ pub(super) fn parse_brave_results(body: &str) -> Result<Vec<(String, String, Str
         })
         .collect())
 }
-/// 分流决策（纯函数，可测）：Tavily/Brave 两组开关 + key → 走哪条搜索路径
+/// 分流决策（纯函数，可测）：DeepSeek/Tavily/Brave 三组开关 + key → 走哪条搜索路径
 #[derive(Debug, PartialEq)]
 pub(super) enum SearchRoute {
     /// Bing+百度双引擎抓取
     Dual,
+    /// DeepSeek Search API（带 trim 后的 key）
+    Deepseek(String),
     /// Tavily API（带 trim 后的 key）
     Tavily(String),
     /// Brave Web Search API（带 trim 后的 key）
@@ -301,25 +448,49 @@ pub(super) enum SearchRoute {
     MissingKey,
     /// Brave 开关开了但没填 key
     MissingBraveKey,
-    /// Tavily 与 Brave 同时开启：互斥，明确报错不静默猜
-    Conflict,
+    /// DeepSeek 开关开了但没填 key
+    MissingDeepseekKey,
+    /// 多个引擎同时开启：互斥，明确报错不静默猜（携带开启中的引擎名用于报错）
+    Conflict(Vec<&'static str>),
 }
 
 /// 开关语义：None（老配置从未显式设置）保持旧行为——配了 key 就当开启；
 /// Some(false) 强制不走对应引擎（即使配了 key）；Some(true) 强制走对应引擎。
-/// Brave 优先判定（与 Tavily 同时开启 → Conflict 明确报错）；Tavily 逻辑保持原样。
+/// 三个 API 引擎互斥：多于一个开启（显式或 key 自动态）→ Conflict 列出引擎名；
+/// 恰好一个开启 → 对应 API（缺 key 报 Missing*）；全关 → Dual。
 pub(super) fn resolve_search_route(
+    deepseek_enabled: Option<bool>,
+    deepseek_key: Option<&str>,
     tavily_enabled: Option<bool>,
     tavily_key: Option<&str>,
     brave_enabled: Option<bool>,
     brave_key: Option<&str>,
 ) -> SearchRoute {
+    let dkey = deepseek_key.unwrap_or("").trim().to_string();
     let tkey = tavily_key.unwrap_or("").trim().to_string();
     let bkey = brave_key.unwrap_or("").trim().to_string();
+    let d_on = deepseek_enabled.unwrap_or(!dkey.is_empty());
     let t_on = tavily_enabled.unwrap_or(!tkey.is_empty());
     let b_on = brave_enabled.unwrap_or(!bkey.is_empty());
-    if t_on && b_on {
-        return SearchRoute::Conflict;
+    let mut on_names: Vec<&'static str> = Vec::new();
+    if d_on {
+        on_names.push("DeepSeek");
+    }
+    if t_on {
+        on_names.push("Tavily");
+    }
+    if b_on {
+        on_names.push("Brave");
+    }
+    if on_names.len() > 1 {
+        return SearchRoute::Conflict(on_names);
+    }
+    if d_on {
+        return if dkey.is_empty() {
+            SearchRoute::MissingDeepseekKey
+        } else {
+            SearchRoute::Deepseek(dkey)
+        };
     }
     if b_on {
         return if bkey.is_empty() {
@@ -334,11 +505,12 @@ pub(super) fn resolve_search_route(
         (true, false) => SearchRoute::Tavily(tkey),
     }
 }
-/// 搜索入口（bot 工具调用）：按设置页「Tavily 搜索」/「Brave 搜索」开关分流——
-/// 都关 → Bing+百度双引擎；开一个 → 对应 API。开了但没填 key / 双开 / 请求失败都
-/// 明确报错回传给模型（不静默回退百度，避免「以为在用 API 实际走的百度」）。
-/// Tavily/Brave key 从系统凭据存储读（不落 bot-config.json）；
-/// keyring 真实故障按无 key 处理（走 MissingKey 报错文案引导用户去设置页），
+/// 搜索入口（bot 工具调用）：按设置页「DeepSeek 搜索」/「Tavily 搜索」/
+/// 「Brave 搜索」开关分流——都关 → Bing+百度双引擎；开一个 → 对应 API。
+/// 多开 / 开了但没填 key / 请求失败都明确报错回传给模型（不静默回退百度，
+/// 避免「以为在用 API 实际走的百度」）。
+/// 各 key 从系统凭据存储读（不落 bot-config.json）；
+/// keyring 真实故障按无 key 处理（走 Missing* 报错文案引导用户去设置页），
 /// 不弄挂 web_search 工具本身。
 pub async fn web_search_with_config(
     app: &tauri::AppHandle,
@@ -346,15 +518,22 @@ pub async fn web_search_with_config(
     opts: &SearchOpts,
 ) -> Result<String, String> {
     let cfg = crate::bot::load_config(app);
+    let deepseek_key = crate::bot::read_search_key(crate::bot::KeySlot::Deepseek).unwrap_or_default();
     let tavily_key = crate::bot::read_search_key(crate::bot::KeySlot::Tavily).unwrap_or_default();
     let brave_key = crate::bot::read_search_key(crate::bot::KeySlot::Brave).unwrap_or_default();
     match resolve_search_route(
+        cfg.deepseek_enabled,
+        Some(deepseek_key.as_str()),
         cfg.tavily_enabled,
         Some(tavily_key.as_str()),
         cfg.brave_enabled,
         Some(brave_key.as_str()),
     ) {
         SearchRoute::Dual => web_search(query, opts).await.map_err(|e| e.to_string()),
+        SearchRoute::MissingDeepseekKey => Err(
+            "DeepSeek 搜索已开启，但设置页还没填 DeepSeek API Key。请到设置页「机器人设置」填写 key（与 DeepSeek 大模型 API 同一把平台 key），或关闭「DeepSeek 搜索」开关改用 Bing+百度双引擎。"
+                .into(),
+        ),
         SearchRoute::MissingKey => Err(
             "Tavily 搜索已开启，但设置页还没填 Tavily API Key。请到设置页「机器人设置」填写 key，或关闭「Tavily 搜索」开关改用 Bing+百度双引擎。"
                 .into(),
@@ -363,9 +542,16 @@ pub async fn web_search_with_config(
             "Brave 搜索已开启，但设置页还没填 Brave API Key。请到设置页「机器人设置」填写 key，或关闭「Brave 搜索」开关改用 Bing+百度双引擎。"
                 .into(),
         ),
-        SearchRoute::Conflict => Err(
-            "Tavily 与 Brave 搜索不能同时开启，请到设置页关闭其中一个".into(),
-        ),
+        SearchRoute::Conflict(names) => Err(format!(
+            "{} 搜索不能同时开启，请到设置页关闭其中一个",
+            names.join(" 与 ")
+        )),
+        SearchRoute::Deepseek(key) => search_deepseek(&key, query, opts).await.map_err(|e| {
+            crate::bot::audit_log(app, &format!("web_search.deepseek_failed | {e}"));
+            format!(
+                "DeepSeek 搜索失败：{e}。请检查 key 是否有效/账户余额是否充足，或在设置页关闭「DeepSeek 搜索」开关回退 Bing+百度双引擎。"
+            )
+        }),
         SearchRoute::Tavily(key) => search_tavily(&key, query, opts).await.map_err(|e| {
             crate::bot::audit_log(app, &format!("web_search.tavily_failed | {e}"));
             format!(

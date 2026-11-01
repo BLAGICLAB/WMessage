@@ -171,14 +171,89 @@ pub(super) fn status_worth_proxy_retry(status: u16) -> bool {
     (500..600).contains(&status) || status == 408
 }
 
+/// 「DeepSeek 抓取」模式的决策（纯函数，可测）：手动开关 + key → 是否优先走
+/// DeepSeek Fetch。严格手动：只有 Some(true) 且 key 非空才启用——不做「配了
+/// key 就自动开启」（与搜索开关的自动态语义不同，有意为之）。
+pub(crate) fn deepseek_fetch_mode(enabled: Option<bool>, key: Option<&str>) -> Option<String> {
+    let k = key.unwrap_or("").trim();
+    match enabled {
+        Some(true) if !k.is_empty() => Some(k.to_string()),
+        _ => None,
+    }
+}
+
+/// DeepSeek Fetch API 页：POST https://api.deepseek.com/v1/tools/fetch，
+/// body {url}，返回 {title, content(Markdown)}（title 非空时拼成 `# 标题` 头）。
+/// 与 Jina Reader 同形：传 URL 返整页 Markdown。URL 过同一道公网闸（不把内网
+/// 地址发给第三方）；带 userinfo 的 URL 明确不支持（DeepSeek 侧 400，提前拒）。
+/// 失败不算终局——由调用方回退直连+Jina 原链路。
+async fn deepseek_fetch_page(key: &str, raw_url: &str) -> Result<String, String> {
+    let u = url::Url::parse(raw_url.trim()).map_err(|_| "网址格式无效".to_string())?;
+    if !u.username().is_empty() || u.password().is_some() {
+        return Err("URL 含用户名/密码，DeepSeek 抓取不支持".into());
+    }
+    check_public_url(&u)
+        .await
+        .map_err(|e| e.reason().to_string())?;
+    let resp = super::search::http_client()
+        .post("https://api.deepseek.com/v1/tools/fetch")
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"))
+        .json(&serde_json::json!({ "url": u.as_str() }))
+        .send()
+        .await
+        .map_err(|e| format!("请求失败：{e}"))?;
+    if !resp.status().is_success() {
+        return Err(super::search::deepseek_http_error(resp.status().as_u16()));
+    }
+    let body = read_body_capped(resp, FETCH_MAX_BYTES)
+        .await
+        .map_err(|e| format!("响应读取失败：{e}"))?;
+    let v: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&body))
+        .map_err(|e| format!("响应解析失败：{e}"))?;
+    let content = v["content"].as_str().unwrap_or("").trim().to_string();
+    if content.is_empty() {
+        return Err("响应没有正文内容".into());
+    }
+    let title = v["title"].as_str().unwrap_or("").trim();
+    Ok(if title.is_empty() {
+        content
+    } else {
+        format!("# {title}\n\n{content}")
+    })
+}
+
 /// 抓取网页正文：直连一次，不成再换渲染代理出网一次。
+///
+/// 「DeepSeek 抓取」开关开启（deepseek_key 传入）时优先走 DeepSeek Fetch
+///（服务端抓取返回整页 Markdown），失败回退下面的原链路；None = 原链路零变化。
 ///
 /// 直连通了但正文太短（JS 渲染的空壳），和直连压根没走通（连接超时、5xx、
 /// 返回的不是网页文本），都汇到同一条兜底路上——后者过去是直接失败的，于是
 /// 「本机到某个站点不通」直接等于「这个页面抓不到」，哪怕换个出口就能拿到。
-/// 隐私边界不变：目标 URL 会发给 r.jina.ai（公网地址本身，低风险），
-/// 且只发到公网代理一处，不做二次转发。
-pub async fn fetch_text(raw_url: &str) -> Result<FetchedText, CommandError> {
+/// 隐私边界不变：目标 URL 会发给 r.jina.ai / DeepSeek（公网地址本身，低风险），
+/// 且只发到一处，不做二次转发。
+pub async fn fetch_text(
+    raw_url: &str,
+    deepseek_key: Option<&str>,
+) -> Result<FetchedText, CommandError> {
+    // DeepSeek 抓取优先（设置页手动开关）：成功直接返回；失败留痕后落回原链路
+    let mut deepseek_out: Option<Result<(), String>> = None;
+    if let Some(key) = deepseek_key {
+        match deepseek_fetch_page(key, raw_url).await {
+            Ok(text) => {
+                eprintln!("[bot_web] DeepSeek 抓取采用：{raw_url}");
+                return Ok(FetchedText {
+                    text,
+                    via_jina: false,
+                    deepseek: Some(Ok(())),
+                });
+            }
+            Err(e) => {
+                eprintln!("[bot_web] DeepSeek 抓取失败，回退直连+Jina：{raw_url} | {e}");
+                deepseek_out = Some(Err(e));
+            }
+        }
+    }
     let (mut plain, why_thin) = match fetch_direct(raw_url).await {
         Ok(text) => (text, "正文过短（多半是 JS 渲染的空壳）".to_string()),
         Err(FetchErr::Rejected(e)) => return Err(e),
@@ -210,15 +285,19 @@ pub async fn fetch_text(raw_url: &str) -> Result<FetchedText, CommandError> {
     Ok(FetchedText {
         text: plain,
         via_jina,
+        deepseek: deepseek_out,
     })
 }
 
-/// fetch_text 的产物：正文 + 是否经渲染代理取得。
-/// via_jina 单独上抛是因为目标 URL 会发给 r.jina.ai 第三方——这层是纯函数层
-/// 拿不到 AppHandle 记不了审计，由调用方（工具层）留结构化事件。
+/// fetch_text 的产物：正文 + 是否经渲染代理取得 + DeepSeek 抓取优先模式的结果。
+/// via_jina / deepseek 单独上抛是因为目标 URL 会发给 r.jina.ai / DeepSeek 第三方
+/// ——这层是纯函数层拿不到 AppHandle 记不了审计，由调用方（工具层）留结构化事件。
+/// deepseek：Some(Ok) = 已采用；Some(Err) = 尝试失败已回退原链路（Err 是实因）；
+/// None = 未启用。
 pub struct FetchedText {
     pub text: String,
     pub via_jina: bool,
+    pub deepseek: Option<Result<(), String>>,
 }
 
 /// 直连抓取：逐跳校验公网地址、钉 IP、手工跟随重定向、HTML→纯文本。

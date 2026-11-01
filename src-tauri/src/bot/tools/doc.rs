@@ -668,6 +668,9 @@ pub(super) fn slice_fetch_output(text: &str, offset: usize) -> String {
 
 /// 抓取网页正文：http/https 公网地址，转纯文本回传（30K 字分页，可 offset 续读）。
 /// 每次调用重新抓取整页再切片——无缓存失效问题，网页内容也不会因续读而过期。
+/// 设置页「DeepSeek 抓取」开启且 key 已配置时优先走 DeepSeek Fetch（服务端
+/// 抓取返回整页 Markdown），失败回退原直连+Jina 链路；开启但缺 key 按未启用
+/// 处理（eprintln 留痕，工具不因配置缺失而挂——设置页有缺 key 内联警告兜着）。
 pub(crate) async fn tool_fetch_url(
     app: &AppHandle,
     args: &str,
@@ -688,10 +691,45 @@ pub(crate) async fn tool_fetch_url(
         app,
         &format!("fetch_url | url: {}", escape_for_log(&u, 100)),
     );
-    match crate::bot_web::fetch_text(&u).await {
+    let cfg = load_config(app);
+    let deepseek_key = match cfg.deepseek_fetch_enabled {
+        Some(true) => match crate::bot::read_search_key(crate::bot::KeySlot::Deepseek) {
+            Ok(k) => crate::bot_web::deepseek_fetch_mode(Some(true), Some(&k))
+                .or_else(|| {
+                    eprintln!("[fetch_url] DeepSeek 抓取已开启但未配置 key，走直连+Jina");
+                    None
+                }),
+            Err(_) => {
+                eprintln!("[fetch_url] keyring 读取失败，DeepSeek 抓取按未启用处理");
+                None
+            }
+        },
+        _ => None,
+    };
+    match crate::bot_web::fetch_text(&u, deepseek_key.as_deref()).await {
         Ok(fetched) => {
-            // 经渲染代理取得 = 目标 URL 发给了第三方（r.jina.ai）——这是隐私
-            // 边界的既知例外，留结构化事件供事后核查（stderr 三路记录只在进程日志）
+            // 走了第三方 = 目标 URL 发给了第三方（DeepSeek / r.jina.ai）——这是
+            // 隐私边界的既知例外，留结构化事件供事后核查（stderr 记录只在进程日志）
+            match &fetched.deepseek {
+                Some(Ok(())) => {
+                    crate::audit_event!(
+                        app,
+                        crate::audit::AuditLevel::Info,
+                        "web.deepseek_fetch_used",
+                        "url" => escape_for_log(&u, 100),
+                    );
+                }
+                Some(Err(e)) => {
+                    crate::audit_event!(
+                        app,
+                        crate::audit::AuditLevel::Info,
+                        "web.deepseek_fetch_failed",
+                        "url" => escape_for_log(&u, 100),
+                        "error" => escape_for_log(e, 200),
+                    );
+                }
+                None => {}
+            }
             if fetched.via_jina {
                 crate::audit_event!(
                     app,

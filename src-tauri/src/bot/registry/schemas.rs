@@ -210,10 +210,10 @@ pub const SCHEMA_WAIT_FOR_ELEMENT: &str = r##"{"type":"function","function":{"na
     "query":{"type":"string","description":"要找的控件标题 / 角色关键词"},
     "timeoutMs":{"type":"integer","description":"可选：等待上限毫秒，默认 5000，最大 30000"}
   },"required":["windowId","query"]}}}"##;
-pub const SCHEMA_WEB_SEARCH: &str = r##"{"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要；润色/翻译/改写用户已给的文本不需要搜索）","parameters":{"type":"object","properties":{
+pub const SCHEMA_WEB_SEARCH: &str = r##"{"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 DeepSeek/Tavily/Brave key 时走对应 API、多开报错，否则 Bing+百度网页抓取；DeepSeek 路线每条结果带发布日期；返回标题/链接/摘要；润色/翻译/改写用户已给的文本不需要搜索）","parameters":{"type":"object","properties":{
     "query":{"type":"string","description":"搜索关键词"},
     "count":{"type":"integer","description":"结果条数，可选，1-10，默认 6"},
-    "timeRange":{"type":"string","enum":["day","week","month","year"],"description":"时间范围，可选：day=24小时内 / week=一周内 / month=一月内 / year=一年内（Tavily/Brave 原生支持；Bing+百度抓取模式不支持并会明确提示）"},
+    "timeRange":{"type":"string","enum":["day","week","month","year"],"description":"时间范围，可选：day=24小时内 / week=一周内 / month=一月内 / year=一年内（DeepSeek/Tavily/Brave 原生支持；Bing+百度抓取模式不支持并会明确提示）"},
     "site":{"type":"string","description":"限定站点域名，可选，如 github.com（不要带 https:// 前缀）"}
   },"required":["query"]}}}"##;
 

@@ -790,7 +790,7 @@ const TOOLS: &str = r#"[
   },
   {
     "function": {
-      "description": "搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要；润色/翻译/改写用户已给的文本不需要搜索）",
+      "description": "搜索互联网获取最新信息（配置 DeepSeek/Tavily/Brave key 时走对应 API、多开报错，否则 Bing+百度网页抓取；DeepSeek 路线每条结果带发布日期；返回标题/链接/摘要；润色/翻译/改写用户已给的文本不需要搜索）",
       "name": "web_search",
       "parameters": {
         "properties": {
@@ -807,7 +807,7 @@ const TOOLS: &str = r#"[
             "type": "string"
           },
           "timeRange": {
-            "description": "时间范围，可选：day=24小时内 / week=一周内 / month=一月内 / year=一年内（Tavily/Brave 原生支持；Bing+百度抓取模式不支持并会明确提示）",
+            "description": "时间范围，可选：day=24小时内 / week=一周内 / month=一月内 / year=一年内（DeepSeek/Tavily/Brave 原生支持；Bing+百度抓取模式不支持并会明确提示）",
             "enum": [
               "day",
               "week",

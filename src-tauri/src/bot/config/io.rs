@@ -478,6 +478,7 @@ fn strip_verified_keys_with(
         (KeySlot::Llm, &mut cfg.api_key),
         (KeySlot::Tavily, &mut cfg.tavily_key),
         (KeySlot::Brave, &mut cfg.brave_key),
+        (KeySlot::Deepseek, &mut cfg.deepseek_key),
     ] {
         let Some(k) = field.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
             continue;
@@ -607,6 +608,7 @@ fn disk_plaintext_slots(dir: &Path) -> Vec<(KeySlot, String)> {
         (KeySlot::Llm, &disk.api_key),
         (KeySlot::Tavily, &disk.tavily_key),
         (KeySlot::Brave, &disk.brave_key),
+        (KeySlot::Deepseek, &disk.deepseek_key),
     ]
     .into_iter()
     .filter_map(|(slot, v)| {
@@ -712,7 +714,7 @@ pub fn migrate_search_keys(app: &AppHandle) -> Result<(), String> {
     }
     let raw = std::fs::read_to_string(&p).map_err(|e| e.to_string())?;
     let mut cfg: BotConfig = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-    if cfg.tavily_key.is_none() && cfg.brave_key.is_none() {
+    if cfg.tavily_key.is_none() && cfg.brave_key.is_none() && cfg.deepseek_key.is_none() {
         return Ok(()); // 无明文残留，幂等
     }
     let mut changed = false;
@@ -720,6 +722,7 @@ pub fn migrate_search_keys(app: &AppHandle) -> Result<(), String> {
     for (slot, field) in [
         (KeySlot::Tavily, cfg.tavily_key.clone()),
         (KeySlot::Brave, cfg.brave_key.clone()),
+        (KeySlot::Deepseek, cfg.deepseek_key.clone()),
     ] {
         let has_in_store = keyring::has_search_key(slot).unwrap_or(false);
         let mut write = |key: &str| keyring::write_search_key(slot, key).map_err(|e| e.message());
@@ -731,6 +734,7 @@ pub fn migrate_search_keys(app: &AppHandle) -> Result<(), String> {
         let field_ref = match slot {
             KeySlot::Tavily => &mut cfg.tavily_key,
             KeySlot::Brave => &mut cfg.brave_key,
+            KeySlot::Deepseek => &mut cfg.deepseek_key,
             KeySlot::Llm => unreachable!("Llm 槽位由 migrate_legacy_key 负责"),
         };
         if *field_ref != remaining {

@@ -1,14 +1,16 @@
 use super::fetch::{
-    check_public_url_with, fetch_direct, ipv4_is_private, ipv6_is_private, is_private_host,
-    jina_reader_url, status_worth_proxy_retry, with_url_port, FetchErr,
+    check_public_url_with, deepseek_fetch_mode, fetch_direct, ipv4_is_private, ipv6_is_private,
+    is_private_host, jina_reader_url, status_worth_proxy_retry, with_url_port, FetchErr,
 };
 use super::html::{
     extract_main_content, first_between, first_open_tag, href_from_tag, parse_baidu, parse_bing,
     remove_tag_blocks, strip_tags,
 };
 use super::search::{
-    brave_query_and_params, clean_snippet, decode_search_body, domain_of, http_client,
-    parse_brave_results, resolve_search_route, tavily_payload, SearchRoute,
+    brave_query_and_params, clean_snippet, decode_search_body, deepseek_http_error,
+    deepseek_query_and_time, deepseek_time_suffix, domain_of, format_deepseek_results, http_client,
+    parse_brave_results, parse_deepseek_results, resolve_search_route, tavily_payload, DeepseekHit,
+    SearchRoute,
 };
 use super::*;
 
@@ -139,15 +141,15 @@ async fn bracketed_ipv6_literal_judged_without_dns() {
 fn route_none_switch_keeps_legacy_auto() {
     // 老配置（无开关字段、无 brave 字段）：配了 key 自动走 Tavily，没配走双引擎
     assert_eq!(
-        resolve_search_route(None, Some("tvly-x"), None, None),
+        resolve_search_route(None, None, None, Some("tvly-x"), None, None),
         SearchRoute::Tavily("tvly-x".into())
     );
     assert_eq!(
-        resolve_search_route(None, None, None, None),
+        resolve_search_route(None, None, None, None, None, None),
         SearchRoute::Dual
     );
     assert_eq!(
-        resolve_search_route(None, Some("   "), None, None),
+        resolve_search_route(None, None, None, Some("   "), None, None),
         SearchRoute::Dual
     );
 }
@@ -155,16 +157,23 @@ fn route_none_switch_keeps_legacy_auto() {
 #[test]
 fn route_explicit_off_forces_dual_even_with_key() {
     assert_eq!(
-        resolve_search_route(Some(false), Some("tvly-x"), None, None),
+        resolve_search_route(None, None, Some(false), Some("tvly-x"), None, None),
         SearchRoute::Dual
     );
     assert_eq!(
-        resolve_search_route(Some(false), None, None, None),
+        resolve_search_route(None, None, Some(false), None, None, None),
         SearchRoute::Dual
     );
     // Brave 也显式关：两边都有 key 也应走双引擎
     assert_eq!(
-        resolve_search_route(Some(false), Some("tvly-x"), Some(false), Some("bsa-x")),
+        resolve_search_route(
+            None,
+            None,
+            Some(false),
+            Some("tvly-x"),
+            Some(false),
+            Some("bsa-x")
+        ),
         SearchRoute::Dual
     );
 }
@@ -172,16 +181,16 @@ fn route_explicit_off_forces_dual_even_with_key() {
 #[test]
 fn route_explicit_on_requires_key() {
     assert_eq!(
-        resolve_search_route(Some(true), None, None, None),
+        resolve_search_route(None, None, Some(true), None, None, None),
         SearchRoute::MissingKey
     );
     assert_eq!(
-        resolve_search_route(Some(true), Some("  "), None, None),
+        resolve_search_route(None, None, Some(true), Some("  "), None, None),
         SearchRoute::MissingKey
     );
     // key 首尾空白应裁掉
     assert_eq!(
-        resolve_search_route(Some(true), Some(" tvly-x "), None, None),
+        resolve_search_route(None, None, Some(true), Some(" tvly-x "), None, None),
         SearchRoute::Tavily("tvly-x".into())
     );
 }
@@ -189,7 +198,7 @@ fn route_explicit_on_requires_key() {
 #[test]
 fn route_brave_on_with_key() {
     assert_eq!(
-        resolve_search_route(None, None, Some(true), Some(" bsa-x ")),
+        resolve_search_route(None, None, None, None, Some(true), Some(" bsa-x ")),
         SearchRoute::Brave("bsa-x".into())
     );
 }
@@ -197,25 +206,32 @@ fn route_brave_on_with_key() {
 #[test]
 fn route_brave_on_without_key_errors() {
     assert_eq!(
-        resolve_search_route(None, None, Some(true), None),
+        resolve_search_route(None, None, None, None, Some(true), None),
         SearchRoute::MissingBraveKey
     );
     assert_eq!(
-        resolve_search_route(None, None, Some(true), Some("  ")),
+        resolve_search_route(None, None, None, None, Some(true), Some("  ")),
         SearchRoute::MissingBraveKey
     );
 }
 
 #[test]
 fn route_both_on_conflict() {
-    // 双开（显式或自动态）都明确报错，不静默猜
+    // 双开（显式或自动态）都明确报错，不静默猜；报错携带开启中的引擎名
     assert_eq!(
-        resolve_search_route(Some(true), Some("tvly-x"), Some(true), Some("bsa-x")),
-        SearchRoute::Conflict
+        resolve_search_route(
+            None,
+            None,
+            Some(true),
+            Some("tvly-x"),
+            Some(true),
+            Some("bsa-x")
+        ),
+        SearchRoute::Conflict(vec!["Tavily", "Brave"])
     );
     assert_eq!(
-        resolve_search_route(None, Some("tvly-x"), None, Some("bsa-x")),
-        SearchRoute::Conflict
+        resolve_search_route(None, None, None, Some("tvly-x"), None, Some("bsa-x")),
+        SearchRoute::Conflict(vec!["Tavily", "Brave"])
     );
 }
 
@@ -223,18 +239,83 @@ fn route_both_on_conflict() {
 fn route_brave_none_switch_auto_by_key() {
     // 与 Tavily 的 None+key 旧行为对齐：无显式开关但有 brave key 自动启用 Brave
     assert_eq!(
-        resolve_search_route(None, None, None, Some("bsa-x")),
+        resolve_search_route(None, None, None, None, None, Some("bsa-x")),
         SearchRoute::Brave("bsa-x".into())
     );
     // Brave 自动态优先于「都没配」的双引擎，但不影响显式关 Tavily
     assert_eq!(
-        resolve_search_route(Some(false), Some("tvly-x"), None, Some("bsa-x")),
+        resolve_search_route(None, None, Some(false), Some("tvly-x"), None, Some("bsa-x")),
         SearchRoute::Brave("bsa-x".into())
     );
     // Brave 显式关：即使配了 brave key 也不走；Tavily 逻辑不受影响
     assert_eq!(
-        resolve_search_route(None, Some("tvly-x"), Some(false), Some("bsa-x")),
+        resolve_search_route(None, None, None, Some("tvly-x"), Some(false), Some("bsa-x")),
         SearchRoute::Tavily("tvly-x".into())
+    );
+}
+
+#[test]
+fn route_deepseek_on_with_key() {
+    assert_eq!(
+        resolve_search_route(Some(true), Some(" sk-x "), None, None, None, None),
+        SearchRoute::Deepseek("sk-x".into())
+    );
+    // 与 Tavily/Brave 同款自动态：无显式开关但配了 key 自动启用
+    assert_eq!(
+        resolve_search_route(None, Some("sk-x"), None, None, None, None),
+        SearchRoute::Deepseek("sk-x".into())
+    );
+}
+
+#[test]
+fn route_deepseek_on_without_key_errors() {
+    assert_eq!(
+        resolve_search_route(Some(true), None, None, None, None, None),
+        SearchRoute::MissingDeepseekKey
+    );
+    assert_eq!(
+        resolve_search_route(Some(true), Some("  "), None, None, None, None),
+        SearchRoute::MissingDeepseekKey
+    );
+}
+
+#[test]
+fn route_deepseek_off_forces_tavily_brave_chain() {
+    // DeepSeek 显式关：即使配了 key 也不走；Tavily/Brave 链路不受影响
+    assert_eq!(
+        resolve_search_route(Some(false), Some("sk-x"), None, None, None, None),
+        SearchRoute::Dual
+    );
+    assert_eq!(
+        resolve_search_route(
+            Some(false),
+            Some("sk-x"),
+            Some(true),
+            Some("tvly-x"),
+            None,
+            None
+        ),
+        SearchRoute::Tavily("tvly-x".into())
+    );
+}
+
+#[test]
+fn route_three_way_conflict_names_all_engines() {
+    // 三开 / DeepSeek+Brave 双开都报 Conflict，引擎名按 DeepSeek > Tavily > Brave 序
+    assert_eq!(
+        resolve_search_route(
+            Some(true),
+            Some("sk-x"),
+            Some(true),
+            Some("tvly-x"),
+            Some(true),
+            Some("bsa-x")
+        ),
+        SearchRoute::Conflict(vec!["DeepSeek", "Tavily", "Brave"])
+    );
+    assert_eq!(
+        resolve_search_route(None, Some("sk-x"), None, None, Some(true), Some("bsa-x")),
+        SearchRoute::Conflict(vec!["DeepSeek", "Brave"])
     );
 }
 
@@ -519,6 +600,145 @@ fn brave_query_and_params_maps_opts() {
 }
 
 #[test]
+fn deepseek_query_and_time_maps_opts() {
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).expect("合法日期");
+    let opts = SearchOpts {
+        count: 6,
+        time_range: Some(TimeRange::Month),
+        site: Some("github.com".into()),
+    };
+    let q = deepseek_query_and_time("rust 异步", &opts, today);
+    assert_eq!(q, "rust 异步 site:github.com after:2026-10-01", "{q}");
+    // 无 site/time：query 原样（运算符由引擎原样转发，我们不额外加工）
+    let plain = SearchOpts {
+        count: 8,
+        ..Default::default()
+    };
+    assert_eq!(deepseek_query_and_time("hello", &plain, today), "hello");
+}
+
+#[test]
+fn deepseek_time_suffix_maps_ranges() {
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).expect("合法日期");
+    assert_eq!(
+        deepseek_time_suffix(TimeRange::Day, today),
+        "after:2026-10-31"
+    );
+    assert_eq!(
+        deepseek_time_suffix(TimeRange::Week, today),
+        "after:2026-10-25"
+    );
+    assert_eq!(
+        deepseek_time_suffix(TimeRange::Month, today),
+        "after:2026-10-01"
+    );
+    assert_eq!(
+        deepseek_time_suffix(TimeRange::Year, today),
+        "after:2025-11-01"
+    );
+    // 月底边界：3-31 减一个月 → 2-28（checked_sub_months 自然钳到月末）
+    let eof = chrono::NaiveDate::from_ymd_opt(2026, 3, 31).expect("合法日期");
+    assert_eq!(
+        deepseek_time_suffix(TimeRange::Month, eof),
+        "after:2026-02-28"
+    );
+}
+
+#[test]
+fn parse_deepseek_results_ok() {
+    let body = r#"{"results":[
+        {"rerank_score":2.1,"title":"标题一","url":"https://a.com/x","snippet":"摘要一","summary":"长摘要","date":"2026-10-31T08:00:00Z"},
+        {"title":"标题二","url":"https://b.com/y","snippet":"摘要二"}
+    ]}"#;
+    let r = parse_deepseek_results(body).unwrap_or_default();
+    assert_eq!(
+        r,
+        vec![
+            DeepseekHit {
+                title: "标题一".into(),
+                url: "https://a.com/x".into(),
+                snippet: "摘要一".into(),
+                date: Some("2026-10-31".into()),
+            },
+            DeepseekHit {
+                title: "标题二".into(),
+                url: "https://b.com/y".into(),
+                snippet: "摘要二".into(),
+                date: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn parse_deepseek_results_missing_and_bad_json() {
+    // results 缺失按空结果处理（防御，与 parse_brave_results 同口径）
+    assert_eq!(parse_deepseek_results("{}").unwrap_or_default(), vec![]);
+    assert_eq!(
+        parse_deepseek_results(r#"{"other":1}"#).unwrap_or_default(),
+        vec![]
+    );
+    // JSON 非法明确报错
+    assert!(parse_deepseek_results("not json").is_err());
+}
+
+#[test]
+fn format_deepseek_results_renders_date() {
+    let hits = vec![
+        DeepseekHit {
+            title: "标题一".into(),
+            url: "https://a.com/x".into(),
+            snippet: "摘要一".into(),
+            date: Some("2026-10-31".into()),
+        },
+        DeepseekHit {
+            title: "标题二".into(),
+            url: "https://b.com/y".into(),
+            snippet: String::new(),
+            date: None,
+        },
+    ];
+    let out = format_deepseek_results(&hits);
+    assert!(
+        out.contains("1. [DeepSeek] 标题一\nhttps://a.com/x\n摘要一（发布：2026-10-31）"),
+        "{out}"
+    );
+    // 无 date/空摘要不渲染日期段
+    assert!(
+        out.contains("2. [DeepSeek] 标题二\nhttps://b.com/y\n\n"),
+        "{out}"
+    );
+}
+
+#[test]
+fn deepseek_http_error_maps_known_codes() {
+    assert!(
+        deepseek_http_error(401).contains("key"),
+        "{}",
+        deepseek_http_error(401)
+    );
+    assert!(deepseek_http_error(402).contains("余额不足"));
+    assert!(deepseek_http_error(429).contains("速率限制"));
+    // 未知码原样带状态号，不编造原因
+    assert_eq!(deepseek_http_error(500), "DeepSeek 返回 HTTP 500");
+}
+
+#[test]
+fn deepseek_fetch_mode_strictly_manual() {
+    // 严格手动：只有 Some(true) + 非 key 才启用
+    assert_eq!(
+        deepseek_fetch_mode(Some(true), Some(" sk-x ")),
+        Some("sk-x".into())
+    );
+    // 开了但没 key / key 空白 = 未启用（工具侧按原链路走，不报错）
+    assert_eq!(deepseek_fetch_mode(Some(true), None), None);
+    assert_eq!(deepseek_fetch_mode(Some(true), Some("  ")), None);
+    // 没开（None/false）= 未启用，即使配了 key（与搜索开关的自动态语义不同，有意为之）
+    assert_eq!(deepseek_fetch_mode(None, Some("sk-x")), None);
+    assert_eq!(deepseek_fetch_mode(Some(false), Some("sk-x")), None);
+}
+
+#[test]
 fn network_search_and_fetch() {
     // 真实网络测试：环境可达时验证（cn.bing.com 从 Mac 可达）
     match tauri::async_runtime::block_on(web_search("北京今天天气", &SearchOpts::default())) {
@@ -528,7 +748,7 @@ fn network_search_and_fetch() {
         }
         Err(e) => eprintln!("search failed (环境相关): {e}"),
     }
-    match tauri::async_runtime::block_on(fetch_text("https://example.com")) {
+    match tauri::async_runtime::block_on(fetch_text("https://example.com", None)) {
         Ok(t) => eprintln!(
             "FETCH OK, {} chars, head: {}",
             t.text.chars().count(),
@@ -537,9 +757,10 @@ fn network_search_and_fetch() {
         Err(e) => eprintln!("fetch failed (环境相关): {e}"),
     }
     // 内网地址应被拒
-    let blocked = tauri::async_runtime::block_on(fetch_text("http://127.0.0.1:4763/api/health"));
+    let blocked =
+        tauri::async_runtime::block_on(fetch_text("http://127.0.0.1:4763/api/health", None));
     assert!(blocked.is_err(), "本机地址必须被拒绝");
-    let bad_scheme = tauri::async_runtime::block_on(fetch_text("file:///etc/hosts"));
+    let bad_scheme = tauri::async_runtime::block_on(fetch_text("file:///etc/hosts", None));
     assert!(bad_scheme.is_err(), "非 http(s) 协议必须被拒绝");
 }
 

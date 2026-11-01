@@ -65,6 +65,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
     // 搜索 key 同策略：真实故障透传 Err，不吞成 false
     let has_tavily_key = keyring::has_search_key(super::types::KeySlot::Tavily)?;
     let has_brave_key = keyring::has_search_key(super::types::KeySlot::Brave)?;
+    let has_deepseek_key = keyring::has_search_key(super::types::KeySlot::Deepseek)?;
     // 老配置（无 models_by_provider、有 base_url/model）在内存里补一份
     // ModelEntry + active_model_id，让设置页能展示出来；不写盘，等用户主动保存
     // 才一并落盘。
@@ -109,6 +110,9 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         tavily_enabled: cfg.tavily_enabled,
         has_brave_key,
         brave_enabled: cfg.brave_enabled,
+        has_deepseek_key,
+        deepseek_enabled: cfg.deepseek_enabled,
+        deepseek_fetch_enabled: cfg.deepseek_fetch_enabled,
         python_timeout_secs: cfg.python_timeout_secs,
         final_selfcheck_round_gap: cfg.final_selfcheck_round_gap,
         selfcheck_model_id: cfg.selfcheck_model_id,
@@ -215,9 +219,10 @@ pub(crate) fn preserve_non_ui_fields(incoming: &mut BotConfig, disk: &BotConfig)
     incoming.mcp_servers = disk.mcp_servers.clone();
 }
 
-/// 保存配置。api_key / tavily_key / brave_key / vendor_key 几个顶层参数同语义：
+/// 保存配置。api_key / tavily_key / brave_key / deepseek_key / vendor_key
+/// 几个顶层参数同语义：
 /// Some(非空) 写入系统凭据存储并覆盖；None/空串不动已存的 key。
-/// （Tavily/Brave key 与主 key 同模式，不落配置文件；
+/// （Tavily/Brave/DeepSeek key 与主 key 同模式，不落配置文件；
 /// vendor_key 按厂商名分条目存储——厂商页一厂一 key）
 #[derive(serde::Deserialize)]
 pub struct VendorKeyParam {
@@ -300,6 +305,7 @@ pub fn bot_set_config(
     api_key: Option<String>,
     tavily_key: Option<String>,
     brave_key: Option<String>,
+    deepseek_key: Option<String>,
     vendor_key: Option<VendorKeyParam>,
 ) -> CommandResult<()> {
     let mut keys_written: Vec<(&'static str, String)> = Vec::new();
@@ -322,6 +328,7 @@ pub fn bot_set_config(
     for (slot, key) in [
         (super::types::KeySlot::Tavily, tavily_key),
         (super::types::KeySlot::Brave, brave_key),
+        (super::types::KeySlot::Deepseek, deepseek_key),
     ] {
         if let Some(k) = key {
             let k = k.trim();

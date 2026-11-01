@@ -46,6 +46,8 @@ pub enum KeySlot {
     Tavily,
     /// Brave 搜索 key（同上）
     Brave,
+    /// DeepSeek 搜索/抓取 key（与 DeepSeek 大模型 API 同一把平台 key）
+    Deepseek,
 }
 
 impl KeySlot {
@@ -55,6 +57,7 @@ impl KeySlot {
             KeySlot::Llm => KEYRING_USER,
             KeySlot::Tavily => "tavily_api_key",
             KeySlot::Brave => "brave_api_key",
+            KeySlot::Deepseek => "deepseek_api_key",
         }
     }
     /// Linux 降级明文文件名（数据目录下，0600）
@@ -63,6 +66,7 @@ impl KeySlot {
             KeySlot::Llm => "bot-api-key.txt",
             KeySlot::Tavily => "bot-tavily-key.txt",
             KeySlot::Brave => "bot-brave-key.txt",
+            KeySlot::Deepseek => "bot-deepseek-key.txt",
         }
     }
     /// 槽位下标（进程级「service 迁移已探测」标记数组用）
@@ -71,6 +75,7 @@ impl KeySlot {
             KeySlot::Llm => 0,
             KeySlot::Tavily => 1,
             KeySlot::Brave => 2,
+            KeySlot::Deepseek => 3,
         }
     }
 }
@@ -115,6 +120,23 @@ pub struct BotConfig {
     /// None = 未显式设置，配了 braveKey 就当开启；Some(false) 强制不走 Brave。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brave_enabled: Option<bool>,
+    /// 仅用于旧版本迁移（DeepSeek 搜索 key 存系统凭据存储，不落 bot-config.json）：
+    /// 与 tavily_key/brave_key 同一口径，读出迁入 keyring 后置 None 写回。
+    /// 新代码读写 DeepSeek 搜索 key 一律走 read/write_search_key。
+    #[serde(skip_serializing)]
+    pub deepseek_key: Option<String>,
+    /// 「DeepSeek 搜索」开关（可选）：语义与 tavily_enabled 对齐——
+    /// None = 未显式设置，配了 deepseekKey 就当开启；Some(false) 强制不走
+    /// DeepSeek（即使配了 key）。分流逻辑见 bot_web::resolve_search_route。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deepseek_enabled: Option<bool>,
+    /// 「DeepSeek 抓取」开关（手动，默认关）：Some(true) 且 key 已配置时
+    /// fetch_url 优先走 DeepSeek Fetch API（返回整页 Markdown），失败回退
+    /// 原直连+Jina 链路；None/Some(false) = 不碰 DeepSeek（原链路零变化）。
+    /// 不做「配了 key 就自动开启」——抓取走第三方是核心工具的口径变化，
+    /// 必须用户显式开启（与搜索开关的自动态语义不同，有意为之）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deepseek_fetch_enabled: Option<bool>,
     /// run_python 默认超时秒数（可选）：None = 120s；工具参数 timeoutSecs 优先于此；
     /// 硬钳上限 = bot::constants::PY_MAX_TIMEOUT_SECS。大计算（pandas 等）可调大。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -293,6 +315,9 @@ impl Default for BotConfig {
             tavily_enabled: None,             // 未显式设置 = 配了 key 就自动启用（旧行为）
             brave_key: None,                  // 未配置 = 不走 Brave
             brave_enabled: None,              // 未显式设置 = 配了 key 就自动启用（同 Tavily）
+            deepseek_key: None,               // 未配置 = 不走 DeepSeek 搜索/抓取
+            deepseek_enabled: None,           // 未显式设置 = 配了 key 就自动启用（同 Tavily）
+            deepseek_fetch_enabled: None,     // 手动开关，默认关（与搜索开关的自动态语义不同）
             python_timeout_secs: None,        // 未配置 = 120s 默认
             perm_mode: None,                  // 未配置 = ask（弹授权）
             api_provider: None,               // 未配置 = openai（旧行为）
@@ -426,6 +451,12 @@ pub struct BotConfigView {
     pub has_brave_key: bool,
     /// 「Brave 搜索」开关原样透传（None = 未显式设置，前端按 key 有无显示自动态）
     pub brave_enabled: Option<bool>,
+    /// DeepSeek 搜索 key 是否已存系统凭据存储（key 本体不进 view）
+    pub has_deepseek_key: bool,
+    /// 「DeepSeek 搜索」开关原样透传（None = 未显式设置，前端按 key 有无显示自动态）
+    pub deepseek_enabled: Option<bool>,
+    /// 「DeepSeek 抓取」开关原样透传（手动开关，None = 关）
+    pub deepseek_fetch_enabled: Option<bool>,
     /// run_python 默认超时秒数（None = 120s 默认；设置页可改，硬钳 = bot::constants::PY_MAX_TIMEOUT_SECS）
     pub python_timeout_secs: Option<u64>,
     /// 终稿自检的轮次间隔（None = 默认 8；0 = 关闭自检；后端钳 0..=100）。
