@@ -7,6 +7,35 @@
 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
 
+## 2026-11-02（周一）Windows 主程序单文件出包：修「启动即退」
+
+**为什么记**：2026-11-02 绿色包（基线 `1bd468a6`）在 Windows 上双击即退，日志是
+`panic | src/bot/config/keyring.rs:427 | index out of bounds: the len is 3 but the index is 3`。
+根因：凭据迁移的「已探测标记」写成 3 元素数组，而槽位在 `db1b63f2` 加到 4 个
+（新增 DeepSeek），读第 4 个槽位时下标越界 → panic → 进程退出。Windows 上凭据
+后端恒为系统凭据管理器，且 `bot_get_config` 无条件读该槽位 → 必崩；macOS 走同一
+路径同样会崩（只是当次出包早于该提交，此前没暴露）。
+
+**修法**（`4e274ae3`）：标记不再用「定长数组 + 槽位下标」，改为按槽位各持一个 +
+穷尽 match 取——新增槽位时编译不过，坑挡在编译期；`KeySlot::index()` 随之删除。
+回归测试先照旧实现复现出同一句 panic，再改实现。
+
+**这次只出 exe，不是完整绿色包**：基线 `4e274ae3`，`wmessage.exe` 76,431,020 字节，
+SHA256 `73de825974bfb4a5c5c6a3f589d31c54b40fc079634bcbaad642db19f05b3ce3`。随附
+`WebView2Loader.dll`（160,880 字节，缺它 exe 起不来——与 WebView2 Runtime 无关）。
+未随附：`onnxruntime.dll`、`bge-small-zh-v1.5/`、`pp-ocr-v6/`、`dotnet/`、
+`MicrosoftEdgeWebview2Setup.exe`——语义记忆降级关键词模式、OCR 工具不可用、
+Word 修订回退 Python。
+
+**投递**：7z 切 5 卷（每卷 18,348,929 字节，前 4 卷满卷、末卷 3,198,542），QQ
+邮件逐封发往 163 收件人；本地解包还原后 exe 的 SHA256 与原件一致。
+
+**踩到的新坑**：QQ 服务器对「已由 SMTP 保存」的邮件再 APPEND 到已发送箱会回
+「Mail already saved to Sent by SMTP, no need to APPEND again」，Mail 把这条无害
+提示弹成模态框——它不挡 SMTP 投递（收件人照收），但会挡住后续 AppleScript 发信，
+每封发完得点掉。
+
+
 ## 2026-11-02（周一）Windows 绿色版 2026-11-02 出包
 
 **为什么记**：按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程出包，基线
