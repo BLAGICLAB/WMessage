@@ -401,7 +401,7 @@ CREATE INDEX IF NOT EXISTS idx_effects_due ON effect_queue(kind, due, seq);
 |---|---|---|---|
 | ~~原批 2~~ | `migration` | `migration_journal`（自研三要素实现） | **不迁**（2026-11-03 修订）：唯一实战恢复路径，重写零收益纯风险；effect_queue 无 state 列，replay 靠 `state='pending'`（`recovery.rs:111-130`）+ 孤儿清理（`:98-110`），「行为不变」做不到。journal 原样保留为模式原型，是否收编另立拍板 |
 | 批 2 | `notify` | 8 个发送点全无重试、4 处静默 | **内核与首个真实调用方同批落地**：统一走队列、有回执、指数退避、限次、失败进健康面板、**绝不静默**；裂缝 5 以「删行+入队同事务」正解 |
-| 批 4 | `schedule_retry` / `subagent_finalize` / `subagent_dispatch` | 定时作业重试固定 5 分钟且写两处；子 agent 终态写库是**内存内**指数重试（`src-tauri/src/bot/subagent_runner.rs:41-77`，`RETRY_DELAYS_MS=[1s,2s,4s,8s,16s]`，**不持久化**）；runner 派发是 `spawn` 一次性 | 三者进队列：崩溃后自动续跑；`subagent_dispatch` 进队列后，G5 的「插行了但 runner 没起」自动消解 |
+| 批 3 | `subagent_finalize` / `subagent_dispatch` | 子 agent 终态写库是**内存内**指数重试（`src-tauri/src/bot/subagent_runner.rs:41-77`，`RETRY_DELAYS_MS=[1s,2s,4s,8s,16s]`，**不持久化**）；runner 派发是 `spawn` 一次性 | 两者进队列：崩溃后自动续跑；`subagent_dispatch` 进队列后，G5 的「插行了但 runner 没起」自动消解（僵尸清扫对「派发待办还在队列」的 queued 行豁免）。~~`schedule_retry`~~ **不做**（2026-11-03 落地时砍）：批 1 已把 run 行与 job 状态合并为同事务，`retry_at` 本就持久化且被 jobs_tick 扫描——崩溃续跑已有载体，再入队列是重复实现（YAGNI）。G7 的并发闸按 §10.2 原案独立成作业级信号量 |
 
 **「定时作业固定 5 分钟退避」不改**：那是明确的产品决策
 （`src-tauri/src/db/schedule_jobs.rs:68-69`：「固定 5 分钟退避：不做指数退避——本地单机场景固定间隔足够可预期」）。

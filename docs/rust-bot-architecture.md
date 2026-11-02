@@ -394,7 +394,10 @@ src-tauri/src/
 │                        进程内会话表 → bot-plan 事件；bot_plan_state 命令给面板取当前快照
 ├── bot/effects.rs       统一持久化副作用队列的派发器（表见 db/effects.rs）：单 tokio 任务
 │                        轮询 effect_queue，per-kind 并发槽 + 指数退避 + 超限停投递并审计；
-│                        收尾 CAS（kind+key+seq+generation）成功删行；入队方 commit 后 kick 唤醒
+│                        收尾 CAS（kind+key+seq+generation）成功删行；入队方 commit 后 kick 唤醒。
+│                        kind 三种：notify（8 处系统通知）/ subagent_finalize（终态落库，
+│                        runner 具化 Wry 故派发器链路具化）/ subagent_dispatch（runner 补派，
+│                        僵尸清扫对派发待办在队列的 queued 行豁免）
 ├── bot/stream_log.rs (515) 会话级流式事件的统一出口 emit_recorded：**盖信封**（载荷顶层的
 │                        sessionId 由本函数统一注入，调用方不许自带同名键——盖章权分散到
 │                        各发射点时漏一处就静默丢事件）→ 分配序号（会话内跨轮次连续，

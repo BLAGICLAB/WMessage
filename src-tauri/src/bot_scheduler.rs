@@ -703,7 +703,15 @@ async fn finalize_job_run(
     }
 }
 
-/// spawn 一个作业执行（panic 隔离 + 审计，供到点分发与重试触发共用）
+/// 作业级并发闸：同时跑的作业（完整模型循环）数上限。到点集中时排队不失败
+/// ——各作业先进信号量等待，拿到槽位才建卡执行；同作业防重入仍由 SchedGuard
+/// 先行。初值与 py 沙箱并发闸（PY_RUN_MAX_CONCURRENT）同档。
+const JOB_RUN_MAX_CONCURRENT: usize = 2;
+
+static JOB_RUN_SLOTS: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(JOB_RUN_MAX_CONCURRENT));
+
+/// spawn 一个作业执行（并发闸 + panic 隔离 + 审计，供到点分发与重试触发共用）
 fn spawn_job_run(app: &AppHandle, job: crate::db::ScheduledJob) {
     let app2 = app.clone();
     let app_audit = app.clone();
@@ -711,6 +719,15 @@ fn spawn_job_run(app: &AppHandle, job: crate::db::ScheduledJob) {
     let last_status = job.last_status.clone();
     let last_error = job.last_error.clone();
     tauri::async_runtime::spawn(async move {
+        // 并发闸：信号量进程内不 close，acquire 不会 Err；真发生（编程错误）
+        // 就放弃本次执行并留痕，不放行不限流
+        let Ok(_slot) = JOB_RUN_SLOTS.acquire().await else {
+            crate::bot::audit_log(
+                &app_audit,
+                &format!("sched_job_slot_error | id: {job_id} | 并发闸已关闭（不该发生）"),
+            );
+            return;
+        };
         // per-task panic 可见性（同任务卡/工作流路径）
         let body = std::panic::AssertUnwindSafe(run_scheduled_job(app2, job));
         if let Err(panic) = body.catch_unwind().await {

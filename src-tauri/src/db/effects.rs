@@ -122,6 +122,18 @@ pub(crate) fn fetch_due(
     Ok(out)
 }
 
+/// 指定 kind+key 是否有待派发行（僵尸清扫豁免判断等场景用）
+pub(crate) fn pending(conn: &rusqlite::Connection, kind: &str, key: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT 1 FROM effect_queue WHERE kind = ?1 AND key = ?2 LIMIT 1",
+        [kind, key],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|o| o.is_some())
+    .map_err(|e| e.to_string())
+}
+
 /// 最早 due（派发器睡眠时长依据；空队列返回 None）
 pub(crate) fn next_due(conn: &rusqlite::Connection) -> Result<Option<i64>, String> {
     conn.query_row("SELECT MIN(due) FROM effect_queue", [], |r| {
@@ -361,6 +373,20 @@ mod tests {
         let stale_miss = record_failure(&conn, &row, "stale", 2_000).unwrap();
         assert_eq!(stale_miss, None, "旧快照 CAS 不命中");
         assert_eq!(fresh.attempts, 0);
+    }
+
+    #[test]
+    fn pending_reports_presence_for_exempt_check() {
+        let conn = mem_conn();
+        let _g = crate::db::lock_db_write();
+        assert!(!pending(&conn, "notify", "k").unwrap());
+        enqueue(&conn, "notify", "k", "{}", 50).unwrap();
+        assert!(pending(&conn, "notify", "k").unwrap(), "待派发行应命中");
+        assert!(
+            !pending(&conn, "notify", "other").unwrap(),
+            "不同 key 不命中"
+        );
+        assert!(!pending(&conn, "other", "k").unwrap(), "不同 kind 不命中");
     }
 
     #[test]

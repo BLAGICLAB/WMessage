@@ -15,6 +15,15 @@ use crate::db::effects::EffectRow;
 
 /// 通知投递 kind（系统通知：8 个发送点统一走队列重试）
 pub(crate) const KIND_NOTIFY: &str = "notify";
+/// 子 agent 终态落库 kind：进程内重试不持久化，崩溃即丢——改队列续跑
+pub(crate) const KIND_SUBAGENT_FINALIZE: &str = "subagent_finalize";
+/// 子 agent runner 派发 kind：「插行了但 runner 没起」变成可恢复待办
+pub(crate) const KIND_SUBAGENT_DISPATCH: &str = "subagent_dispatch";
+
+/// 派发待办的业务 key（入队方与清扫豁免判断共用，防两处拼串漂移）
+pub(crate) fn subagent_dispatch_key(subagent_id: &str) -> String {
+    format!("subagent_dispatch:{subagent_id}")
+}
 
 /// handler 失败分类：
 /// - [`EffectError::Later`]：现在跑不了（环境未就绪等），只顺延 due、不消耗重试配额
@@ -42,12 +51,24 @@ fn config_of(kind: &str) -> Option<KindConfig> {
             cap_ms: 60_000,
             max_attempts: 5,
         }),
+        KIND_SUBAGENT_FINALIZE => Some(KindConfig {
+            limit: 4,
+            base_ms: 1_000,
+            cap_ms: 16_000,
+            max_attempts: 5,
+        }),
+        KIND_SUBAGENT_DISPATCH => Some(KindConfig {
+            limit: 4,
+            base_ms: 2_000,
+            cap_ms: 60_000,
+            max_attempts: 5,
+        }),
         _ => None,
     }
 }
 
-fn registered_kinds() -> [&'static str; 1] {
-    [KIND_NOTIFY]
+fn registered_kinds() -> [&'static str; 3] {
+    [KIND_NOTIFY, KIND_SUBAGENT_FINALIZE, KIND_SUBAGENT_DISPATCH]
 }
 
 /// 退避 `min(cap, base × 2^attempts)`（attempts 为本次失败前的计次）
@@ -67,7 +88,7 @@ pub(crate) fn kick() {
 }
 
 /// 启动派发器（App setup 调一次；重复调用是编程错误，静默跳过）
-pub(crate) fn spawn_dispatcher<R: tauri::Runtime>(app: &AppHandle<R>) {
+pub(crate) fn spawn_dispatcher(app: &AppHandle) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     if KICK.set(tx).is_err() {
         return;
@@ -79,14 +100,14 @@ pub(crate) fn spawn_dispatcher<R: tauri::Runtime>(app: &AppHandle<R>) {
     tauri::async_runtime::spawn(dispatcher.clone().run(rx));
 }
 
-struct Dispatcher<R: tauri::Runtime> {
-    app: AppHandle<R>,
+struct Dispatcher {
+    app: AppHandle,
     /// in-flight 行的 key 集合（per-kind）：并发放 入口的「不重复派同一行」由
     /// dispatch_cycle 过滤保证，补位唤醒由 attempt 收尾 kick 触发
     inflight: std::sync::Mutex<HashMap<&'static str, HashSet<String>>>,
 }
 
-impl<R: tauri::Runtime> Dispatcher<R> {
+impl Dispatcher {
     async fn run(self: Arc<Self>, mut rx: tokio::sync::mpsc::UnboundedReceiver<()>) {
         loop {
             self.dispatch_cycle().await;
@@ -241,14 +262,16 @@ pub(crate) async fn enqueue_notify<R: tauri::Runtime>(
     Ok(())
 }
 
-async fn run_handler<R: tauri::Runtime>(
-    app: &AppHandle<R>,
+async fn run_handler(
+    app: &AppHandle,
     kind: &str,
     key: &str,
     payload: &str,
 ) -> Result<(), EffectError> {
     match kind {
         KIND_NOTIFY => deliver_notify(app, key, payload).await,
+        KIND_SUBAGENT_FINALIZE => finalize_subagent(app, payload).await,
+        KIND_SUBAGENT_DISPATCH => dispatch_subagent(app, payload).await,
         other => Err(EffectError::Fail(format!("未注册的 effect kind：{other}"))),
     }
 }
@@ -299,6 +322,23 @@ fn give_up_audit<R: tauri::Runtime>(app: &AppHandle<R>, kind: &str, row: &Effect
             "id" => id,
             "err" => crate::bot::truncate_for_log(err, 120)
         );
+    } else if let Some(id) = row.key.strip_prefix("subagent_finalize:") {
+        // 保留存量事件名：终态写库最终失败（原进程内重试耗尽的同名审计）
+        crate::audit_event!(
+            app,
+            crate::audit::AuditLevel::Warn,
+            "subagent_terminal_state_write_failed",
+            "id" => id,
+            "err" => crate::bot::truncate_for_log(err, 120)
+        );
+    } else if let Some(id) = row.key.strip_prefix("subagent_dispatch:") {
+        crate::audit_event!(
+            app,
+            crate::audit::AuditLevel::Warn,
+            "subagent_dispatch_giveup",
+            "id" => id,
+            "err" => crate::bot::truncate_for_log(err, 120)
+        );
     } else {
         crate::audit_event!(
             app,
@@ -309,6 +349,99 @@ fn give_up_audit<R: tauri::Runtime>(app: &AppHandle<R>, kind: &str, row: &Effect
             "err" => crate::bot::truncate_for_log(err, 120)
         );
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FinalizePayload {
+    subagent_id: String,
+    status: String,
+    finished_at: i64,
+    error: String,
+}
+
+/// 子 agent 终态落库（幂等）：行已是任意终态即视为完成（重放、与正常收尾
+/// 赛跑都安全），否则按状态机写入目标终态。
+async fn finalize_subagent<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    payload: &str,
+) -> Result<(), EffectError> {
+    let p: FinalizePayload = serde_json::from_str(payload)
+        .map_err(|e| EffectError::Fail(format!("终态 payload 解析失败：{e}")))?;
+    let Some(status) = crate::db::subagents::SubagentStatus::from_str(&p.status) else {
+        return Err(EffectError::Fail(format!("未知终态：{}", p.status)));
+    };
+    crate::db::lock::with_write_conn(app, move |conn| -> Result<(), String> {
+        if let Some(row) =
+            crate::db::load_subagent(conn, &p.subagent_id).map_err(|e| e.to_string())?
+        {
+            if row.status.is_terminal() {
+                return Ok(()); // 已有终态（重放或赛跑），幂等成功
+            }
+        }
+        crate::db::update_subagent_status(
+            conn,
+            &p.subagent_id,
+            status,
+            p.finished_at,
+            Some(&p.error),
+        )
+        .map(|_| ())
+    })
+    .await
+    .map_err(EffectError::Fail)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OnionPayload {
+    config: String,
+    max_turn: Option<u32>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DispatchPayload {
+    subagent_id: String,
+    stage: Option<String>,
+    onion: Option<OnionPayload>,
+}
+
+/// 子 agent runner 派发（幂等）：行已不在 queued（被取消/已被接管/已终态）
+/// 即视为完成；queued 则后台起 runner，handler 立即返回。同 key 进程内不
+/// 并发（in-flight 去重），跨重启无双跑（旧进程已死，行在 queued 才重派）。
+async fn dispatch_subagent(app: &AppHandle, payload: &str) -> Result<(), EffectError> {
+    let p: DispatchPayload = serde_json::from_str(payload)
+        .map_err(|e| EffectError::Fail(format!("派发 payload 解析失败：{e}")))?;
+    let stage = p
+        .stage
+        .as_deref()
+        .and_then(crate::bot_orchestrator::SubagentStage::from_str);
+    let onion = p.onion.map(|o| crate::bot_orchestrator::SpawnOnion {
+        config: o.config,
+        max_turn: o.max_turn,
+    });
+    let sid = p.subagent_id.clone();
+    let status = crate::db::lock::with_write_conn(app, move |conn| -> Result<String, String> {
+        crate::db::load_subagent(conn, &sid)
+            .map_err(|e| e.to_string())?
+            .map(|row| row.status.as_str().to_string())
+            .ok_or_else(|| format!("子 agent 行不存在：{sid}"))
+    })
+    .await
+    .map_err(EffectError::Fail)?;
+    if status != crate::db::subagents::SubagentStatus::Queued.as_str() {
+        return Ok(()); // 幂等：已被接管/取消/终态
+    }
+    // 后台起 runner（handler 立即返回）；run_subagent 具化 Wry（run_model_loop
+    // 生产壳），派发器链路因此具化。同 key 进程内不并发（in-flight 去重），
+    // 跨重启无双跑（旧进程已死，行在 queued 才重派）
+    let app2 = app.clone();
+    let sid2 = p.subagent_id;
+    tauri::async_runtime::spawn(async move {
+        crate::bot_orchestrator::run_subagent(app2, sid2, stage, onion).await;
+    });
+    Ok(())
 }
 
 fn truncate_err(err: &str) -> String {
@@ -350,17 +483,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_kind_fails_without_retrying_forever() {
-        let app = tauri::test::mock_app();
-        let handle = app.handle().clone();
-        let err = run_handler(&handle, "no_such_kind", "k", "{}").await;
-        assert!(
-            matches!(err, Err(EffectError::Fail(_))),
-            "未注册 kind 应直接 Fail"
-        );
-    }
-
-    #[tokio::test]
     async fn bad_payload_is_fail_and_plugin_missing_is_later() {
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
@@ -376,95 +498,113 @@ mod tests {
         );
     }
 
-    /// attempt 全链路（Later 路径）：mock 无通知插件 → 顺延 due、不计数、行保留
+    /// 终态落库 handler：queued 行写入目标终态；重放（崩溃后重跑）幂等成功
     #[tokio::test]
-    async fn attempt_reschedules_later_without_counting_failure() {
+    async fn finalize_subagent_writes_terminal_and_is_idempotent() {
         let _g = ATTEMPT_DB_LOCK.lock().await;
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
-        clear_effect_queue(&handle).await;
-        let key = "reminder:tx1";
-        let payload = serde_json::json!({ "title": "⏰ 提醒", "body": "测试" }).to_string();
-        let due = crate::db::now_ms();
-        let (k1, p1, d1) = (key.to_string(), payload.clone(), due);
+        let sid = "sa_effects_t1";
+        let profile = crate::db::SubagentProfile::General;
+        let row = crate::db::SubagentRow {
+            id: sid.to_string(),
+            status: crate::db::SubagentStatus::Queued,
+            profile,
+            model: None,
+            parent_session_id: None,
+            session_id: None,
+            task_id: None,
+            objective: "测试目标".into(),
+            trace_id: "trc_t1".into(),
+            acceptance_json: None,
+            context_summary: None,
+            result_json: None,
+            error: None,
+            created_at: 1,
+            started_at: None,
+            finished_at: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cache_read_tokens: None,
+        };
         crate::db::lock::with_write_conn(&handle, move |conn| {
-            crate::db::effects::enqueue(conn, KIND_NOTIFY, &k1, &p1, d1)
+            crate::db::insert_subagent(conn, &row)
         })
         .await
         .unwrap();
-        let row = fetch_due_rows(&handle, KIND_NOTIFY, due, 5).await.unwrap();
-        assert_eq!(row.len(), 1);
-        let dispatcher = Arc::new(Dispatcher {
-            app: handle.clone(),
-            inflight: std::sync::Mutex::new(HashMap::new()),
-        });
-        let cfg = config_of(KIND_NOTIFY).unwrap();
-        dispatcher
-            .attempt(KIND_NOTIFY, cfg, row.into_iter().next().unwrap())
-            .await;
-        let k2 = key.to_string();
-        let (attempts, due_now): (i64, i64) =
+        let payload = serde_json::json!({
+            "subagentId": sid,
+            "status": "cancelled",
+            "finishedAt": 123,
+            "error": "测试取消",
+        })
+        .to_string();
+        finalize_subagent(&handle, &payload).await.unwrap();
+        // 重放（崩溃后重跑同一条）：已终态 → 幂等成功，不改写
+        finalize_subagent(&handle, &payload).await.unwrap();
+        let (status, error): (String, String) =
             crate::db::lock::with_write_conn(&handle, move |conn| {
                 conn.query_row(
-                    "SELECT attempts, due FROM effect_queue WHERE key = ?1",
-                    [k2],
+                    "SELECT status, IFNULL(error, '') FROM subagents WHERE id = ?1",
+                    [sid],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .map_err(|e| e.to_string())
             })
             .await
             .unwrap();
-        assert_eq!(attempts, 0, "Later 不消耗重试配额");
-        assert!(due_now > due, "due 已顺延");
+        assert_eq!(
+            status, "cancelled",
+            "终态应已落库（queued→cancelled 合法转移）"
+        );
+        assert_eq!(error, "测试取消");
     }
 
-    /// attempt 全链路（Fail 路径）：坏 payload → attempts+1，超限后停投递
+    /// 终态写库 handler 的重试闭环：payload 解析失败 → Fail 计数退避，重放
+    /// 到 max_attempts 后停投递（attempt 收尾写库的语义在 db::effects 层已测，
+    /// 这里锁「Fail 分类会把配额烧完」的闭环）
     #[tokio::test]
-    async fn attempt_counts_failure_and_stops_at_max_attempts() {
+    async fn finalize_bad_payload_burns_retry_budget_and_stops() {
         let _g = ATTEMPT_DB_LOCK.lock().await;
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
         clear_effect_queue(&handle).await;
-        let key = "notify:bad";
+        let key = "subagent_finalize:sa_bad";
         let due = crate::db::now_ms();
         let (k1, d1) = (key.to_string(), due);
         crate::db::lock::with_write_conn(&handle, move |conn| {
-            crate::db::effects::enqueue(conn, KIND_NOTIFY, &k1, "not-json", d1)
+            crate::db::effects::enqueue(conn, KIND_SUBAGENT_FINALIZE, &k1, "not-json", d1)
         })
         .await
         .unwrap();
-        let dispatcher = Arc::new(Dispatcher {
-            app: handle.clone(),
-            inflight: std::sync::Mutex::new(HashMap::new()),
-        });
-        let cfg = config_of(KIND_NOTIFY).unwrap();
-        // 退避会把 due 推向未来：抓取用「远期地平线」当 now，只看 attempts 闸
+        let cfg = config_of(KIND_SUBAGENT_FINALIZE).unwrap();
         let horizon = crate::db::now_ms() + 3_600_000;
         for i in 1..=cfg.max_attempts {
-            let rows = fetch_due_rows(&handle, KIND_NOTIFY, horizon, cfg.max_attempts)
+            let rows = fetch_due_rows(&handle, KIND_SUBAGENT_FINALIZE, horizon, cfg.max_attempts)
                 .await
                 .unwrap();
             assert_eq!(rows.len(), 1, "第 {i} 轮仍应抓到（未超限）");
-            dispatcher
-                .clone()
-                .attempt(KIND_NOTIFY, cfg, rows.into_iter().next().unwrap())
-                .await;
+            let row = rows.into_iter().next().unwrap();
+            // attempt 的收尾语义（Fail → record_failure）按派发器同款内联执行
+            let outcome = finalize_subagent(&handle, &row.payload).await;
+            let fail_msg = match &outcome {
+                Err(EffectError::Fail(e)) => e.clone(),
+                other => panic!("预期 Fail，实际 {other:?}"),
+            };
+            let backoff = backoff_delay(&cfg, row.attempts);
+            let due = crate::db::now_ms() + backoff as i64;
+            let row2 = row.clone();
+            let attempts = crate::db::lock::with_write_conn(&handle, move |conn| {
+                crate::db::effects::record_failure(conn, &row2, &truncate_err(&fail_msg), due)
+            })
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(attempts, i, "第 {i} 次失败后计次应累进");
         }
-        let rows = fetch_due_rows(&handle, KIND_NOTIFY, horizon, cfg.max_attempts)
+        let rows = fetch_due_rows(&handle, KIND_SUBAGENT_FINALIZE, horizon, cfg.max_attempts)
             .await
             .unwrap();
         assert!(rows.is_empty(), "达到 max_attempts 后停投递");
-        let k2 = key.to_string();
-        let attempts: i64 = crate::db::lock::with_write_conn(&handle, move |conn| {
-            conn.query_row(
-                "SELECT attempts FROM effect_queue WHERE key = ?1",
-                [k2],
-                |r| r.get(0),
-            )
-            .map_err(|e| e.to_string())
-        })
-        .await
-        .unwrap();
-        assert_eq!(attempts, cfg.max_attempts, "行保留（同 key 再入队即复活）");
     }
 }

@@ -381,12 +381,13 @@ fn report_failure_is_retried_instead_of_given_up() {
         "汇报失败要与 Busy 同款：deadline 内 sleep 后重试"
     );
 }
-/// 接线守卫：兜底写终态失败必须留痕。
+/// 接线守卫：兜底写终态失败必须可恢复、可查。
 ///
-/// 兜底写的是「行停在 queued/running」的唯一补救；它自己失败时若不记，
+/// 兜底写的是「行停在 queued/running」的唯一补救；它自己失败时若无人管，
 /// 那行就永远停在那里，面板上一直转圈，事后也查不到是哪一步失败的。
-/// 留痕与重试集中收在 `write_terminal_with_retry`（DB 锁瞬态指数退避），
-/// 四处兜底写口都走它——守卫断「口子都接上了」+「助手自身留痕不吞失败」。
+/// 重试与留痕现集中收在 Effects 队列（subagent_finalize kind：持久化退避
+/// 重试 + 超限审计），四处兜底写口都走集中入队助手——守卫断「口子都接上
+/// 了」+「派发器侧的超限审计还在」。
 /// 匹配串用 `concat!` 拆分防自匹配（本测试自身的源码不算命中）。
 #[test]
 fn terminal_state_fallback_write_leaves_a_trace_on_failure() {
@@ -395,30 +396,23 @@ fn terminal_state_fallback_write_leaves_a_trace_on_failure() {
         !src.contains(concat!("let _ = db_", "locked(")),
         "兜底写终态不得吞掉失败——行会永远停在 queued/running"
     );
-    let helper_needle = concat!("write_terminal_with_", "retry(");
+    let helper_needle = concat!("enqueue_terminal_", "write(");
     let call_count = src.matches(helper_needle).count();
     // 四处兜底写口（加载失败 / 产物目录不可用 / 会话建立失败 / 收尾失败）
-    // 各一次调用，助手的递归循环里还有一次 → 下界 5
+    // 各一次调用，助手本体定义还有一次 → 下界 5
     assert!(
         call_count >= 5,
-        "兜底写终态有四处（加助手内部一次），现 {call_count} 处走集中助手"
+        "兜底写终态有四处（加助手本体一次），现 {call_count} 处走集中助手"
     );
-    // 助手本体：失败留痕 + 有界重试 ladder 都要在
-    let helper_pos = src
-        .find(concat!("async fn write_terminal_with_", "retry("))
-        .expect("集中助手必须存在");
-    let helper_body_end = src[helper_pos..]
-        .find("\n}\n")
-        .map(|i| helper_pos + i)
-        .unwrap_or(src.len());
-    let helper = &src[helper_pos..helper_body_end];
+    // 派发器侧：终态写库最终失败的超限审计还在（subagent_finalize kind 的
+    // give-up 分支），失败可查不静默
+    let fx = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bot/effects.rs"),
+    )
+    .expect("bot/effects.rs 应存在");
     assert!(
-        helper.contains(concat!("subagent_terminal_state_write_", "failed")),
-        "兜底写终态失败必须留痕——行永远停在 queued/running 时只有这条线索"
-    );
-    assert!(
-        helper.contains("RETRY_DELAYS_MS"),
-        "兜底写要有界重试（DB 锁瞬态不该一次失败就永久挂行）"
+        fx.contains(concat!("subagent_terminal_state_write_", "failed")),
+        "终态写库最终失败必须留痕——行永远停在 queued/running 时只有这条线索"
     );
 }
 /// 接线守卫：`subagent_digest_block` 只造段，不得顺手记「已吸收」。

@@ -5,7 +5,7 @@
 //! 闸与建行放一处的原因：排队语义只在派发路径上出现。
 
 use crate::bot_orchestrator::{
-    run_subagent, safe_rel_path, SpawnAck, SpawnRequest, SubagentStage, MACHINE_PREFIXES,
+    safe_rel_path, SpawnAck, SpawnRequest, SubagentStage, MACHINE_PREFIXES,
 };
 use crate::db::{SubagentProfile, SubagentRow, SubagentStatus};
 use crate::error::{CommandError, CommandResult};
@@ -271,13 +271,34 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
         ),
     );
     // 非阻塞派发 runner（设计 §5：spawn 立即返回；执行在后台推进状态机）。
-    // spawned 事件在派发前发：不与 runner 的收尾事件竞争先后，行建好即告知
+    // 派发改走 Effects 队列（subagent_dispatch kind）：崩溃在「插行之后、
+    // runner 起来之前」时，行+派发待办都在库里，重启后自动补派——
+    // 「插行了但 runner 没起」不再是丢失态。stage/onion 是内存闭包参数，
+    // 不落库，随 payload 带给派发器。
     emit_subagent_spawned(app, &ack.subagent_id, audit_parent_session.as_deref());
-    let runner_app = app.clone();
-    let runner_sid = ack.subagent_id.clone();
-    tauri::async_runtime::spawn(async move {
-        run_subagent(runner_app, runner_sid, runner_stage, runner_onion).await
-    });
+    let key = crate::bot::effects::subagent_dispatch_key(&ack.subagent_id);
+    let payload = serde_json::json!({
+        "subagentId": ack.subagent_id,
+        "stage": runner_stage.map(|s| s.as_str()),
+        "onion": runner_onion.map(|o| serde_json::json!({
+            "config": o.config,
+            "maxTurn": o.max_turn,
+        })),
+    })
+    .to_string();
+    let (key2, payload2) = (key.clone(), payload);
+    crate::db::lock::with_write_conn(app, move |conn| {
+        crate::db::effects::enqueue(
+            conn,
+            crate::bot::effects::KIND_SUBAGENT_DISPATCH,
+            &key2,
+            &payload2,
+            crate::db::now_ms(),
+        )
+    })
+    .await
+    .map_err(CommandError::DbError)?;
+    crate::bot::effects::kick();
     Ok(ack)
 }
 /// 并发上限（设计 §6 已）：全局 3、每个派发主会话 2。超限排队不失败

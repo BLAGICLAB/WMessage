@@ -574,6 +574,7 @@ pub fn sweep_zombie_subagents(app: &AppHandle) {
             };
             let _g = crate::db::lock_db_write();
             let mut cleaned = 0usize;
+            let mut exempted = 0usize;
             // 终态按「事实」选：排队中的从未开跑，是被重启丢弃（cancelled）；
             // 已开跑的中途断掉才算失败（failed）。状态机也只放行这两条边
             for (st, to) in [
@@ -595,6 +596,21 @@ pub fn sweep_zombie_subagents(app: &AppHandle) {
                 };
                 for row in rows {
                     let id = row.id.clone();
+                    // queued 行的派发待办还在 Effects 队列里（上次崩溃在「插行
+                    // 之后、runner 起来之前」）→ 行留给派发器接管，这里不清：
+                    // 清了就是把可恢复的活降级成取消，恢复语义落空
+                    if st == SubagentStatus::Queued {
+                        let has_pending = crate::db::effects::pending(
+                            &conn,
+                            crate::bot::effects::KIND_SUBAGENT_DISPATCH,
+                            &crate::bot::effects::subagent_dispatch_key(&id),
+                        )
+                        .unwrap_or(true);
+                        if has_pending {
+                            exempted += 1;
+                            continue;
+                        }
+                    }
                     let res = crate::db::update_subagent_status(
                         &conn,
                         &id,
@@ -620,12 +636,15 @@ pub fn sweep_zombie_subagents(app: &AppHandle) {
                     }
                 }
             }
-            cleaned
+            (cleaned, exempted)
         };
-        if sweep > 0 {
+        if sweep.0 > 0 || sweep.1 > 0 {
             crate::bot::audit_log(
                 &app,
-                &format!("subagent_zombie_sweep_done | count: {sweep}"),
+                &format!(
+                    "subagent_zombie_sweep_done | count: {} | exempted: {}（派发待办在队列，留待补派）",
+                    sweep.0, sweep.1
+                ),
             );
         }
     });

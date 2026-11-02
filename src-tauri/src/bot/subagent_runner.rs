@@ -34,46 +34,38 @@ impl Drop for StopTokenGuard {
         .remove(&self.id);
     }
 }
-/// 终态落库（有界重试）：兜底写的失败大头是 DB 锁瞬态，一次失败就把行永久
-/// 留在 queued/running，父 agent 每次 check 空等、前端一直转圈。指数退避重试
-/// 后仍失败才留审计——磁盘满等持久故障进程内不可解，重启清扫兜底。重试幂等
-/// （同一终态重复写无害）。
-async fn write_terminal_with_retry(
+/// 终态落库：改走 Effects 队列（subagent_finalize kind）。进程内指数重试
+/// 不持久化——崩溃即丢，行永久停在 queued/running；队列把「终态未落」变成
+/// 可恢复待办（重试幂等：同一终态重复写无害，已终态直接成功），超限审计兜底。
+async fn enqueue_terminal_write(
     app: &AppHandle,
     id: &str,
     status: SubagentStatus,
     finished_at: i64,
     err_msg: &str,
 ) -> Result<(), CommandError> {
-    const RETRY_DELAYS_MS: [u64; 5] = [1_000, 2_000, 4_000, 8_000, 16_000];
-    let mut attempt = 0usize;
-    loop {
-        let sid = id.to_string();
-        let msg = err_msg.to_string();
-        let write = db_locked(app, move |conn| {
-            crate::db::update_subagent_status(conn, &sid, status, finished_at, Some(&msg))
-                .map_err(CommandError::DbError)
-        })
-        .await;
-        match write {
-            Ok(_) => return Ok(()),
-            Err(_) if attempt < RETRY_DELAYS_MS.len() => {
-                tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAYS_MS[attempt]))
-                    .await;
-                attempt += 1;
-            }
-            Err(e) => {
-                crate::bot::audit_log(
-                    app,
-                    &format!(
-                        "subagent_terminal_state_write_failed | id: {id} | err: {} | retried {attempt}",
-                        e.message()
-                    ),
-                );
-                return Err(e);
-            }
-        }
-    }
+    let payload = serde_json::json!({
+        "subagentId": id,
+        "status": status.as_str(),
+        "finishedAt": finished_at,
+        "error": err_msg,
+    })
+    .to_string();
+    let key = format!("subagent_finalize:{id}");
+    let (key2, payload2) = (key.clone(), payload);
+    crate::db::lock::with_write_conn(app, move |conn| {
+        crate::db::effects::enqueue(
+            conn,
+            crate::bot::effects::KIND_SUBAGENT_FINALIZE,
+            &key2,
+            &payload2,
+            crate::db::now_ms(),
+        )
+    })
+    .await
+    .map_err(CommandError::DbError)?;
+    crate::bot::effects::kick();
+    Ok(())
 }
 
 /// runner panic → 普通失败（与 runner 返错同一层，收尾路径不变）。
@@ -110,8 +102,8 @@ pub(crate) async fn run_subagent(
         Err(e) => {
             // 加载失败也要落终态，防 ghost queued 行永挂
             let ghost_err = e.message();
-            // 终态写不进去 = 行永远停在 queued/running：有界重试兜 DB 锁瞬态
-            let _ = write_terminal_with_retry(
+            // 终态写不进去 = 行永远停在 queued/running：入队重试兜 DB 锁瞬态
+            let _ = enqueue_terminal_write(
                 &app,
                 &subagent_id,
                 SubagentStatus::Failed,
@@ -281,10 +273,9 @@ pub(crate) async fn run_subagent(
         Ok(g) => artifact_dir_of(&g, &row.id),
         Err(e) => {
             let msg = format!("产物目录不可用（{e}），子任务中止");
-            // 终态写不进去 = 行永远停在 queued/running：有界重试兜 DB 锁瞬态
+            // 终态写不进去 = 行永远停在 queued/running：入队重试兜 DB 锁瞬态
             let _ =
-                write_terminal_with_retry(&app, &row.id, SubagentStatus::Failed, now_ms(), &msg)
-                    .await;
+                enqueue_terminal_write(&app, &row.id, SubagentStatus::Failed, now_ms(), &msg).await;
             crate::bot::audit_log(
                 &app,
                 &format!(
@@ -374,8 +365,8 @@ pub(crate) async fn run_subagent(
         Err(e) => {
             let msg = e.message();
             let msg_for_db = msg.clone();
-            // 终态写不进去 = 行永远停在 queued/running：有界重试兜 DB 锁瞬态
-            let _ = write_terminal_with_retry(
+            // 终态写不进去 = 行永远停在 queued/running：入队重试兜 DB 锁瞬态
+            let _ = enqueue_terminal_write(
                 &app,
                 &row.id,
                 SubagentStatus::Failed,
@@ -848,7 +839,7 @@ pub(crate) async fn run_subagent(
             let app_for_fail = app.clone();
             let sid_failed = row.id.clone();
             tauri::async_runtime::spawn(async move {
-                let _ = write_terminal_with_retry(
+                let _ = enqueue_terminal_write(
                     &app_for_fail,
                     &sid_failed,
                     SubagentStatus::Failed,

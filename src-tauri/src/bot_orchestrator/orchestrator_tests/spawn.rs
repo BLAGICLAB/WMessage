@@ -133,7 +133,8 @@ fn spawn_without_parent_session_is_not_deduped() {
     assert_ne!(first.subagent_id, second.subagent_id);
 }
 /// 幂等键挡住的是「建第二条活行」，挡不住「再起一个 runner」——后者照样
-/// 把同一份活跑两遍、各烧一份预算。deduped 的早退必须排在 runner 派发前。
+/// 把同一份活跑两遍、各烧一份预算。deduped 的早退必须排在 runner 派发前
+/// （派发 = 入队 subagent_dispatch effect，实际起 runner 在派发器 handler）。
 #[test]
 fn deduped_spawn_returns_before_the_runner_is_dispatched() {
     let src = orch_prod_src();
@@ -146,11 +147,11 @@ fn deduped_spawn_returns_before_the_runner_is_dispatched() {
             .expect("spawn_subagent 应有 deduped 早退分支");
     let runner = start
         + src[start..]
-            .find("run_subagent(")
-            .expect("spawn_subagent 应派发 runner");
+            .find("KIND_SUBAGENT_DISPATCH")
+            .expect("spawn_subagent 应入队 runner 派发待办");
     assert!(
         dedup < runner,
-        "命中幂等键必须早于 runner 派发返回（否则同一份活跑两遍）"
+        "命中幂等键必须早于 runner 派发入队（否则同一份活跑两遍）"
     );
     assert!(
         src[dedup..runner].contains("return Ok(ack);"),
@@ -930,17 +931,23 @@ fn onion_config_is_wired_from_spawn_to_guard_whitelist() {
         "SpawnRequest 必须带上已解析的配置档：{parse_arm}"
     );
 
-    // ② 配置档随内存闭包进 runner（不落 subagents 行）
+    // ② 配置档随内存闭包进派发 payload（不落 subagents 行）；
+    //    派发器 handler 再把它转交 run_subagent——两段接线都锁
     assert!(
         body.contains(concat!("let runner_onion = ", "req.onion.clone();")),
-        "配置档必须从 req 摘出来交给 runner，否则 runner 拿不到配置名"
+        "配置档必须从 req 摘出来交给派发待办，否则 runner 拿不到配置名"
     );
     assert!(
-        body.contains(concat!(
-            "run_subagent(runner_app, runner_sid, ",
-            "runner_stage, runner_onion)"
-        )),
-        "run_subagent 必须收到配置档参数"
+        body.contains(concat!("\"onion\": runner_", "onion.map(")),
+        "派发 payload 必须携带配置档（跨重启补派时 runner 才拿得到）"
+    );
+    let fx = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bot/effects.rs"),
+    )
+    .expect("bot/effects.rs 应存在");
+    assert!(
+        fx.contains(concat!("run_subagent(app2, sid2, ", "stage, onion)")),
+        "派发器 handler 必须把 stage/onion 转交 run_subagent"
     );
 
     // ③ 建会话时把配置写进 bot_sessions 两列——不写则 bind_session 无从读起
