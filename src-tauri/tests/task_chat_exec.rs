@@ -376,7 +376,8 @@ async fn failure_persists_error_reply_in_session() {
 }
 
 /// 定时路径源码锁（设计 3.2）：bot_scheduler 调 run_task_in_chat、绕开 exec_steps、
-/// 完成/失败发系统通知（notification().builder()）；execute_task_core 已删除。
+/// 完成/失败系统通知走 Effects 队列投递（enqueue_notify，失败重试不静默）；
+/// execute_task_core 已删除。
 #[test]
 fn scheduler_uses_run_task_in_chat_not_exec_steps() {
     let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_scheduler.rs"))
@@ -390,7 +391,10 @@ fn scheduler_uses_run_task_in_chat_not_exec_steps() {
         !src.contains("exec_steps::start") && !src.contains("exec_steps::resume"),
         "定时路径不得调逐步执行（无人在场）"
     );
-    assert!(src.contains("notification()"), "完成/失败应发系统通知");
+    assert!(
+        src.contains("enqueue_notify"),
+        "完成/失败系统通知应走 Effects 队列投递（失败重试不静默）"
+    );
     // execute_task_core 已被 run_task_in_chat 取代（全仓库无残留调用）
     let bot_chat = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_chat.rs"))
         .expect("bot_chat.rs 可读");
