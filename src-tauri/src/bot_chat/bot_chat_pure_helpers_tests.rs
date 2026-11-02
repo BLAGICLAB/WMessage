@@ -73,10 +73,10 @@ fn returned_trace_id_comes_from_the_one_begin_trace_created() {
     let chat = include_str!("flow.rs");
     let opened = chat
         .find(concat!(
-            "let trace_id = crate::trace_sink::begin_trace(",
-            "&trace_app, sid, None, \"chat\", None).await;"
+            "crate::trace_sink::begin_trace(",
+            "&trace_app, sid, None, \"chat\", title).await;"
         ))
-        .expect("开 trace 的调用点");
+        .expect("开 trace 的调用点（title 取本轮用户输入截断）");
     let kept = chat
         .find("chat_trace_id = trace_id;")
         .expect("开 trace 时要把 id 留在局部变量里");

@@ -634,7 +634,15 @@ pub(super) async fn bot_chat_inner(
     // 永远是 None。None = 本回合没开 trace（无会话 id / 建行失败降级），不是错误。
     let mut chat_trace_id: Option<i64> = None;
     if let Some(sid) = session_id.as_ref() {
-        let trace_id = crate::trace_sink::begin_trace(&trace_app, sid, None, "chat", None).await;
+        // trace 标题取本轮用户输入截断——活动页不再回落裸会话 id（G3 快赢；
+        // 结构化的目标/验收/阶段归批 5 work_items）。汇报轮无用户输入，给固定标注
+        let title = match origin {
+            TurnOrigin::User => user_input
+                .as_ref()
+                .map(|m| crate::bot::truncate_for_log(m.content.trim(), 40)),
+            TurnOrigin::Report => Some("（汇报轮）".to_string()),
+        };
+        let trace_id = crate::trace_sink::begin_trace(&trace_app, sid, None, "chat", title).await;
         chat_trace_id = trace_id;
         if let Ok(mut c) = trace_capture.lock() {
             c.trace_id = trace_id;
