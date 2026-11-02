@@ -411,11 +411,25 @@ fn migrate_plaintext_key_if_system(slot: KeySlot) {
 /// 每 slot「旧 service 已探测过」标记（进程级）：
 /// 稳态（v1 有条目 / 根本没配 key / v0 也没有）后不再多读一次旧 service，
 /// 与迁移前的 keyring 调用次数一致。
-static KEYRING_SERVICE_MIGRATED: [AtomicBool; 3] = [
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-];
+///
+/// 标记按槽位各持一个，不走「定长数组 + 槽位下标」：数组长度得跟槽位
+/// 数量手动对齐，漏改一次就是运行期下标越界 panic（新增槽位后读它就炸，
+/// 与 keyring 是否可用无关）。改成穷尽 match 取标记后，新增槽位时这里
+/// 编译不过，坑挡在编译期。
+static LLM_SERVICE_MIGRATED: AtomicBool = AtomicBool::new(false);
+static TAVILY_SERVICE_MIGRATED: AtomicBool = AtomicBool::new(false);
+static BRAVE_SERVICE_MIGRATED: AtomicBool = AtomicBool::new(false);
+static DEEPSEEK_SERVICE_MIGRATED: AtomicBool = AtomicBool::new(false);
+
+/// 取某槽位的「已探测过」标记（穷尽 match → 新增槽位漏配标记时编译失败）
+fn migrated_flag(slot: KeySlot) -> &'static AtomicBool {
+    match slot {
+        KeySlot::Llm => &LLM_SERVICE_MIGRATED,
+        KeySlot::Tavily => &TAVILY_SERVICE_MIGRATED,
+        KeySlot::Brave => &BRAVE_SERVICE_MIGRATED,
+        KeySlot::Deepseek => &DEEPSEEK_SERVICE_MIGRATED,
+    }
+}
 
 /// v0 → v1 service 名迁移（幂等）：
 /// 新（带版本后缀）条目已有非空值 → no-op（不覆盖用户新 key）；
@@ -423,8 +437,8 @@ static KEYRING_SERVICE_MIGRATED: [AtomicBool; 3] = [
 /// keyring 故障静默返回且不置「已探测」标记（下次读取再试）——
 /// 迁移绝不能挡住用户已有的 key（数据保留优先，与 migrate_plaintext_key_if_system 同策略）。
 fn migrate_legacy_keyring_entry(slot: KeySlot) {
-    let idx = slot.index();
-    if KEYRING_SERVICE_MIGRATED[idx].load(Ordering::SeqCst) {
+    let flag = migrated_flag(slot);
+    if flag.load(Ordering::SeqCst) {
         return;
     }
     let Ok(new_entry) = key_entry(slot) else {
@@ -432,7 +446,7 @@ fn migrate_legacy_keyring_entry(slot: KeySlot) {
     };
     match new_entry.get_password() {
         Ok(v) if !v.trim().is_empty() => {
-            KEYRING_SERVICE_MIGRATED[idx].store(true, Ordering::SeqCst);
+            flag.store(true, Ordering::SeqCst);
             return; // 已是新版条目，无需求
         }
         Ok(_) | Err(keyring::Error::NoEntry) => {} // 空/未配置：继续看 v0 条目
@@ -466,7 +480,7 @@ fn migrate_legacy_keyring_entry(slot: KeySlot) {
         Err(keyring::Error::NoEntry) => {} // 无 v0 遗留条目：迁移态已确认
         Err(_) => return,                  // keyring 故障：下次再试
     }
-    KEYRING_SERVICE_MIGRATED[idx].store(true, Ordering::SeqCst);
+    flag.store(true, Ordering::SeqCst);
 }
 
 /// System 后端读取前的准备工作（两步都幂等）：
@@ -873,6 +887,39 @@ mod vendor_key_tests {
             let r: Result<String, keyring::Error> = Ok(k.into());
             let got = classify_get_password(r).expect("Ok 永不报错");
             assert_eq!(got, k, "Ok 透传不改写：input={k:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod service_migration_tests {
+    use super::*;
+
+    /// 每个槽位都要能取到自己的「旧 service 已探测过」标记，且互相独立。
+    ///
+    /// 槽位从 3 个加到 4 个时，标记数组没跟着扩容 → DeepSeek 槽位
+    /// 下标 3 越界 panic。Windows 上凭据后端恒为 System，读该槽位
+    /// 必炸，而 `bot_get_config` 无条件读它 → 启动即退。
+    /// 标记改成按槽位穷尽 match 取后，新增槽位编译不过；这里再锁住
+    /// 「各槽位不共用同一个标记」（共用会让一个槽位的迁移态污染另一个）。
+    #[test]
+    fn every_slot_has_its_own_migration_marker() {
+        let slots = [
+            KeySlot::Llm,
+            KeySlot::Tavily,
+            KeySlot::Brave,
+            KeySlot::Deepseek,
+        ];
+        let flags: Vec<&AtomicBool> = slots.iter().map(|s| migrated_flag(*s)).collect();
+        for (i, a) in flags.iter().enumerate() {
+            for (j, b) in flags.iter().enumerate() {
+                if i != j {
+                    assert!(
+                        !std::ptr::eq(*a, *b),
+                        "两个槽位共用了同一个迁移标记：槽位 {i} 与槽位 {j}"
+                    );
+                }
+            }
         }
     }
 }

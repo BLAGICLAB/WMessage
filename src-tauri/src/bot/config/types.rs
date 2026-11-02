@@ -69,15 +69,6 @@ impl KeySlot {
             KeySlot::Deepseek => "bot-deepseek-key.txt",
         }
     }
-    /// 槽位下标（进程级「service 迁移已探测」标记数组用）
-    pub(crate) fn index(&self) -> usize {
-        match self {
-            KeySlot::Llm => 0,
-            KeySlot::Tavily => 1,
-            KeySlot::Brave => 2,
-            KeySlot::Deepseek => 3,
-        }
-    }
 }
 
 // BotConfig
