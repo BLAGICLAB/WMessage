@@ -10,6 +10,15 @@
 >
 > **口径**：本文所有论断均带 `文件:行号` 证据。凡写「未确认」的，是本次审计没有取到证据，
 > 不是「不存在」。行号以本文写作时的 `main` 为准。
+>
+> **修订（2026-11-03 逐条对拍复核后落盘，随改造推进更新）**：
+> 1. 裂缝 1 重定性：「部分提交」在现行生产路径不存在（主入口 `db_upsert_for` 与其余多批量调用方均已包事务，唯一裸连接调用批大小恒 1），降为**函数级防呆**，批 1 仍做但不再是修活跃 bug。
+> 2. 通知发送点 6 → **8 处**：补 `bot_scheduler.rs:692-700`（自动暂停）与 `bot/services/observe.rs:274-282`（服务告警，走 `try_state`，按 `notification()` 搜会漏）。
+> 3. `migration_journal` **不迁**通用内核：唯一实战恢复路径，重写零收益纯风险；且内核落地时它之外暂无第二调用方，踩 YAGNI。journal 原样保留为模式原型。批 2+3 合并（内核与 notify 同批落地）。
+> 4. 裂缝 5（reminder 顺序对调）废弃：对一次性提醒等于永久丢失（「周期提醒下一轮」兜底对 one-shot 不成立），批 2 队列化时以「删行+入队同事务」正解。
+> 5. Effects 内核补规格（对拍 `effects.ts` 实源）：成功=删行（CAS 四元组）、per-kind 并发槽 `limit()`（G7 随批 3 收编）、max_attempts 限次、派发器 at-least-once + 消费方幂等要求。
+> 6. `with_tx` 补红线：闭包内禁调会再取锁的路径（`DB_WRITE_LOCK` 是 std Mutex 非重入，嵌套即死锁）；拿锁必须走 `lock_db_write()`。
+> 7. 新增快赢批 4：主聊天 `begin_trace` 传 title（活动页先不显示裸会话 id，不等 work_items）。
 
 ---
 
@@ -55,7 +64,7 @@ superagent 的核心机制与本仓的对照见 [§八 证据索引](#八证据�
 
 ### 2.2 事务
 
-**wmessage 有事务**，而且用在了关键处。`conn.transaction()` 生产代码 28 处 + `unchecked_transaction()` 10 处，
+**wmessage 有事务**，而且用在了关键处。`conn.transaction()` 生产代码 25 处 + `unchecked_transaction()` 10 处（2026-11-03 复核；统计须排除 `src-tauri/src/.mimosa/` 快照副本），
 覆盖：`bot_history`（INSERT + `UPDATE bot_sessions.updated_at` 同事务，`db/bot_history.rs:159-190`）、
 `apps` 三表同事务删（`db/apps.rs:149-161`）、`scheduled_job_runs` 插入 + 裁剪同事务（`db/schedule_jobs.rs:260-285`）、
 建会话 + 任务块同事务（`bot_chat/exec.rs:185-204`）、子 agent 收尾多写同事务（`bot/subagent_runner.rs:783-810`）、
@@ -69,7 +78,7 @@ superagent 的核心机制与本仓的对照见 [§八 证据索引](#八证据�
 
 1. **持久化**：DB 表 `src-tauri/src/db/mod.rs:191-199`
 2. **幂等键**：`(task_id, src)` 至多一条 pending `src-tauri/src/migration/journal.rs:41-67`
-3. **崩溃后续跑**：启动 replay 扫 pending `src-tauri/src/migration/recovery.rs:105-125`
+3. **崩溃后续跑**：启动 replay 扫 pending `src-tauri/src/migration/recovery.rs:111-130`（其前 `:98-110` 是孤儿 pending 清理）
 
 这正是 superagent Effects 的内核。**本方案以它为原型抽通用队列，不是凭空造抽象。**
 
@@ -129,22 +138,20 @@ superagent 的核心机制与本仓的对照见 [§八 证据索引](#八证据�
 
 | # | 位置 | 裂缝 | 崩溃后留下什么 |
 |---|---|---|---|
-| 1 | `src-tauri/src/db/tasks.rs:306-426`（`:387` 逐条 `stmt.execute`） | `upsert_tasks` 批量卡**全程无事务**，RMW 冲突检查在每条 execute 之前 | 第 3 张卡冲突时前 2 张已提交、第 3 张未写；函数整体返 `Err`，调用方以为「全失败」——**实际是部分成功** |
+| 1 | `src-tauri/src/db/tasks.rs:306-426`（`:387` 逐条 `stmt.execute`） | `upsert_tasks` 批量卡**函数内无事务**，RMW 冲突检查在每条 execute 之前 | **（2026-11-03 复核改判）现行无活跃部分提交路径**：主入口 `db_upsert_for`（`db/tasks.rs:807-810`）与其余多批量调用方（tasks_patch / tasks_transfer / migrations）均已外层包事务，唯一裸连接调用 `task_autotag.rs:225` 批大小恒 1。定性为**函数级防呆缺口**：未来新调用方拿裸 conn 直调即踩 |
 | 2 | `src-tauri/src/bot_scheduler.rs:604-616` 与 `:649-661` | `record_job_run` 与 `update_job_run_state` 两次独立 `with_write_conn`（两次 open_db、两次事务） | `scheduled_job_runs` 有 fail 行，但 `scheduled_jobs.retry_at` 仍为空 → **失败不重试**，状态徽标还是上次的值 |
 | 3 | `src-tauri/src/apps/mod.rs:104-108` 与 `:197-212` | `record_app_run` 与 `finish_app_run` 两次独立取锁 + 独立连接 | `app_runs` 行永远停在 `running`（用户以为还在跑），只能靠 `apps/mod.rs:287` `sweep_stale_runs` 时间阈值兜底 |
 | 4 | `src-tauri/src/bot/subagent_spawn.rs:145-176` → `src-tauri/src/bot/subagent_runner.rs:245-251` → `:344-353` | 插行 / 置 Running / 建会话+回写 session_id **三段独立事务** | 行存在但无 `session_id`，父 agent `check` 拿到空会话，`check_subagent` 永远查不到进度 |
 | 5 | `src-tauri/src/bot_reminders.rs:352-353` | `fire(app, &r)`（OS 通知 = 外部副作用）后 `delete_row(app, &r.id)` 分两步 | 崩溃在两者之间 → 下个 tick **重复发同一条提醒** |
 
-> 裂缝 1 与 5 是本方案**批 1** 的直接目标；2/3/4 涉及「外部副作用 + 状态写」的两段式，
-> 只能靠 [§五 主线二](#五主线二统一持久化副作用队列effects)的队列解决，不能靠事务——
-> 事务管不了「通知发出去之后进程死了」。
+> **（2026-11-03 修订）批 1 收裂缝 1（防呆）/ 2 / 3**：裂缝 2 的两笔写都是纯库内写（run 行 + job 状态），可直接合并事务；裂缝 3 的「起进程」是外部副作用，批 1 只做 fail-close（起失败即改 failed，不留 running）。裂缝 4 与裂缝 5 涉及「外部副作用 + 状态写」的两段式（runner 派发 / OS 通知），事务管不了「通知发出去之后进程死了」——归主线二的队列，裂缝 5 在批 2 队列化时以「删行+入队同事务」正解，**不做顺序对调**（对一次性提醒等于永久丢失）。
 
-### 3.2 G2｜副作用无统一持久化待办，6 个通知发送点全无重试（结构性缺口）
+### 3.2 G2｜副作用无统一持久化待办，8 个通知发送点全无重试（结构性缺口）
 
 **证据**：
 
 - 全仓 28 张表**没有 queue / outbox 类表**（唯一具备三要素的 `migration_journal` 只服务文件迁移一个子系统）。
-- 系统通知 6 个发送点，**全部无重试**：
+- 系统通知 8 个发送点（2026-11-03 复核由 6 修正为 8），**全部无重试**：
 
 | 位置 | 失败处理 | 用户可见性 |
 |---|---|---|
@@ -154,6 +161,8 @@ superagent 的核心机制与本仓的对照见 [§八 证据索引](#八证据�
 | `src-tauri/src/due_notify.rs:253-274` | 记审计 `due_notify_fail`；且标志已在 `plan_round` 置为「已发」 | **静默丢弃**（注释 `:263` 明说「避免每 30s 重试刷屏」） |
 | `src-tauri/src/ask_engine.rs:518-523` | `let _ = ....show()` | **返回值直接丢弃，连审计都没有** |
 | `src-tauri/src/apps/commands.rs:113-118` | `let _ = ....show()` | **静默丢弃** |
+| `src-tauri/src/bot_scheduler.rs:692-700`（自动暂停） | 只 `eprintln!` | **不可见** |
+| `src-tauri/src/bot/services/observe.rs:274-282`（服务资源告警） | 只 `eprintln!`；走 `try_state` 而非 `notification()`，按后者搜会漏 | **不可见** |
 
 > `bot_scheduler.rs:49-50` 的注释写着「cron 监控核心教训：静默失败最危险」——
 > **项目自己已经识别了这个风险**，但两条发送点仍只 `eprintln!`。
@@ -215,7 +224,7 @@ superagent 的核心机制与本仓的对照见 [§八 证据索引](#八证据�
 | 活动页 | **否**：只有 origin 筛选，**无状态筛选** | `src/components/ActivityPage/index.tsx:22-28` |
 | 右侧栏「子 Agent」 | 否：六态平铺，failed / budget_exceeded 与 succeeded 同列 | `src/components/ChatPanel/ContextRail.tsx:670+` |
 | 定时作业页 | 否：失败徽标行内显示，无失败集合视图 | `src/components/SchedulePage/SchedulePage.tsx:47`、`:237-269` |
-| 首页「机器人动态」 | 否：全 trace 列表 + 成功率 | `src/components/HomePage/HomePanels.tsx:100-145` |
+| 首页「机器人动态」 | 否：最新 4 条 trace（`:98` `slice(0,4)`）+ 近 7 天成功率 | `src/components/HomePage/HomePanels.tsx:80-147` |
 
 通知中心只覆盖 4 类 kind：`memory_proposal` / `artifact_bind` / `task_question` / `service_alert`
 （`src-tauri/src/notifications.rs:33-42`）。
@@ -290,6 +299,8 @@ where
 **约束**：
 - 事务里**不得** `await`（SQLite 事务不可跨 await 持有）——闭包是同步的。
 - 事务里**不得**起外部副作用（发通知、起子进程）——那属于主线二。
+- 闭包内**不得**再走任何取锁路径（`with_write_conn` / `db_locked` / journal 写）——`DB_WRITE_LOCK` 是 `std::sync::Mutex`（`db/mod.rs:362`）**不可重入**，嵌套即死锁（`migration/journal.rs:16` 已记载）。需要业务 SQL 就内联，或抽收 `&Transaction` 的 `*_in_tx` helper。仓里有两套并行持锁辅助（`db/lock.rs:43` `with_write_conn` 与 `bot_orchestrator.rs:508` `db_locked`），`with_tx` 落地要明说覆盖谁，避免出现第三种写法。
+- 拿锁必须走 `lock_db_write()` 而非裸锁——契约函数 debug_assert 的是 `HOLDING_DB_WRITE` 线程本地标记（`db/lock.rs:33-35`），裸锁「锁是真的、标记是假的」。
 - 事务时长上限建议 100ms；超过要拆。
 
 > **为什么不用 superagent 的 `repo.atomic()` 名字**：本仓已有 `with_write_conn` 样板约定
@@ -300,27 +311,26 @@ where
 
 | 裂缝 | 修法 |
 |---|---|
-| 1 `upsert_tasks` 部分提交 | 改用 `with_tx`：整批卡一个事务。**冲突检查也要移进事务内**——现在检查在 execute 之前逐条做（`db/tasks.rs:344-365`），移进事务后仍是先查后写，但同事务内不会半提交 |
-| 2 job_run 与 job 状态分家 | `finalize_job_run` 的「插 run 行」+「写 job 状态」合并为**一个事务**（`bot_scheduler.rs:604-616` + `:649-661`） |
-| 3 `app_runs` 停在 running | 「建 run 行」+「起进程」是两段（进程是外部副作用）→ 进程启动失败时**在同一事务内把 run 行改 failed**，不留 running；真正的「进程起了但收尾没跑」仍靠 `sweep_stale_runs` 时间阈值 |
-| 4 子 agent 行与会话脱钩 | 插行 / 置 Running / 建会话+回写 session_id 合并为一个事务（`subagent_spawn.rs:145` + `subagent_runner.rs:245` + `:344`） |
-| 5 reminder 先发后删 | **顺序对调**：先删行（事务内）再发通知。语义从「可能重复发」换成「可能漏发」——**提醒重复发比漏发更扰民**，取漏发。丢失的提醒由「周期提醒下一轮照常」兜底 |
+| 1 `upsert_tasks` 函数级防呆 | 函数内加契约断言：`tasks.len() > 1` 时要求 `!conn.is_autocommit()`（在事务内），违反即 debug panic——把「批量必须包事务」钉死在函数上；既有调用方不动。批内原子性继续由调用方事务保证（tasks_patch 等把 upsert 与其他写绑同一事务，**事务不能下沉进函数**，下沉会拆散它们的原子性） |
+| 2 job_run 与 job 状态分家 | `finalize_job_run` 的「插 run 行」+「写 job 状态」合并为**一个事务**（`bot_scheduler.rs:604-616` + `:649-661`；两笔都是纯库内写，可以合并） |
+| 3 `app_runs` 停在 running | 「建 run 行」+「起进程」是两段（进程是外部副作用）→ 进程启动失败时把 run 行改 failed（复用 `mark_run_failed`），不留 running；真正的「进程起了但收尾没跑」仍靠 `sweep_stale_runs` 时间阈值 |
+| 4 子 agent 行与会话脱钩 | 维持批 3 队列化处理（`subagent_dispatch` 进队列后「插行了但 runner 没起」根源消除）；三段写里前两段（插行 / 置 Running）间的崩溃窗口由队列续跑兜底 |
+| 5 reminder 先发后删 | **批 2 队列化时正解**：删行与入队（`notify` kind）同事务，投递失败指数退避重试、限次后进健康面板。~~顺序对调~~废弃——对一次性提醒是永久丢失（「周期提醒下一轮」兜底对 one-shot 不成立），且批 2 反正要重修这里 |
 
 ### 5.4 改造后提升
 
-1. **「点了没反应」类问题根除**：`upsert_tasks` 的部分成功（函数返 Err 但前两张卡已写）
-   是最难排查的一类不一致，收进事务后不再存在。
+1. **批量写不再可能半提交**：`upsert_tasks` 的「批量必须包事务」从口头约定变成机器断言（2026-11-03 复核：现行调用方均已包事务，此条从修活跃 bug 降为防呆）。
 2. **定时作业的失败重试不再丢**：job_run 与 job 状态同事务后，
    「有 fail 行但 retry_at 为空 → 不重试」这个洞关闭。
-3. **崩溃后不留半写状态**：主 agent、app 运行、子 agent 三处的「存在但残缺」行消失。
-4. **提醒不再重复轰炸**：顺序对调后，一轮崩溃最多漏一条，不会每次开机补一条。
+3. **崩溃后不留半写状态**：主 agent、app 运行两处的「存在但残缺」行消失（子 agent 一处归批 3 队列化）。
+4. ~~提醒不再重复轰炸~~ → 移交批 2（裂缝 5 队列化正解），批 1 不再涉及 reminder。
 
 ### 5.5 验收
 
-- `upsert_tasks` 新增用例：批内第 N 条冲突 → **整批不落库**（当前行为是前 N-1 条已落）
+- `upsert_tasks` 新增用例：批内第 N 条冲突 → **整批不落库**（锁定既有契约：主入口本就包事务）；len>1 且 autocommit → debug 断言红
 - `finalize_job_run` 新增用例：run 行写入成功后 job 状态写入失败 → **两者都不留**
-- `bot_reminders` 新增用例：`fire` 抛错 → 行已被删（不再下轮重复发）
-- 子 agent：三段写中任一段失败 → 行不存在
+- `app_runs` 新增用例：进程启动失败 → run 行落 failed（不留 running）
+- reminder 用例移至批 2；子 agent 三段写维持批 3 队列化处理
 - 全部走 `scripts/test-all.sh`
 
 ---
@@ -334,14 +344,15 @@ where
 ### 6.2 做法：把 `migration_journal` 泛化成通用队列
 
 **这是本方案里唯一「抽象」的引入，因此必须满足 AGENTS.md 的门槛：第二个调用方出现前不抽象。**
-本方案的调用方序列是：
+（2026-11-03 修订后）内核**与首个真实调用方 `notify` 同批落地**（不单独先行），批 3 紧接着再收编
+三个 kind——抽象落地即有真实调用方，不违反「不为以后可能预留抽象」：
 
-1. `migration_journal`（**已存在**，第一个调用方）
-2. 系统通知投递（第二个）
-3. 定时作业失败重试（第三个）
-4. 子 agent 终态写库 / runner 派发（第四个）
+1. 系统通知投递（`notify`，内核落地时的首个调用方）
+2. 定时作业失败重试（`schedule_retry`）
+3. 子 agent 终态写库（`subagent_finalize`）
+4. 子 agent runner 派发（`subagent_dispatch`）
 
-即：抽象在**迁移 migration 时**就已经有第二个调用方，**不违反「不为以后可能预留抽象」**。
+`migration_journal` 不迁（见 §6.4），原样保留为模式原型。
 
 ### 6.3 队列内核
 
@@ -374,12 +385,22 @@ CREATE INDEX IF NOT EXISTS idx_effects_due ON effect_queue(kind, due, seq);
 
 > **语义 3 是 superagent 最值得抄的一条**：wmessage 现在的重试把「暂停」和「真失败」混为一谈。
 
+**内核补充规格（对拍 `dsh-superagent-prototype/src/app/effects.ts` 实源后定稿，2026-11-03）**：
+
+| # | 语义 | 说明 |
+|---|---|---|
+| 5 | **成功 = 删行**，CAS `kind+key+seq+generation` 四元组命中才删 | 队列即待办，done 不留行；superagent 同款（`effects.ts` attempt：无 failure 即 DELETE） |
+| 6 | 失败 = `attempts+1` + `error`（截断落列）+ `due` 顺延 `min(cap, base × 2^attempts)` | 同语义 4；superagent 还把 error 截 1000 字符防膨胀 |
+| 7 | 每 kind 可配 `max_attempts`：超限**停投递、留行、健康面板标红**；同 key 再入队（payload 变更）时 `attempts` 归零复活 | `notify` 限次（OS 通知权限被拒时无限重试无意义）；不配则按退避上限持续重试（superagent 无限流 + 健康板 `attempts>=3` 标红） |
+| 8 | 每 kind 可配并发槽 `limit()`（返回 0 = 整 kind 暂停） | 对位 superagent `Handler.limit` / `WorkerSlots`；G7 的作业并发闸就是派发器对 `schedule` kind 的槽 |
+| 9 | 派发器 = 单 tokio 任务：轮询 due + `kick` 唤醒 + 启动即扫（无需单独 replay 步骤） | in-flight 崩溃：行留原 due（已过期），重启自然重跑——**at-least-once**，消费方必须幂等（notify 的业务派生 id + `INSERT OR IGNORE` 天然满足） |
+
 ### 6.4 收编范围（按批次）
 
 | 批次 | 迁入的 kind | 现状 | 迁后 |
 |---|---|---|---|
-| 批 2 | `migration` | `migration_journal`（自研三要素实现） | 改用通用队列内核，**行为不变**（含启动 replay） |
-| 批 3 | `notify` | 6 个发送点全无重试、4 处静默 | 统一走队列：有回执、指数退避、失败进健康面板、**绝不静默** |
+| ~~原批 2~~ | `migration` | `migration_journal`（自研三要素实现） | **不迁**（2026-11-03 修订）：唯一实战恢复路径，重写零收益纯风险；effect_queue 无 state 列，replay 靠 `state='pending'`（`recovery.rs:111-130`）+ 孤儿清理（`:98-110`），「行为不变」做不到。journal 原样保留为模式原型，是否收编另立拍板 |
+| 批 2 | `notify` | 8 个发送点全无重试、4 处静默 | **内核与首个真实调用方同批落地**：统一走队列、有回执、指数退避、限次、失败进健康面板、**绝不静默**；裂缝 5 以「删行+入队同事务」正解 |
 | 批 4 | `schedule_retry` / `subagent_finalize` / `subagent_dispatch` | 定时作业重试固定 5 分钟且写两处；子 agent 终态写库是**内存内**指数重试（`src-tauri/src/bot/subagent_runner.rs:41-77`，`RETRY_DELAYS_MS=[1s,2s,4s,8s,16s]`，**不持久化**）；runner 派发是 `spawn` 一次性 | 三者进队列：崩溃后自动续跑；`subagent_dispatch` 进队列后，G5 的「插行了但 runner 没起」自动消解 |
 
 **「定时作业固定 5 分钟退避」不改**：那是明确的产品决策
@@ -396,6 +417,7 @@ CREATE INDEX IF NOT EXISTS idx_effects_due ON effect_queue(kind, due, seq);
 4. **一个视图看全后台工作**：`SELECT kind, count(*), max(attempts) FROM effect_queue GROUP BY kind`
    就是全部待办副作用的健康度。现在分散在 6 个发送点 + 2 个重试点，得分别查。
 5. **子 agent 派发不再丢**：G5 的第一个分支（queued 行被清扫成 cancelled）根源消除。
+6. **后台并发有了统一闸**：per-kind `limit()` 落地后，G7 的「定时作业无并发闸」随 `schedule` kind 收编一并关闭（批 3），通知发送也顺带限速。
 
 ---
 
@@ -535,17 +557,17 @@ superagent 的 observe 模式记录的是「模型认为可以接单 + 接了会
 
 | 批 | 内容 | 依赖 | 用户可见行为变化 | 规模 |
 |---|---|---|---|---|
-| **1** | `db/tx.rs` 事务包装 + 修裂缝 1（`upsert_tasks`）、2（job 状态合并）、5（reminder 顺序对调） | — | 无 | 中 |
-| **2** | 通用 Effects 队列内核（从 `migration_journal` 抽）+ migration 改用它 | 1 | 无（migration 行为不变） | 中 |
-| **3** | 6 个通知发送点收进队列 `notify` kind + 失败进健康面板 | 2 | **有**（通知失败不再静默） | 中 |
-| **4** | `schedule_retry` / `subagent_finalize` / `subagent_dispatch` 收进队列 | 2,3 | 无（间隔语义不变） | 中 |
-| **5** | `work_items` 表 + `stage` 判定 + 主 agent 开票与推进 | 1 | 轻微（活动页多出工作项条目） | 大 |
+| **1** | `db/tx.rs` 事务包装 + 裂缝 1（契约断言）、2（job 状态合并）、3（app run fail-close） | — | 无 | 中 |
+| **2** | Effects 内核（终态/限次/槽位/派发器）+ `notify` 8 处收编 + 裂缝 5 队列化正解 + 失败健康面 | 1 | **有**（通知失败不再静默） | 大 |
+| **3** | `schedule_retry` / `subagent_finalize` / `subagent_dispatch` 收进队列（G7 随 `schedule` kind 槽位收编） | 2 | 无（间隔语义不变） | 中 |
+| **4** | 快赢：主聊天 `begin_trace` 传 title（活动页不再回落裸会话 id） | — | 轻微 | 小 |
+| **5** | `work_items` 表 + `stage` 判定 + 主 agent 开票与推进（**先拍板**：开票粒度 / 阶段重估驱动器 / mandate 列去留） | 1 | 轻微（活动页多出工作项条目） | 大 |
 | **6** | 机器判据引擎泛化 + 主 agent 支持 `acceptance` | 5 | 轻微（交付多出机器验收结论） | 中 |
-| **7** | 面板聚合：通知中心增补来源 / 活动页状态筛选 / 失败提级 | 5 | **有**（面板重组） | 中 |
-| **8** | 定时作业干跑模式（off/observe/auto） | 2,5 | **有**（作业页多一档） | 中 |
+| **7** | 面板聚合：通知中心增补来源 / 活动页状态筛选 / 失败提级（口径拍板：查询时聚合 vs 失败时写通知行，推荐前者） | 5 | **有**（面板重组） | 中 |
+| **8** | 定时作业干跑模式（off/observe/auto；`observe` 撞名 `bot/services/observe.rs`，实现换词 `preview`/`shadow`） | 2,5 | **有**（作业页多一档） | 中 |
 
-**批 1–4 是「不改用户可见行为」的加固**，可先合；
-**批 5–6 是最大的结构改动**；**批 7–8 直接改善体感**。
+**批 1–3 是「不改用户可见行为」的加固**（批 2 的可见变化仅限失败场景），可先合；
+**批 4 是一行级快赢**；**批 5–6 是最大的结构改动**；**批 7–8 直接改善体感**。
 
 ---
 
@@ -565,12 +587,13 @@ superagent 的 observe 模式记录的是「模型认为可以接单 + 接了会
 | 把 `exec_traces` 升格成工作单元 | trace 的定位就是观测面（自述「不参与任何业务判定」），改它破坏保留期清扫与活动页口径 |
 | 改闸序 | 已有 FACT-SHEET 兜底，闸序改动风险高收益低 |
 | 改 `MAX_ROUNDS` / `MAX_FUNCTION_CALLS` | 安全网常量，2026-10-28 简化方案刚收口 |
+| 迁 `migration_journal` 上通用内核 | 唯一实战验证过的崩溃恢复路径，重写零收益纯风险；effect_queue 无 state 列，replay+孤儿清理语义「行为不变」做不到（2026-11-03 修订，原批 2 废弃） |
 
 ### 10.2 可选项（不做也不阻塞主线）
 
 | 项 | 说明 |
 |---|---|
-| **G7 定时作业并发闸** | 给 `spawn_job_run` 加一个作业级信号量（建议初值 2）。**注意**：主线的 Effects 队列天然提供 kind+key 唯一，但**不提供并发上限**——同一 tick 多个作业仍会同时起。若要做，须独立于 Effects 另设闸。superagent 的 `WorkerSlots` 是对位物（`dsh-superagent-prototype/src/executor/dsh.ts:171-199`），其「人的追问可多占一槽」的优先级设计可参考 |
+| ~~**G7 定时作业并发闸**~~ | **已收编进批 3**（2026-11-03 修订）：不另设闸，由 Effects 派发器的 per-kind `limit()` 承担（`schedule` kind 槽位建议初值 2）；同作业防重入已有 `SchedGuard`（`bot_scheduler.rs:411`），缺的只是跨作业上限。superagent 的 `WorkerSlots`（`dsh-superagent-prototype/src/executor/dsh.ts:171-199`）其「人的追问可多占一槽」的优先级设计可后续参考 |
 | **G9 `tool_call_id` 执行去重** | 在 dispatch 前加「同一 id 已执行过则返回上次结果」的表。**边界严格**：只对**同一 tool_call_id** 去重，不同 id 的同名工具**必须**各跑一次 |
 
 ---
@@ -594,13 +617,13 @@ superagent 的 observe 模式记录的是「模型认为可以接单 + 接了会
 
 | 文档 | 时机 | 动作 |
 |---|---|---|
-| `SPEC.md` | 批 3 / 5 / 7 / 8 落地时 | 功能进/改随同一提交更新「功能规格」；批 7 的面板重组要写进 §1/§2 |
+| `SPEC.md` | 批 2 / 5 / 7 / 8 落地时 | 功能进/改随同一提交更新「功能规格」；批 7 的面板重组要写进 §1/§2 |
 | `docs/acceptance/matrix.csv` | 同上 | SPEC 功能条目变更**必须**同步追踪矩阵，否则 `tests-audit/audit_acceptance_matrix.py` 门禁红 |
 | `docs/acceptance/cards-*.md` | 同上 | 每功能一张验收卡，新功能要补卡 |
-| `docs/rust-bot-architecture.md` | 批 1/2/5 落地时 | 新模块落位后更新模块地图（`tests-audit/audit_module_map.py` 对拍） |
+| `docs/rust-bot-architecture.md` | 批 1/2/3/5 落地时 | 新模块落位后更新模块地图（`tests-audit/audit_module_map.py` 对拍） |
 | `docs/TOOL-EXECUTION-FACT-SHEET-2026-10-30.md` | 批 1 落地时 | 闸序或工具跑位有变时同步（该文档 §八 维护规则） |
 | `docs/agent-audit-sop-zcode.md` | 新增风控常量时 | 常量基线表须与 `bot/constants.rs` 对拍（`tests-audit/audit_sop_baseline.py`） |
-| `DEVLOG.md` | 批 1 落地时 | 只写「为什么换方向」：为什么引入事务包装、为什么把 migration_journal 泛化成队列 |
+| `DEVLOG.md` | 批 1 / 批 2 落地时 | 只写「为什么换方向」：为什么引入事务包装、为什么建通用 Effects 队列而**不迁** migration_journal |
 | `tests-audit/audit_file_size.py` | 全程 | 新文件 ≤1500 行；白名单已清空，超限当场 fail |
 
 **本文现在**不需要同步任何文档——没有功能变更，只有方案。
@@ -625,11 +648,11 @@ superagent 的 observe 模式记录的是「模型认为可以接单 + 接了会
 |---|---|
 | `DB_WRITE_LOCK` | `src-tauri/src/db/mod.rs:362`、`:373-389` |
 | `with_write_conn` | `src-tauri/src/db/lock.rs:43-58` |
-| 事务实例（38 处，生产） | `memory/consolidate.rs:284`、`memory/store.rs:518`、`memory/extract.rs:514,643,807`、`meta/sync.rs:97`、`db/tasks_patch.rs:55,332`、`db/tasks.rs:808`、`db/subagents.rs:189`、`db/bot_sessions.rs:194`、`db/workspace.rs:112,143,223`、`db/tasks_transfer.rs:246`、`db/schedule_jobs.rs:324`、`db/bot_history.rs:138,164,196,281` |
+| 事务实例（生产 35 处：25 transaction + 10 unchecked） | `memory/consolidate.rs:284`、`memory/store.rs:518`、`memory/extract.rs:514,643,807`、`meta/sync.rs:97`、`db/tasks_patch.rs:55,332`、`db/tasks.rs:808`、`db/subagents.rs:189`、`db/bot_sessions.rs:194`、`db/workspace.rs:112,143,223`、`db/tasks_transfer.rs:246`、`db/schedule_jobs.rs:324`、`db/bot_history.rs:138,164,196,281` |
 | `upsert_tasks` 无事务 | `src-tauri/src/db/tasks.rs:306-426`（`:387` 逐条 execute） |
-| `migration_journal` 三要素 | DDL `src-tauri/src/db/mod.rs:191-199`；幂等 `src-tauri/src/migration/journal.rs:28-70`；replay `src-tauri/src/migration/recovery.rs:105-125` |
+| `migration_journal` 三要素 | DDL `src-tauri/src/db/mod.rs:191-199`；幂等 `src-tauri/src/migration/journal.rs:28-70`；replay `src-tauri/src/migration/recovery.rs:111-130`（孤儿清理 `:98-110`） |
 | `exec_traces` 定位自述 | `src-tauri/src/db/trace.rs:1-12` |
-| trace 四态 | `src-tauri/src/db/trace.rs:69-73`；唯一写口 `src-tauri/src/trace_sink.rs:274-281` |
+| trace 四态 | `src-tauri/src/db/trace.rs:61-65`（running 是 DDL 默认值 `:74`，三个终态才走写口 `src-tauri/src/trace_sink.rs:274-281`） |
 | `subagents` 六态与转移表 | `src-tauri/src/db/subagents.rs:18-25`、`:97-105` |
 | `tasks` 三列 | `src-tauri/src/db/tasks.rs:77-96` |
 
@@ -639,7 +662,7 @@ superagent 的 observe 模式记录的是「模型认为可以接单 + 接了会
 |---|---|
 | 定时作业重试（固定 5 分钟 + 理由注释） | `src-tauri/src/db/schedule_jobs.rs:66`、`:68-69`；计算 `src-tauri/src/bot_scheduler.rs:644-648` |
 | job run 与 job 状态两处写 | `src-tauri/src/bot_scheduler.rs:604-616`、`:649-661` |
-| 通知 6 发送点 | `bot_scheduler.rs:37-45`、`:52-60`；`bot_reminders.rs:369-394`；`due_notify.rs:253-274`；`ask_engine.rs:518-523`；`apps/commands.rs:113-118` |
+| 通知 8 发送点 | `bot_scheduler.rs:37-45`、`:52-60`、`:692-700`；`bot_reminders.rs:369-394`；`due_notify.rs:253-274`；`ask_engine.rs:518-523`；`apps/commands.rs:113-118`；`bot/services/observe.rs:274-282`（走 `try_state`） |
 | reminder 先发后删 | `src-tauri/src/bot_reminders.rs:352-353` |
 | 子 agent 终态写库（内存指数重试） | `src-tauri/src/bot/subagent_runner.rs:41-77`（`:48` `RETRY_DELAYS_MS`） |
 | 子 agent 三段写 | `bot/subagent_spawn.rs:145-176`；`bot/subagent_runner.rs:245-251`、`:344-353` |
@@ -661,7 +684,7 @@ superagent 的 observe 模式记录的是「模型认为可以接单 + 接了会
 | 主题 | 位置 |
 |---|---|
 | 通知 4 类 kind | `src-tauri/src/notifications.rs:33-42` |
-| 通知中心待处理页签 | `src/components/NotificationsPage/NotificationsPage.tsx:405-409`、`:420-426` |
+| 通知中心待处理页签 | `src/components/NotificationsPage/NotificationsPage.tsx:405-409`、`:420-426`（页内计数/页签）；导航角标在 `src/App.tsx:135-136`、`:188-190`、`:302` |
 | 活动页只有 origin 筛选 | `src/components/ActivityPage/index.tsx:22-28`；标题回落 `:145` |
 | 子 agent 六态标签 | `src/components/ChatPanel/constants.ts:111-121` |
 | 并发闸三处 | `src-tauri/src/py/gate.rs:16`；`src-tauri/src/bot/services.rs:50`；`src-tauri/src/bot/constants.rs:250,252` |
