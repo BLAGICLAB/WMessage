@@ -1802,7 +1802,7 @@ Get-Item -Path "C:\Users\<你>\Desktop\报告.docx" -Stream * | Select-Object St
 
 **标签**：`tag_merge`（kv `run_id` / `merged_from` / `merged_to` / `affected_task_count` / `before_tags_per_task`）· `tag_merge_rollback`（kv `run_id` / `restored_task_count` / `timestamp_ms`）
 
-**调度**：`sched_job_run` · `sched_job_skip` · `sched_job_done` · `sched_job_err` · `sched_job_retry` · `sched_job_autopaused` · `sched_job_panic` · `sched_job_retry_clear_failed` · `sched_job_stale` · `sched_job_missed` · `sched_job_update_skip` · `sched_job_delete_skip` · `sched_job_history_skip` · `sched_job_state_skip` · `sched_jobs_scan_failed`
+**调度**：`sched_job_run` · `sched_job_skip` · `sched_job_done` · `sched_job_err` · `sched_job_retry` · `sched_job_autopaused` · `sched_job_panic` · `sched_job_retry_clear_failed` · `sched_job_stale` · `sched_job_missed` · `sched_job_update_skip` · `sched_job_delete_skip` · `sched_job_finalize_skip`（原 history_skip/state_skip 两事件随收尾写库合并退役） · `sched_jobs_scan_failed`
 
 **服务**：`service.listening_sample_failed` · `service.started` · `service.ready` · `service.start_failed` · `service.exited` · `service.stop_requested` · `service.stopped` · `service.stop_failed`
 

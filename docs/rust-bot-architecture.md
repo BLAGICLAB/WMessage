@@ -62,6 +62,8 @@ src-tauri/src/
 │   ├── schedule_jobs.rs  内容型定时作业（T1）：XXL-JOB 式调度日志——重试/自动暂停/
 │   │                     错过消费 + scheduled_job_runs 执行历史；定时单源本表
 │   │                     （open_db 迁移把旧 tasks.schedule 迁入并清空任务卡侧）
+│   ├── tx.rs            with_write_conn 的加事务层（with_tx）：闭包 Err 即整体回滚；
+│   │                     同步闭包 + 禁再取锁（std Mutex 非重入）+ 禁外部副作用
 │   ├── db/trace.rs (927)   执行痕迹三表 exec_traces/exec_spans/file_changes（Agent 透明化
 │   │                     设计 §4.1）：append-only 观测面 + 钳制单源（SPAN_TEXT_MAX 16KB /
 │   │                     MAX_DIFF_LINES）+ 保留期清理 retire_traces_before（僵尸 running 同删）；

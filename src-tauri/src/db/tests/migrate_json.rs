@@ -78,7 +78,10 @@ fn migrate_data_json_backfills_missing_after_user_delete() {
 fn migrate_data_json_skips_when_db_not_behind() {
     let _g = super::lock_db_write(); // C3-1 契约：upsert_tasks 调用方须持锁
     let (dir, mut conn) = setup_tasks_db();
-    upsert_tasks(&conn, &[mk_task("t1", "a"), mk_task("t2", "b")]).unwrap();
+    // 批量 upsert 契约：必须在事务内（批内冲突靠调用方回滚整批）
+    let tx = conn.unchecked_transaction().unwrap();
+    upsert_tasks(&tx, &[mk_task("t1", "a"), mk_task("t2", "b")]).unwrap();
+    tx.commit().unwrap();
     let file = dir.join("data.json");
     fs::write(
         &file,

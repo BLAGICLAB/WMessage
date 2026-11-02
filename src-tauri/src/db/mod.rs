@@ -43,6 +43,7 @@ pub mod trace;
 pub mod trace_query;
 pub mod trace_session;
 pub mod trace_usage;
+pub mod tx;
 pub mod workspace;
 
 pub mod apps;

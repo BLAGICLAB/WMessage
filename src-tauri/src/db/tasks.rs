@@ -314,6 +314,12 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
     if tasks.is_empty() {
         return Ok(());
     }
+    // 批量写必须在事务内：批内第 N 条冲突时靠调用方回滚整批，裸连接直调会
+    // 留下「前 N-1 条已写、函数返 Err」的半提交。单条无半提交问题，不要求事务。
+    debug_assert!(
+        tasks.len() <= 1 || !conn.is_autocommit(),
+        "upsert_tasks 批量调用必须在事务内（conn.transaction()/with_tx），否则批内冲突会半提交"
+    );
     let mut stmt = conn
         .prepare(
             "INSERT INTO tasks

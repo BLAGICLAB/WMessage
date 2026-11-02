@@ -580,93 +580,69 @@ async fn finalize_job_run(
     duration_ms: i64,
     card_id: &str,
 ) {
-    // 1) 历史落库（成功记摘要，失败记错误；截断防长文本撑表）
-    {
-        let job_id = job.id.clone();
-        let card_id = card_id.to_string();
-        let (status, summary) = if ok {
-            (
-                "ok",
-                ok_summary.map(|s| s.chars().take(300).collect::<String>()),
-            )
-        } else {
-            (
-                "fail",
-                Some(
-                    err_text
-                        .unwrap_or("未知错误")
-                        .chars()
-                        .take(300)
-                        .collect::<String>(),
-                ),
-            )
-        };
-        let outcome = crate::db::lock::with_write_conn(app, move |conn| {
-            crate::db::record_job_run(
-                conn,
-                &job_id,
-                fired_at,
-                status,
-                Some(duration_ms),
-                summary.as_deref(),
-                Some(card_id.as_str()),
-            )
-            .map_err(|e| e.to_string())
-        })
-        .await;
-        // 历史落库失败留痕：徽标/通知已发但历史缺行，静默丢会查不到执行记录
-        if let Err(e) = outcome {
-            crate::bot::audit_log(
-                app,
-                &format!(
-                    "sched_job_history_skip | id: {} | {}",
-                    job.id,
-                    crate::bot::truncate_for_log(&e, 160)
-                ),
-            );
-        }
-    }
-    // 2) 状态 / 重试 / 自动暂停裁决
+    // 1)+2) 历史落库与状态/重试/自动暂停裁决合并为一个事务：原本两笔独立写，
+    // 崩在中间会留下「有 fail 行但 retry_at 为空」——失败不重试、徽标停在旧值。
     let retry_max = job.retry_max_or_zero();
     let retry_no = job.retry_count.unwrap_or(0);
     let will_retry = !ok && retry_no < retry_max;
     let final_fail = !ok && !will_retry;
     let auto_pause = final_fail && job.pause_on_failure == Some(true);
     let now_ms = chrono::Local::now().timestamp_millis();
+    let last_status = if ok { "ok" } else { "fail" };
+    let history_summary = if ok {
+        ok_summary.map(|s| s.chars().take(300).collect::<String>())
+    } else {
+        Some(
+            err_text
+                .unwrap_or("未知错误")
+                .chars()
+                .take(300)
+                .collect::<String>(),
+        )
+    };
+    let last_error = if ok {
+        None
+    } else {
+        err_text.map(|s| s.chars().take(300).collect::<String>())
+    };
+    let (retry_at, retry_count) = if will_retry {
+        (Some(now_ms + crate::db::RETRY_DELAY_MS), Some(retry_no + 1))
+    } else {
+        (None, None) // 成功或重试用尽：清零（下一周期从零计）
+    };
     {
         let job_id = job.id.clone();
-        let last_status = if ok { "ok" } else { "fail" };
-        let last_error = if ok {
-            None
-        } else {
-            err_text.map(|s| s.chars().take(300).collect::<String>())
-        };
-        let (retry_at, retry_count) = if will_retry {
-            (Some(now_ms + crate::db::RETRY_DELAY_MS), Some(retry_no + 1))
-        } else {
-            (None, None) // 成功或重试用尽：清零（下一周期从零计）
-        };
-        let outcome = crate::db::lock::with_write_conn(app, move |conn| {
-            crate::db::update_job_run_state(
-                conn,
+        let card_id = card_id.to_string();
+        let status = last_status.to_string();
+        let outcome = crate::db::tx::with_tx(app, move |tx| {
+            crate::db::record_job_run_in_tx(
+                tx,
                 &job_id,
-                Some(last_status),
+                fired_at,
+                &status,
+                Some(duration_ms),
+                history_summary.as_deref(),
+                Some(card_id.as_str()),
+            )?;
+            crate::db::update_job_run_state(
+                tx,
+                &job_id,
+                Some(status.as_str()),
                 last_error.as_deref(),
                 retry_at,
                 retry_count,
                 auto_pause,
                 now_ms,
             )
-            .map_err(|e| e.to_string())
         })
         .await;
-        // 状态落库失败留痕：UI 已报「已排重试/已自动暂停」但状态未写中，
-        // 重试不会触发、暂停不生效，必须可查
+        // 收尾写库失败留痕：历史与状态都没落——重试不会触发、暂停不生效、
+        // 执行记录缺失，必须可查
         if let Err(e) = outcome {
             crate::bot::audit_log(
                 app,
                 &format!(
-                    "sched_job_state_skip | id: {} | {}",
+                    "sched_job_finalize_skip | id: {} | {}",
                     job.id,
                     crate::bot::truncate_for_log(&e, 160)
                 ),

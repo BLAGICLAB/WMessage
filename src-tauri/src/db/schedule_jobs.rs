@@ -256,8 +256,9 @@ pub fn update_job_run_state(
 
 // 执行历史（XXL-JOB 调度日志借鉴）
 
-/// 落一条执行历史并裁剪到 JOB_RUNS_KEEP 条（调用方持锁）
-pub fn record_job_run(
+/// 落一条执行历史并裁剪到 JOB_RUNS_KEEP 条。本函数无自有事务——
+/// 调用方持锁并负责事务边界（与作业状态写同事务收口，见 bot_scheduler 收尾路径）。
+pub fn record_job_run_in_tx(
     conn: &rusqlite::Connection,
     job_id: &str,
     fired_at: i64,
@@ -266,21 +267,18 @@ pub fn record_job_run(
     summary: Option<&str>,
     card_id: Option<&str>,
 ) -> Result<(), String> {
-    // 插入与裁剪同事务：裁剪失败不丢本次历史
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    tx.execute(
+    conn.execute(
         "INSERT INTO scheduled_job_runs (job_id, fired_at, status, duration_ms, summary, card_id) \
          VALUES (?1,?2,?3,?4,?5,?6)",
         rusqlite::params![job_id, fired_at, status, duration_ms, summary, card_id],
     )
     .map_err(|e| e.to_string())?;
-    tx.execute(
+    conn.execute(
         "DELETE FROM scheduled_job_runs WHERE job_id = ?1 AND id NOT IN (\
            SELECT id FROM scheduled_job_runs WHERE job_id = ?1 ORDER BY id DESC LIMIT ?2)",
         rusqlite::params![job_id, JOB_RUNS_KEEP as i64],
     )
     .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -526,7 +524,8 @@ mod tests {
         let conn = mem_conn();
         let _g = crate::db::lock_db_write();
         for i in 0..(JOB_RUNS_KEEP + 5) as i64 {
-            record_job_run(&conn, "j1", 1_000 + i, "ok", Some(i), Some("ok"), Some("c")).unwrap();
+            record_job_run_in_tx(&conn, "j1", 1_000 + i, "ok", Some(i), Some("ok"), Some("c"))
+                .unwrap();
         }
         let runs = load_job_runs(&conn, "j1", JOB_RUNS_KEEP).unwrap();
         assert_eq!(runs.len(), JOB_RUNS_KEEP, "只保留最近 N 条");
@@ -536,8 +535,38 @@ mod tests {
             "倒序最新在前"
         );
         // 其他作业的历史互不干扰
-        record_job_run(&conn, "j2", 9_999, "fail", None, Some("boom"), None).unwrap();
+        record_job_run_in_tx(&conn, "j2", 9_999, "fail", None, Some("boom"), None).unwrap();
         assert_eq!(load_job_runs(&conn, "j2", 10).unwrap().len(), 1);
+    }
+
+    /// 收尾两笔写必须同事务：状态写失败时历史行也不能留——否则留下
+    /// 「有 fail 行但 retry_at 为空」的中间态，失败不重试、徽标停在旧值。
+    #[test]
+    fn finalize_writes_rollback_together() {
+        let conn = mem_conn();
+        // 状态写的目标表不存在 → 第二笔必败，第一笔必须被回滚
+        conn.execute_batch("DROP TABLE scheduled_jobs;").unwrap();
+        let _g = crate::db::lock_db_write();
+        let tx = conn.unchecked_transaction().unwrap();
+        let outcome = record_job_run_in_tx(&tx, "j1", 1_000, "fail", None, Some("boom"), None)
+            .and_then(|_| {
+                update_job_run_state(
+                    &tx,
+                    "j1",
+                    Some("fail"),
+                    Some("boom"),
+                    Some(2_000),
+                    Some(1),
+                    false,
+                    1_500,
+                )
+            });
+        assert!(outcome.is_err(), "scheduled_jobs 已删，状态写应失败");
+        drop(tx); // Err 路径不 commit → 回滚
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM scheduled_job_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "历史行必须随状态写一起回滚，不留单边");
     }
 
     #[test]
