@@ -17,7 +17,6 @@
 
 use serde_json::Value;
 use tauri::AppHandle;
-use tauri_plugin_notification::NotificationExt;
 
 use crate::error::{CommandError, CommandResult};
 
@@ -514,13 +513,24 @@ pub(crate) async fn engine_ask_user(
         ],
     );
     crate::notifications::emit_changed(app);
-    // 系统通知门铃（OS 通知放不下富回答，点击进应用通知页）
-    let _ = app
-        .notification()
-        .builder()
-        .title(format!("❓ {}", question_title(origin, &node_title)))
-        .body(&parsed.question)
-        .show();
+    // 系统通知门铃（OS 通知放不下富回答，点击进应用通知页）：走 Effects 队列
+    // 投递——发送失败重试，不再 `let _` 静默丢；入队失败留审计（问题卡与
+    // 通知中心行已落库，丢失的只是门铃）
+    if let Err(e) = crate::bot::effects::enqueue_notify(
+        app,
+        &format!("ask:{qid}"),
+        format!("❓ {}", question_title(origin, &node_title)),
+        parsed.question.clone(),
+    )
+    .await
+    {
+        crate::audit::write_event(
+            app,
+            crate::audit::AuditLevel::Warn,
+            "ask_notify_enqueue_failed",
+            &[("error", crate::audit::escape_for_log(&e, 120))],
+        );
+    }
     // 会话内问题卡（emit_recorded 统一盖章进回放缓冲：重开会话可还原）
     crate::bot::stream_log::emit_recorded(
         app,

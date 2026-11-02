@@ -11,15 +11,15 @@
 use chrono::Datelike;
 use futures_util::FutureExt;
 use tauri::{AppHandle, Emitter};
-use tauri_plugin_notification::NotificationExt;
 
 use crate::error::{CommandError, CommandResult};
 
 /// 定时任务执行完成/失败的系统通知：
 /// 通知只是提醒（点击拉起应用后按 ⏰ 前缀会话回看完整执行记录）；
-/// 通知发送失败（未授权等）只记日志，不影响执行收尾。
-fn notify_scheduled_done(
+/// 投递走 Effects 队列（notify kind）——发送失败重试、超限审计，不再静默。
+async fn notify_scheduled_done(
     app: &AppHandle,
+    job_id: &str,
     task_title: &str,
     result: &crate::error::CommandResult<crate::bot_chat::TaskChatRun>,
 ) {
@@ -34,30 +34,43 @@ fn notify_scheduled_done(
             crate::bot::truncate_for_log(&e.message(), 120),
         ),
     };
-    if let Err(e) = app
-        .notification()
-        .builder()
-        .title(&title)
-        .body(&body)
-        .show()
-    {
-        eprintln!("[sched] 系统通知发送失败（未授权？）：{e}");
+    let key = format!("sched_done:{job_id}");
+    if let Err(e) = crate::bot::effects::enqueue_notify(app, &key, title, body).await {
+        crate::bot::audit_log(
+            app,
+            &format!(
+                "notify_enqueue_failed | key: {key} | {}",
+                truncate_enq_err(&e)
+            ),
+        );
     }
 }
 
 /// 定时错过补跑窗口的系统通知（cron 监控核心教训：静默失败最危险）。
-/// Missed 分支每个 occurrence 只走一次，天然去重；发送失败只记日志。
-fn notify_schedule_missed(app: &AppHandle, target_title: &str) {
+/// Missed 分支每个 occurrence 只走一次，天然去重；投递失败由队列重试兜底。
+async fn notify_schedule_missed(app: &AppHandle, job_id: &str, target_title: &str) {
     let title_short = crate::bot::truncate_for_log(target_title.trim(), 30);
-    if let Err(e) = app
-        .notification()
-        .builder()
-        .title(format!("⏰ 定时已错过：{title_short}"))
-        .body("到点已超 2 小时补跑窗口，本次已跳过；下一周期照常执行")
-        .show()
+    let key = format!("sched_missed:{job_id}");
+    if let Err(e) = crate::bot::effects::enqueue_notify(
+        app,
+        &key,
+        format!("⏰ 定时已错过：{title_short}"),
+        "到点已超 2 小时补跑窗口，本次已跳过；下一周期照常执行".to_string(),
+    )
+    .await
     {
-        eprintln!("[sched] 错过通知发送失败（未授权？）：{e}");
+        crate::bot::audit_log(
+            app,
+            &format!(
+                "notify_enqueue_failed | key: {key} | {}",
+                truncate_enq_err(&e)
+            ),
+        );
     }
+}
+
+fn truncate_enq_err(e: &str) -> String {
+    crate::bot::truncate_for_log(e, 120)
 }
 
 // 定时任务卡（阶段二：⏰ 到点自动执行）
@@ -540,7 +553,7 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
             "sessionId": result.as_ref().ok().map(|r| r.session_id.clone()),
         }),
     );
-    notify_scheduled_done(&app, &title, &result);
+    notify_scheduled_done(&app, &job.id, &title, &result).await;
     crate::bot::audit_log(
         &app,
         &format!("sched_job_done | id: {} | card: {}", job.id, card.id),
@@ -665,14 +678,22 @@ async fn finalize_job_run(
     }
     if auto_pause {
         let title_short = crate::bot::truncate_for_log(&job.content, 30);
-        if let Err(e) = app
-            .notification()
-            .builder()
-            .title(format!("⏸ 定时任务已自动暂停：{title_short}"))
-            .body("执行重试用尽仍失败；已暂停该定时任务，检查后在模块中恢复")
-            .show()
+        let key = format!("sched_pause:{}", job.id);
+        if let Err(e) = crate::bot::effects::enqueue_notify(
+            app,
+            &key,
+            format!("⏸ 定时任务已自动暂停：{title_short}"),
+            "执行重试用尽仍失败；已暂停该定时任务，检查后在模块中恢复".to_string(),
+        )
+        .await
         {
-            eprintln!("[sched] 自动暂停通知发送失败（未授权？）：{e}");
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "notify_enqueue_failed | key: {key} | {}",
+                    truncate_enq_err(&e)
+                ),
+            );
         }
         crate::bot::audit_log(app, &format!("sched_job_autopaused | id: {}", job.id));
     }
@@ -881,7 +902,7 @@ async fn jobs_tick(app: &AppHandle) {
                     "sched-status",
                     serde_json::json!({ "jobId": job.id, "phase": "skipped" }),
                 );
-                notify_schedule_missed(app, &job.content);
+                notify_schedule_missed(app, &job.id, &job.content).await;
                 let _ = update_job_sched_fields(
                     app,
                     &job.id,

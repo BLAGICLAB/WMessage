@@ -87,6 +87,7 @@ pub mod config;
 pub mod constants;
 pub mod corrections;
 pub mod dispatch;
+pub mod effects;
 #[cfg(test)]
 mod eval;
 pub mod format;

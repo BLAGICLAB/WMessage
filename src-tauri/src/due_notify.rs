@@ -20,7 +20,6 @@ use std::collections::HashMap;
 use chrono::{DateTime, Duration, Local};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
-use tauri_plugin_notification::NotificationExt;
 
 /// 截止通知补发时效窗口：超过此时长的历史截止不补发（防重启/升级后轰炸）
 const T0_WINDOW: Duration = Duration::hours(24);
@@ -243,37 +242,55 @@ async fn run_round(app: &AppHandle) {
         })
         .collect();
     let now = Local::now();
-    // 全程持锁：状态加载 → 合并 → 发送 → 落盘 原子完成，防与其他路径交叉
-    //（锁中毒按项目惯例 into_inner 继续，不让通知循环 panic 退出）
-    let mut guard = crate::db::lock::lock_or_recover(notify_state(), "due_notify::notify_state");
-    let state = guard.get_or_insert_with(|| load_state(app));
-    let pending = plan_round(state, &active, now);
-    for p in &pending {
-        let (title, body) = render(p, now);
-        match app.notification().builder().title(title).body(body).show() {
+    // 持锁段：状态加载 → 合并 → 组装待发清单（MutexGuard 非 Send，不跨 await；
+    // 锁中毒按项目惯例 into_inner 继续，不让通知循环 panic 退出）
+    let outgoing: Vec<(String, String, String, String, String, String)> = {
+        let mut guard =
+            crate::db::lock::lock_or_recover(notify_state(), "due_notify::notify_state");
+        let state = guard.get_or_insert_with(|| load_state(app));
+        let pending = plan_round(state, &active, now);
+        pending
+            .iter()
+            .map(|p| {
+                let (title, body) = render(p, now);
+                (
+                    format!("due:{}:{}", p.id, p.kind.as_str()),
+                    title,
+                    body,
+                    p.id.clone(),
+                    p.kind.as_str().to_string(),
+                    p.title.clone(),
+                )
+            })
+            .collect()
+    };
+    // 发送段（无锁）：投递走 Effects 队列——发送失败由队列退避重试、超限
+    // 审计，标志已置「已发」的静默丢弃不再发生。入队失败（DB 故障）本轮
+    // 留审计，下轮 plan_round 不会重排（状态已合并），丢一条截止提醒可接受
+    for (key, title, body, id, kind, ptitle) in &outgoing {
+        match crate::bot::effects::enqueue_notify(app, key, title.clone(), body.clone()).await {
             Ok(()) => crate::bot::audit_log(
                 app,
                 &format!(
-                    "due_notify | id: {} | kind: {} | title: {}",
-                    p.id,
-                    p.kind.as_str(),
-                    crate::bot::truncate_for_log(&p.title, 60)
+                    "due_notify | id: {id} | kind: {kind} | title: {}",
+                    crate::bot::truncate_for_log(ptitle, 60)
                 ),
             ),
-            // 发送失败：标志已在 plan_round 置为已发（避免每 30s 重试刷屏），这里只留审计
             Err(e) => crate::bot::audit_log(
                 app,
                 &format!(
-                    "due_notify_fail | id: {} | kind: {} | title: {} | err: {}",
-                    p.id,
-                    p.kind.as_str(),
-                    crate::bot::truncate_for_log(&p.title, 60),
-                    crate::bot::truncate_for_log(&e.to_string(), 120)
+                    "due_notify_fail | id: {id} | kind: {kind} | title: {} | err: {}",
+                    crate::bot::truncate_for_log(ptitle, 60),
+                    crate::bot::truncate_for_log(e.as_str(), 120)
                 ),
             ),
         }
     }
-    save_state(app, state);
+    // 落盘段（重取锁）：单 ticker 驱动，发送期间不会有并发轮改状态
+    let guard = crate::db::lock::lock_or_recover(notify_state(), "due_notify::notify_state");
+    if let Some(state) = guard.as_ref() {
+        save_state(app, state);
+    }
 }
 
 /// 启动截止通知后台循环：每 30s 扫一次活跃任务卡的截止时间（App 启动时调用）

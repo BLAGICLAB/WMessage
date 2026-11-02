@@ -245,7 +245,13 @@ pub(super) fn write_resource_warning<R: tauri::Runtime>(
         kv.push(("cpu_pct", format!("{:.1}", p)));
     }
     crate::audit::write_event(app, AuditLevel::Warn, "service.resource_warning", &kv);
-    notify_system(app, "受管服务资源告警", &body);
+    // 本函数是同步签名（含测试在内的多个调用方），入队交给独立任务投递
+    let app2 = app.clone();
+    let notify_key = format!("service_alert:{service_id}:{kind}:{scope}");
+    let body2 = body.clone();
+    tauri::async_runtime::spawn(async move {
+        notify_system(&app2, notify_key, "受管服务资源告警".to_string(), body2).await;
+    });
     // 应用内通知中心也落一条：系统通知依赖通知插件，插件没装就静默跳过——
     // 那台机器上这条告警就只剩设置页里的一行字，用户不看就没有。
     let notif_id = format!("service:{service_id}:{kind}:{}", crate::db::now_ms());
@@ -267,16 +273,25 @@ pub(super) fn write_resource_warning<R: tauri::Runtime>(
     }
 }
 
-/// 发一条系统通知。
+/// 发一条系统通知（走 Effects 队列：发送失败退避重试、超限审计；同 key
+/// 的连续告警在待投递时合并为最新一条）。
 ///
 /// 插件没装就跳过（测试里的 mock app 没有这个插件）——通知发不出去不是业务错误，
-/// 但也不该因此把巡检循环带崩。
-fn notify_system<R: tauri::Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
+/// 但也不该因此把巡检循环带崩；入队失败同样只记日志。
+async fn notify_system<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    key: String,
+    title: String,
+    body: String,
+) {
     use tauri::Manager;
-    let Some(state) = app.try_state::<tauri_plugin_notification::Notification<R>>() else {
+    if app
+        .try_state::<tauri_plugin_notification::Notification<R>>()
+        .is_none()
+    {
         return;
-    };
-    if let Err(e) = state.inner().builder().title(title).body(body).show() {
-        eprintln!("[bot::services] 系统通知发送失败：{e}");
+    }
+    if let Err(e) = crate::bot::effects::enqueue_notify(app, &key, title, body).await {
+        eprintln!("[bot::services] 系统通知入队失败：{e}");
     }
 }

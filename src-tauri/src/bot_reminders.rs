@@ -12,7 +12,6 @@
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDateTime, NaiveTime};
 use tauri::AppHandle;
-use tauri_plugin_notification::NotificationExt;
 
 use crate::bot::registry::ToolResult;
 use crate::db::reminders::Reminder;
@@ -349,8 +348,7 @@ pub async fn reminders_tick(app: &AppHandle) {
                 delete_row(app, &r.id).await;
                 continue;
             }
-            fire(app, &r);
-            delete_row(app, &r.id).await;
+            consume_one_shot(app, &r, now_ms).await;
         } else {
             if late > RECUR_GRACE {
                 // 错过太久：只推进到下一次，不打扰（否则每次开机都补一条）
@@ -358,39 +356,71 @@ pub async fn reminders_tick(app: &AppHandle) {
                 advance_row(app, &r.id, now_ms, next.map(|t| t.timestamp_millis())).await;
                 continue;
             }
-            fire(app, &r);
             let next = crate::bot_scheduler::occurrence_after(&r.schedule, now);
-            advance_row(app, &r.id, now_ms, next.map(|t| t.timestamp_millis())).await;
+            advance_and_enqueue(app, &r, now_ms, next.map(|t| t.timestamp_millis())).await;
         }
     }
 }
 
-/// 发系统通知（失败只审计不重试：通知通道不可用时反复重试只会刷屏）
-fn fire(app: &AppHandle, r: &Reminder) {
-    match app
-        .notification()
-        .builder()
-        .title("⏰ 提醒")
-        .body(&r.text)
-        .show()
-    {
-        Ok(()) => crate::bot::audit_log(
-            app,
-            &format!(
-                "reminder.fired | id: {} | text: {}",
-                r.id,
-                crate::bot::truncate_for_log(&r.text, 60)
-            ),
-        ),
-        Err(e) => crate::bot::audit_log(
-            app,
-            &format!(
-                "reminder.fire_failed | id: {} | err: {}",
-                r.id,
-                crate::bot::truncate_for_log(&e.to_string(), 120)
-            ),
-        ),
+/// 一次性提醒消费：删行与通知入队**同一事务**。崩溃在中间只会留下
+/// 「行已删、通知待投」（队列补投）或「行还在」（下轮重做）——先发后删的
+/// 「重复轰炸」与先删后发的「一次性提醒永久丢失」两个坑都不占。
+async fn consume_one_shot(app: &AppHandle, r: &Reminder, now_ms: i64) {
+    let id = r.id.clone();
+    let payload = notify_payload(&r.text);
+    let key = format!("reminder:{}", r.id);
+    let res = crate::db::tx::with_tx(app, move |tx| {
+        crate::db::effects::enqueue(tx, crate::bot::effects::KIND_NOTIFY, &key, &payload, now_ms)?;
+        crate::db::reminders::delete_reminder(tx, &id).map(|_| ())
+    })
+    .await;
+    match res {
+        Ok(()) => {
+            crate::bot::effects::kick();
+        }
+        Err(e) => {
+            // 行还在：下轮 tick 重做，不丢提醒；失败留痕
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "reminder.enqueue_failed | id: {} | {}",
+                    r.id,
+                    crate::bot::truncate_for_log(&e, 120)
+                ),
+            );
+        }
     }
+}
+
+/// 周期提醒触发：推进到下一次与通知入队同一事务（同 consume_one_shot 的取舍）
+async fn advance_and_enqueue(app: &AppHandle, r: &Reminder, now_ms: i64, next_at: Option<i64>) {
+    let id = r.id.clone();
+    let payload = notify_payload(&r.text);
+    let key = format!("reminder:{}", r.id);
+    let res = crate::db::tx::with_tx(app, move |tx| {
+        crate::db::effects::enqueue(tx, crate::bot::effects::KIND_NOTIFY, &key, &payload, now_ms)?;
+        crate::db::reminders::advance_reminder(tx, &id, now_ms, next_at)
+    })
+    .await;
+    match res {
+        Ok(()) => {
+            crate::bot::effects::kick();
+        }
+        Err(e) => {
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "reminder.enqueue_failed | id: {} | {}",
+                    r.id,
+                    crate::bot::truncate_for_log(&e, 120)
+                ),
+            );
+        }
+    }
+}
+
+fn notify_payload(text: &str) -> String {
+    serde_json::json!({ "title": "⏰ 提醒", "body": text }).to_string()
 }
 
 /// 推进下次触发时间

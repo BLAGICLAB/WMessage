@@ -10,7 +10,6 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use tauri::AppHandle;
-use tauri_plugin_notification::NotificationExt;
 
 use crate::apps::commands::manifest_contract as mc;
 use crate::apps::{self as apps_runner, AppRunResult};
@@ -101,7 +100,8 @@ pub async fn apps_run(app: AppHandle, args: RunArgs) -> CommandResult<AppRunResu
         .map_err(|e| CommandError::from(format!("程序运行线程 join 失败：{e}")))?
         .map_err(runner_err)?
     };
-    // 系统通知：跑完/失败给个轻提示（M1 不做结果面板里的丰富展示）
+    // 系统通知：跑完/失败给个轻提示（M1 不做结果面板里的丰富展示）；
+    // 投递走 Effects 队列——发送失败重试、超限审计，不再静默丢
     let title = format!(
         "程序「{}」{}",
         app_name,
@@ -110,12 +110,17 @@ pub async fn apps_run(app: AppHandle, args: RunArgs) -> CommandResult<AppRunResu
             _ => "运行失败",
         }
     );
-    let _ = app
-        .notification()
-        .builder()
-        .title(title)
-        .body(res.summary.clone().unwrap_or_default())
-        .show();
+    let key = format!("app_done:{}", res.run_id);
+    if let Err(e) = crate::bot::effects::enqueue_notify(
+        &app,
+        &key,
+        title,
+        res.summary.clone().unwrap_or_default(),
+    )
+    .await
+    {
+        eprintln!("[apps] 运行完成通知入队失败：{e}");
+    }
     Ok(res)
 }
 

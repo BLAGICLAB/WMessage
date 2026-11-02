@@ -64,6 +64,9 @@ src-tauri/src/
 │   │                     （open_db 迁移把旧 tasks.schedule 迁入并清空任务卡侧）
 │   ├── tx.rs            with_write_conn 的加事务层（with_tx）：闭包 Err 即整体回滚；
 │   │                     同步闭包 + 禁再取锁（std Mutex 非重入）+ 禁外部副作用
+│   ├── effects.rs       通用持久化副作用队列 effect_queue（语义对拍 superagent effects.ts）：
+│   │                     同 kind+key 一行、再入队保队位重置计次、CAS 收尾、成功删行、
+│   │                     kind 健康度统计；派发器在 bot/effects.rs
 │   ├── db/trace.rs (927)   执行痕迹三表 exec_traces/exec_spans/file_changes（Agent 透明化
 │   │                     设计 §4.1）：append-only 观测面 + 钳制单源（SPAN_TEXT_MAX 16KB /
 │   │                     MAX_DIFF_LINES）+ 保留期清理 retire_traces_before（僵尸 running 同删）；
@@ -389,6 +392,9 @@ src-tauri/src/
 ├── bot/plan_state.rs (308)  Agent 计划状态（会话内 transient）：update_plan 的参数校验与状态存取
 │                        （整表替换、三态 pending/in_progress/completed、至多一条 in_progress）→
 │                        进程内会话表 → bot-plan 事件；bot_plan_state 命令给面板取当前快照
+├── bot/effects.rs       统一持久化副作用队列的派发器（表见 db/effects.rs）：单 tokio 任务
+│                        轮询 effect_queue，per-kind 并发槽 + 指数退避 + 超限停投递并审计；
+│                        收尾 CAS（kind+key+seq+generation）成功删行；入队方 commit 后 kick 唤醒
 ├── bot/stream_log.rs (515) 会话级流式事件的统一出口 emit_recorded：**盖信封**（载荷顶层的
 │                        sessionId 由本函数统一注入，调用方不许自带同名键——盖章权分散到
 │                        各发射点时漏一处就静默丢事件）→ 分配序号（会话内跨轮次连续，

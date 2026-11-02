@@ -28,6 +28,7 @@ use tauri::Manager;
 
 pub mod bot_history;
 pub mod bot_sessions;
+pub mod effects;
 pub mod lock;
 pub mod migrations;
 pub mod paths;
@@ -267,6 +268,10 @@ pub fn open_db<R: tauri::Runtime>(
     conn.execute_batch(crate::db::apps::APP_RUNS_DDL)
         .map_err(|e| e.to_string())?;
     conn.execute_batch(crate::db::apps::APP_VERSIONS_DDL)
+        .map_err(|e| e.to_string())?;
+    // 通用持久化副作用队列：状态已写、动作未做的中间态可恢复（notify 先行，
+    // schedule_retry/subagent_finalize/subagent_dispatch 随后收编）
+    conn.execute_batch(crate::db::effects::EFFECT_QUEUE_DDL)
         .map_err(|e| e.to_string())?;
     // 模型元数据双表（meta_provider/meta_model，meta 模块的存储面），幂等
     migrations::ensure_meta_tables(&conn)?;

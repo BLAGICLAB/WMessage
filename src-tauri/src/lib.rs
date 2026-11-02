@@ -585,6 +585,10 @@ pub fn run() {
             // 过期不扫会让 data_dir/overflow 无限涨
             overflow::spawn_sweep(app.handle());
 
+            // 统一副作用队列派发器（系统通知投递等）：启动即扫，崩溃遗留的
+            // 到期行自动补投（at-least-once）
+            bot::effects::spawn_dispatcher(app.handle());
+
             // 启动即预建 AI 产物目录（解析即建，不等首次生成产物才懒建）；
             // 失败只记 WARN 不阻塞启动——生成产物时 gen_dir 还会再试
             if let Err(e) = db::gen_dir(app.handle()) {
