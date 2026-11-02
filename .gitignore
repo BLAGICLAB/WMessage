@@ -126,3 +126,8 @@ fixtures/*.jsonl.tmp
 
 # 提示词评估层的配置快照（bot/eval.rs 用，拷贝自真实 bot-config.json；含厂商地址不入库）
 src-tauri/eval-bot-config.json
+
+# 落地页打包产物与一次性登录二维码（本地分发用，勿入库；
+# 落地页源码在 landing/，是版本化交付物）
+wmessage-landing.zip
+wm-mail-auth-qr.png

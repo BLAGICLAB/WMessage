@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WMessage — 把任务交给会动手的代理</title>
+    <meta
+      name="description"
+      content="WMessage 是单机个人 AI 任务助手：周时间网格做骨架，内置大模型机器人管理任务、读写文件、跑脚本，并派出受管的子 agent 协作。数据全部落在本机 SQLite。"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <!-- 图标精灵：产品自带的 lucide 线性图标，24 网格 -->
+    <svg class="sprite" aria-hidden="true">
+      <symbol id="i-home" viewBox="0 0 24 24"><path d="M3.5 3.5h7v8h-7zM13.5 3.5h7v5h-7zM13.5 12.5h7v8h-7zM3.5 15.5h7v5h-7z" /></symbol>
+      <symbol id="i-tasks" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2.5" /><path d="M9.5 3v18M3 9.5h18" /></symbol>
+      <symbol id="i-graph" viewBox="0 0 24 24"><circle cx="5.5" cy="6" r="2.5" /><circle cx="18.5" cy="7.5" r="2.5" /><circle cx="12" cy="18" r="2.5" /><path d="M7.8 6.8 16 7.6M6.6 8.1 10.8 15.9M17 9.8 12.9 15.9" /></symbol>
+      <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="4" rx="1.2" /><path d="M5 8v11.5a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5V8M10 12.5h4" /></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.2A2.2 2.2 0 0 1 5.2 5h3.9l2 2.4h7.7A2.2 2.2 0 0 1 21 9.6v8.2a2.2 2.2 0 0 1-2.2 2.2H5.2A2.2 2.2 0 0 1 3 17.8z" /></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9.5 7V4.8h5V7M6.5 7l1 12.2a1.3 1.3 0 0 0 1.3 1.2h6.4a1.3 1.3 0 0 0 1.3-1.2L17.5 7" /></symbol>
+      <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20.5 11.7a8 8 0 0 1-11.7 7L4 20.5l1.9-4.7a8 8 0 1 1 14.6-4.1z" /></symbol>
+      <symbol id="i-alarm" viewBox="0 0 24 24"><circle cx="12" cy="13" r="7.2" /><path d="M12 9.8v3.4l2.2 1.6M4.8 4 3 6.2M19.2 4 21 6.2" /></symbol>
+      <symbol id="i-apps" viewBox="0 0 24 24"><path d="M12 3.2 4 7v10l8 3.8 8-3.8V7z" /><path d="m4 7 8 3.8L20 7M12 10.8v10" /></symbol>
+      <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12.5h4l2.8 6.6 4-14.2 2.8 7.6H21" /></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 9.5a6 6 0 1 0-12 0c0 4.8-2 6.2-2 6.2h16s-2-1.4-2-6.2" /><path d="M10.2 19.4a2 2 0 0 0 3.6 0" /></symbol>
+      <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1" /><path d="M12 2.6v2.6M12 18.8v2.6M2.6 12h2.6M18.8 12h2.6M5.3 5.3l1.9 1.9M16.8 16.8l1.9 1.9M18.7 5.3l-1.9 1.9M7.2 16.8l-1.9 1.9" /></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.3" /><path d="m15.6 15.6 4 4" /></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2" /><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6" /></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.2A8.4 8.4 0 0 1 9.8 4 8.5 8.5 0 1 0 20 14.2z" /></symbol>
+      <symbol id="i-wave" viewBox="0 0 24 24"><path d="M2.5 9.5c2.4-4 4.8-4 7.2 0s4.8 4 7.2 0 4.8-4 4.6 0M2.5 15c2.4-4 4.8-4 7.2 0s4.8 4 7.2 0 4.8-4 4.6 0" /></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" /></symbol>
+    </svg>
+
+    <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+
+    <header class="topbar">
+      <a class="brand" href="#top">
+        <span class="brand__mark"><svg><use href="#i-wave" /></svg></span>
+        <span class="brand__name">WMessage</span>
+      </a>
+      <nav class="topnav" aria-label="页面导航">
+        <a href="#demo">演示</a>
+        <a href="#features">能力</a>
+        <a href="#how">机制</a>
+        <a href="#get">获取</a>
+      </nav>
+      <div class="topbar__right">
+        <button class="icon-btn" id="themeToggle" type="button" aria-label="切换深浅色主题" title="切换深浅色主题">
+          <svg class="icon-sun"><use href="#i-sun" /></svg>
+          <svg class="icon-moon"><use href="#i-moon" /></svg>
+        </button>
+        <button class="btn btn--ghost" id="openPalette" type="button">
+          试玩 <kbd>⌘K</kbd>
+        </button>
+        <a class="btn btn--primary" href="#get">下载</a>
+      </div>
+    </header>
+
+    <main id="top">
+      <!-- ── 首屏 ───────────────────────────────────────────── -->
+      <section class="hero">
+        <div class="hero__copy">
+          <p class="hero__kicker"><span class="dot"></span>单机个人 AI 任务助手</p>
+          <h1 class="hero__title">
+            把任务交给<br /><em>会动手的代理</em>
+          </h1>
+          <p class="hero__sub">
+            WMessage 用一张周时间网格做骨架，内置的大模型机器人直接管理任务、读写文件、跑脚本，
+            还能派出受管的子 agent 并行推进。数据全部落在本机 SQLite——不登录，不上传。
+          </p>
+          <div class="hero__cta">
+            <a class="btn btn--primary btn--lg" href="#get">下载绿色版</a>
+            <button class="btn btn--ghost btn--lg" type="button" data-goto-view="chat">
+              看机器人怎么干活
+            </button>
+          </div>
+          <ul class="hero__facts">
+            <li><b>64</b> 个主可见工具</li>
+            <li><b>3</b> 档受管子 agent</li>
+            <li><b>0</b> 账号</li>
+            <li>Windows 10/11 · macOS</li>
+          </ul>
+        </div>
+
+        <!-- 内嵌真窗口：可点的 WMessage，不是截图 -->
+        <div class="hero__stage" id="heroStage">
+          <div class="app" id="app" role="region" aria-label="WMessage 应用演示，可点击左侧导航切换视图">
+            <div class="app__chrome">
+              <div class="app__dots"><i></i><i></i><i></i></div>
+              <div class="app__title">WMessage</div>
+              <div class="app__chrome-right">
+                <span class="app__mini">⌘K</span>
+              </div>
+            </div>
+            <div class="app__body">
+              <aside class="rail">
+                <div class="rail__brand">
+                  <span class="rail__mark"><svg><use href="#i-wave" /></svg></span>
+                  <span>WMessage</span>
+                </div>
+                <button class="rail__btn" type="button" data-action="new-task">
+                  <svg><use href="#i-plus" /></svg>新建任务<kbd>⌘N</kbd>
+                </button>
+                <button class="rail__btn" type="button" data-action="search">
+                  <svg><use href="#i-search" /></svg>搜索<kbd>⌘K</kbd>
+                </button>
+                <nav class="rail__nav" id="railMain" aria-label="主导航"></nav>
+                <p class="rail__label">Agent</p>
+                <nav class="rail__nav" id="railAgent" aria-label="Agent 能力"></nav>
+                <button class="rail__foot" type="button" data-view="settings">
+                  <svg><use href="#i-gear" /></svg>设置
+                </button>
+              </aside>
+              <div class="app__stage" id="stage" aria-live="polite"></div>
+            </div>
+          </div>
+          <p class="hero__hint">↑ 真的能点：左侧导航换视图，双击周网格里的计划块开编辑浮窗</p>
+        </div>
+      </section>
+
+      <!-- ── 工具名跑马灯（线性常速，真实工具名） ─────────────── -->
+      <section class="marquee-band" aria-label="内置工具">
+        <div class="marquee" id="marquee">
+          <div class="marquee__track"></div>
+        </div>
+      </section>
+
+      <!-- ── 交互演示 ───────────────────────────────────────── -->
+      <section class="section" id="demo">
+        <header class="section__head">
+          <h2>先点一遍，再决定要不要装</h2>
+          <p>下面这屏就是 WMessage 的真实界面（数据为示例）。切视图、双击计划块、跟机器人聊，都是真的交互。</p>
+        </header>
+        <div class="demo">
+          <div class="demo__tabs" role="tablist" aria-label="演示视图" id="demoTabs"></div>
+          <div class="demo__panel">
+            <div class="app app--wide" id="app2">
+              <div class="app__chrome">
+                <div class="app__dots"><i></i><i></i><i></i></div>
+                <div class="app__title">WMessage</div>
+                <div class="app__chrome-right"><span class="app__mini">⌘K</span></div>
+              </div>
+              <div class="app__body">
+                <aside class="rail">
+                  <div class="rail__brand">
+                    <span class="rail__mark"><svg><use href="#i-wave" /></svg></span>
+                    <span>WMessage</span>
+                  </div>
+                  <button class="rail__btn" type="button" data-action="new-task">
+                    <svg><use href="#i-plus" /></svg>新建任务<kbd>⌘N</kbd>
+                  </button>
+                  <button class="rail__btn" type="button" data-action="search">
+                    <svg><use href="#i-search" /></svg>搜索<kbd>⌘K</kbd>
+                  </button>
+                  <nav class="rail__nav" data-rail="main"></nav>
+                  <p class="rail__label">Agent</p>
+                  <nav class="rail__nav" data-rail="agent"></nav>
+                  <button class="rail__foot" type="button" data-view="settings">
+                    <svg><use href="#i-gear" /></svg>设置
+                  </button>
+                </aside>
+                <div class="app__stage" id="stage2" aria-live="polite"></div>
+              </div>
+            </div>
+          </div>
+          <aside class="demo__notes" id="demoNotes"></aside>
+        </div>
+      </section>
+
+      <!-- ── 能力清单（术语表结构，不是卡片网格） ─────────────── -->
+      <section class="section" id="features">
+        <header class="section__head">
+          <h2>一条主线：任务从想法到归档</h2>
+          <p>每一条都对应一组真实工具与真实规则，没有「敬请期待」。</p>
+        </header>
+        <dl class="spec-list" id="specList"></dl>
+      </section>
+
+      <!-- ── 机制：代理怎么被管住 ────────────────────────────── -->
+      <section class="section" id="how">
+        <header class="section__head">
+          <h2>代理怎么被管住</h2>
+          <p>子 agent 不是「放出去就不管了」。它有阶段契约、工具白名单和硬顶，超了就停。</p>
+        </header>
+        <div class="pipeline" id="pipeline">
+          <div class="pipe-line" aria-hidden="true"><svg viewBox="0 0 1000 60" preserveAspectRatio="none"><path id="pipePath" d="M60 30 H940" /></svg></div>
+          <article class="pipe-stage" data-stage="recon">
+            <p class="pipe-stage__step">阶段一</p>
+            <h3>recon</h3>
+            <p>只读侦察：搜代码、读文档、拉事实，产出结论卡片。<b>不动任务卡</b>。</p>
+            <p class="pipe-stage__tools">web_search · fetch_url · grep_files</p>
+          </article>
+          <article class="pipe-stage" data-stage="executor">
+            <p class="pipe-stage__step">阶段二</p>
+            <h3>executor</h3>
+            <p>按白名单执行：写代码、跑脚本、产出文件，统一落 <code>AI_Gen_Files</code>。</p>
+            <p class="pipe-stage__tools">write_artifact_file · run_python</p>
+          </article>
+          <article class="pipe-stage" data-stage="verifier">
+            <p class="pipe-stage__step">阶段三</p>
+            <h3>verifier</h3>
+            <p>独立复核产出。判否就带着<b>具体拒收理由</b>回到执行段重试，不空转。</p>
+            <p class="pipe-stage__tools">check_subagent · read_own_card</p>
+          </article>
+        </div>
+        <div class="guard-band">
+          <div class="guard">
+            <p class="guard__num" data-count="200">0</p>
+            <p class="guard__label">轮次硬顶<span>主子 agent 共用</span></p>
+          </div>
+          <div class="guard">
+            <p class="guard__num" data-count="400">0</p>
+            <p class="guard__label">工具调用硬顶<span>超出即熔断留产</span></p>
+          </div>
+          <div class="guard">
+            <p class="guard__num" data-count="600">0</p>
+            <p class="guard__label">秒停滞超时<span>超时即收尾</span></p>
+          </div>
+          <div class="guard">
+            <p class="guard__num" data-count="64">0</p>
+            <p class="guard__label">个主可见工具<span>白名单外直接拒</span></p>
+          </div>
+        </div>
+        <p class="guard-foot">
+          白名单外的工具不是「问一句再放行」——子 agent 直接拒不弹窗；联网与目的地另走一层闸，见
+          <a href="#features">能力清单</a>。
+        </p>
+      </section>
+
+      <!-- ── 获取 ───────────────────────────────────────────── -->
+      <section class="section section--get" id="get">
+        <div class="get">
+          <div class="get__copy">
+            <h2>拿走，然后按自己的方式拆</h2>
+            <p>
+              绿色版解压即用，数据随包走；不想装就用源码跑。全程本机，不注册，不联网上报。
+            </p>
+            <ul class="get__list">
+              <li><span>macOS</span>Apple Silicon / Intel，.dmg</li>
+              <li><span>Windows</span>10 / 11 绿色版，7z 分卷</li>
+              <li><span>源码</span>Tauri 2 + React 19，一条命令构建</li>
+            </ul>
+            <pre class="get__code"><code>npm install
+npm run tauri build</code></pre>
+          </div>
+          <div class="get__actions">
+            <a class="btn btn--primary btn--lg" href="#get">下载 macOS 版</a>
+            <a class="btn btn--outline btn--lg" href="#get">下载 Windows 绿色版</a>
+            <p class="get__note">发布页提供 SHA256 校验和；绿色版解压后双击即用，数据库随包创建。</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer__brand">
+        <span class="brand__mark"><svg><use href="#i-wave" /></svg></span>
+        <span>WMessage</span>
+      </div>
+      <p class="footer__meta">单机 · 本机 SQLite（WAL） · 无账号体系 · 数据不出机器</p>
+      <p class="footer__meta">多人协作 = 任务 JSON 导出汇总导入</p>
+    </footer>
+
+    <!-- 命令面板：产品里 ⌘K 的同款交互 -->
+    <div class="palette" id="palette" hidden>
+      <div class="palette__scrim" data-close-palette></div>
+      <div class="palette__panel" role="dialog" aria-modal="true" aria-label="命令面板">
+        <input
+          class="palette__input"
+          id="paletteInput"
+          type="text"
+          placeholder="输入命令或任务名…"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <ul class="palette__list" id="paletteList"></ul>
+        <p class="palette__foot">↑↓ 选择 · ↵ 执行 · esc 关闭</p>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
