@@ -202,11 +202,12 @@ pub fn upsert_scheduled_job(conn: &rusqlite::Connection, j: &ScheduledJob) -> Re
         }
     }
     conn.execute(
-        "INSERT INTO scheduled_jobs (id, content, schedule, sched_last, enabled, created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7)
+        "INSERT INTO scheduled_jobs (id, content, schedule, sched_last, enabled, created_at, updated_at, pause_on_failure, retry_max)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
          ON CONFLICT(id) DO UPDATE SET
            content=excluded.content, schedule=excluded.schedule,
            sched_last=excluded.sched_last, enabled=excluded.enabled,
+           pause_on_failure=excluded.pause_on_failure, retry_max=excluded.retry_max,
            updated_at=excluded.updated_at",
         rusqlite::params![
             j.id,
@@ -216,6 +217,8 @@ pub fn upsert_scheduled_job(conn: &rusqlite::Connection, j: &ScheduledJob) -> Re
             j.enabled.map(|b| b as i64),
             j.created_at,
             j.updated_at,
+            j.pause_on_failure.map(|b| b as i64),
+            j.retry_max,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -599,5 +602,54 @@ mod tests {
         job.expected_updated_at = Some(1); // 基线 = 旧快照
         job.content = "并发编辑".into();
         assert!(upsert_scheduled_job(&conn, &job).is_err(), "过期基线应被拒");
+    }
+
+    /// 失败重试/自动暂停策略必须随 upsert 落库——INSERT 与 ON CONFLICT 任一处
+    /// 漏写这两列，UI 保存的策略就写库即丢（失败后不重试、不自动暂停）。
+    #[test]
+    fn upsert_persists_retry_policy_columns() {
+        let conn = mem_conn();
+        let _g = crate::db::lock_db_write();
+        let job = ScheduledJob {
+            id: "j1".into(),
+            content: "内容".into(),
+            schedule: "daily:09:00".into(),
+            sched_last: None,
+            enabled: None,
+            created_at: Some(1),
+            updated_at: Some(1),
+            last_status: None,
+            last_error: None,
+            pause_on_failure: Some(true),
+            retry_max: Some(2),
+            retry_at: None,
+            retry_count: None,
+            expected_updated_at: None,
+        };
+        upsert_scheduled_job(&conn, &job).unwrap();
+        let loaded = load_scheduled_job(&conn, "j1").unwrap().unwrap();
+        assert_eq!(loaded.retry_max, Some(2));
+        assert_eq!(loaded.pause_on_failure, Some(true));
+
+        // 编辑路径（ON CONFLICT 更新分支）：改策略后原样写回
+        let mut j2 = loaded;
+        j2.retry_max = Some(0);
+        j2.pause_on_failure = Some(false);
+        j2.expected_updated_at = j2.updated_at;
+        j2.updated_at = Some(999);
+        upsert_scheduled_job(&conn, &j2).unwrap();
+        let loaded2 = load_scheduled_job(&conn, "j1").unwrap().unwrap();
+        assert_eq!(loaded2.retry_max, Some(0));
+        assert_eq!(loaded2.pause_on_failure, Some(false));
+
+        // NULL 语义：未配置（None）→ 列保持 NULL
+        let mut j3 = loaded2;
+        j3.retry_max = None;
+        j3.pause_on_failure = None;
+        j3.expected_updated_at = j3.updated_at;
+        upsert_scheduled_job(&conn, &j3).unwrap();
+        let loaded3 = load_scheduled_job(&conn, "j1").unwrap().unwrap();
+        assert_eq!(loaded3.retry_max, None);
+        assert_eq!(loaded3.pause_on_failure, None);
     }
 }
