@@ -19,6 +19,7 @@
 > 5. Effects 内核补规格（对拍 `effects.ts` 实源）：成功=删行（CAS 四元组）、per-kind 并发槽 `limit()`（G7 随批 3 收编）、max_attempts 限次、派发器 at-least-once + 消费方幂等要求。
 > 6. `with_tx` 补红线：闭包内禁调会再取锁的路径（`DB_WRITE_LOCK` 是 std Mutex 非重入，嵌套即死锁）；拿锁必须走 `lock_db_write()`。
 > 7. 新增快赢批 4：主聊天 `begin_trace` 传 title（活动页先不显示裸会话 id，不等 work_items）。
+> 8. **批 5–8 拍板（2026-11-03，四项全按推荐）**：开票粒度 = **每会话一行**（session_id upsert，等真出现「独立授权工作项」再迁粒度）；阶段重估 = **挂现有 30s tick**（不新增后台任务）；mandate 列 = **不建**（YAGNI，有授权语义再加）；批 7 聚合 = **查询时聚合**（不新增 notifications kind）；批 8 干跑档命名 = **preview/shadow**（避撞 `bot/services/observe.rs`）。批 1–4+审计修复先行实机验收，过了再推批 5–8。
 
 ---
 
@@ -438,15 +439,21 @@ CREATE TABLE IF NOT EXISTS work_items (
   objective      TEXT,                  -- 这活要干什么
   acceptance     TEXT,                  -- JSON：机器可判据（复用 file_exists:/file_nonempty: 语法）
   stage          TEXT NOT NULL,         -- 见 7.3
-  mandate        TEXT,                  -- JSON：授权范围与来源
   result         TEXT,                  -- JSON：结构化结论
   error          TEXT,
   created_at     INTEGER NOT NULL,
   updated_at     INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_work_items_stage   ON work_items(stage);
-CREATE INDEX IF NOT EXISTS idx_work_items_session ON work_items(session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_session
+  ON work_items(session_id) WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_work_items_stage ON work_items(stage);
 ```
+
+> **粒度拍板（2026-11-03）：每会话一行**——session_id partial UNIQUE 撑起
+> upsert；开票是**机械动作**（每轮模型循环 upsert，不靠提示词自觉），objective
+> 随轮次更新、轮结束收尾 stage。同一会话先后两个任务共享一行是已知取舍，
+> 真出现「独立授权工作项」需求时再迁粒度。mandate 列不建（主聊天今天没有
+> 授权范围概念，永远 NULL 的死列违反 YAGNI）。
 
 ### 7.3 阶段语义（person 族 / working 族二分）
 
@@ -465,6 +472,9 @@ CREATE INDEX IF NOT EXISTS idx_work_items_session ON work_items(session_id);
 
 **`person` 族 = 没有用户介入就动不了**；`working` 族 = 自己在推进。
 这个二分是「面板只显示需要人的」的基础。
+
+> **重估驱动器拍板（2026-11-03）：挂现有 30s 调度 tick**（与提醒/作业同一循环），
+> 阶段收敛最多 30s 延迟、面板无感，不新增后台任务。
 
 ### 7.4 与既有表的边界（**不合并**）
 
@@ -494,11 +504,12 @@ CREATE INDEX IF NOT EXISTS idx_work_items_session ON work_items(session_id);
 
 | 时机 | 动作 |
 |---|---|
-| 主 agent 收到一条**判定为要干活**的消息 | 建 `work_items` 行（`kind=chat`），`objective` 取首条用户消息摘要；`stage=working` |
+| 每轮模型循环（**机械开票**，不靠提示词判断） | 按会话 upsert `work_items` 行（`kind=chat`，粒度拍板见 §7.2）；`objective` 更新为本轮用户输入摘要；`stage=working` |
 | 模型在首轮给出方向后 | 模型可补全 `acceptance`（复用现有 acceptance 语法，提示词侧加一句） |
 | 每轮报告 | 更新 `stage`（受阻/失败/就绪等） |
 | 轮结束 | 落 `result` JSON、`stage` 收尾 |
 | `ask_user` 提问 | `stage=awaiting_answer`，**并把 `notifications` 那条 pending 与 work_item 关联**（解决 G4 的「不在工作行上」） |
+| 30s tick（拍板驱动器） | 重估静默期阶段：blocked / failed 的「此后无人消息」判定 |
 
 ### 7.7 改造后提升
 
@@ -509,7 +520,7 @@ CREATE INDEX IF NOT EXISTS idx_work_items_session ON work_items(session_id);
 3. **三套状态语义收敛为一套**：G4 的六态 / 三列 / 四态各自定义、互不映射问题得到缓解——
    `work_items.stage` 成为**唯一横跨「排队 / 进行中 / 需要人 / 结局」的语义**，
    既有三套保持原样（各自有用户界面），但新面板按 `stage` 组织。
-4. **执行现场可恢复（解 G5）**：只要 `objective` + `acceptance` + `stage` + `mandate` 落库，
+4. **执行现场可恢复（解 G5）**：只要 `objective` + `acceptance` + `stage` 落库，
    崩溃后就能像 superagent 那样「按恢复提示重启」——
    这正是 `bot_orchestrator.rs:555-557` 注释里说的「先把 stage / onion 持久化，再谈重投」。
 5. **「等人回答」挂在工作行上**：不再是一条孤立的 pending 通知。
@@ -521,7 +532,9 @@ CREATE INDEX IF NOT EXISTS idx_work_items_session ON work_items(session_id);
 
 ### 8.1 聚合面（消解 G6）
 
-**不新建表**，在视图层聚合：
+**不新建表**，在视图层聚合。**口径拍板（2026-11-03）：查询时聚合**——失败的
+子 agent / 作业 / 需人的 work_item 在渲染时从各自表查询合并，**不新增
+notifications kind、不改 notifications 表**（4 类 kind 白名单与既有口径不动）：
 
 | 位置 | 动作 |
 |---|---|
@@ -532,12 +545,14 @@ CREATE INDEX IF NOT EXISTS idx_work_items_session ON work_items(session_id);
 
 ### 8.2 干跑模式（消解 G8）
 
-给定时作业加 `mode` 三档（照搬 superagent `src/policy.ts:84` 的 `off / observe / auto`）：
+给定时作业加 `mode` 三档（照搬 superagent `src/policy.ts:84` 的 `off / preview / auto`；
+**命名拍板（2026-11-03）：用 `preview`**——`observe` 已被 `bot/services/observe.rs`
+（资源巡检）占用，撞名会毒化全仓搜索）：
 
 | 档 | 行为 |
 |---|---|
 | `off` | 不派发（现有 `enabled=false` 语义保留） |
-| `observe`（新增，默认建议） | 到点**只生成提案不执行**：建一张卡 + 写清「本会做什么」，用户确认后才真跑 |
+| `preview`（新增，默认建议） | 到点**只生成提案不执行**：建一张卡 + 写清「本会做什么」，用户确认后才真跑 |
 | `auto` | 现有行为：到点直接执行 |
 
 **干跑不是「模拟执行」**——不跑模型、不跑工具、不产生副作用，只把「要做什么」显式化。
@@ -561,7 +576,7 @@ superagent 的 observe 模式记录的是「模型认为可以接单 + 接了会
 | **2** | Effects 内核（终态/限次/槽位/派发器）+ `notify` 8 处收编 + 裂缝 5 队列化正解 + 失败健康面 | 1 | **有**（通知失败不再静默） | 大 |
 | **3** | `schedule_retry` / `subagent_finalize` / `subagent_dispatch` 收进队列（G7 随 `schedule` kind 槽位收编） | 2 | 无（间隔语义不变） | 中 |
 | **4** | 快赢：主聊天 `begin_trace` 传 title（活动页不再回落裸会话 id） | — | 轻微 | 小 |
-| **5** | `work_items` 表 + `stage` 判定 + 主 agent 开票与推进（**先拍板**：开票粒度 / 阶段重估驱动器 / mandate 列去留） | 1 | 轻微（活动页多出工作项条目） | 大 |
+| **5** | `work_items` 表 + `stage` 判定 + 主 agent 开票与推进（拍板已定：每会话一行 / 30s tick 重估 / 不建 mandate，见修订 8） | 1 | 轻微（活动页多出工作项条目） | 大 |
 | **6** | 机器判据引擎泛化 + 主 agent 支持 `acceptance` | 5 | 轻微（交付多出机器验收结论） | 中 |
 | **7** | 面板聚合：通知中心增补来源 / 活动页状态筛选 / 失败提级（口径拍板：查询时聚合 vs 失败时写通知行，推荐前者） | 5 | **有**（面板重组） | 中 |
 | **8** | 定时作业干跑模式（off/observe/auto；`observe` 撞名 `bot/services/observe.rs`，实现换词 `preview`/`shadow`） | 2,5 | **有**（作业页多一档） | 中 |
@@ -605,7 +620,7 @@ superagent 的 observe 模式记录的是「模型认为可以接单 + 接了会
 | 事务里混入 `await` 或外部副作用 → SQLite 事务跨 await 持有会出错 | `with_tx` 闭包是同步的；code review 盯这一条；CRATE 里禁止在事务闭包内调用 `spawn` |
 | Effects 队列与既有重试逻辑双跑 | 迁移按批次逐个切，切完即删旧字段（`retry_at` / `retry_count` 降级为只读，下一批再删列） |
 | `work_items` 与 `tasks` / `subagents` 语义打架 | 三张表**明确分工且不合并**（§7.4）；关联只用 `origin_ref`；UI 上卡片显示工单摘要 |
-| 干跑模式让用户以为作业没跑 | `observe` 档必须在作业页与通知里显式标注「本轮未执行（预演）」，不能静默跳过 |
+| 干跑模式让用户以为作业没跑 | `preview` 档必须在作业页与通知里显式标注「本轮未执行（预演）」，不能静默跳过 |
 | 批 5–7 触碰主聊天链路 | 单独提交；主 agent 开票用**开关**（默认关）灰度一轮再放开 |
 | 桌面前端多处依赖 `BotChatResult` 语义 | 批 7 需同步前端；活动页增补条目不能打乱既有 origin 筛选口径 |
 
