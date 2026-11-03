@@ -310,44 +310,44 @@ sqlite3 "$DB" "SELECT DISTINCT kind FROM effect_queue;"
 
 | 卡 | 结论 | 证据 | 备注 |
 |---|---|---|---|
-| M116 通知投递 + 成功删行 | | | |
-| M117 失败重试 + give-up | | | |
-| M118 同 key 再入队复活 | | | |
-| M119 ask_user 门铃 | | | |
-| M120 app 完成通知 | | | |
-| M121 一次性提醒弹一次删净 | | | |
-| M122 杀进程不重复弹 | | | |
-| M123 周期提醒推进 | | | |
-| M124 授权关闭下提醒 give-up | | | |
-| M125 子 agent 正常终态 | | | |
-| M126 queued 窗口补派 | | | |
-| M127 running 窗口收 failed | | | |
-| M128 取消路径回归 | | | |
-| M129 双作业 2 槽并发 | | | |
-| M130 第三作业排队不羊群 | | | |
-| M131 手动触发也过闸 | | | |
-| M132 失败重试链路 | | | |
-| M133 清扫先于派发 | | | |
-| M134 活动页标题 | | | |
-| M135 换行与长文本 | | | |
-| M136 队列不堆积 | | | |
-| W16 Windows 通知授权 | | | |
-| W17 Windows 子 agent 杀进程 | | | |
-| W18 Windows 活动页标题 | | | |
+| M116 通知投递 + 成功删行 | 部分 PASS | 19:54:13 `sched_job_run` → 19:54:15 `sched_job_done`；Q1 投递成功后行删净、无残留 | 横幅半未取到：macOS 通知授权未开启，`show()` 恒 Ok 但横幅不弹（见报告 D-2） |
+| M117 失败重试 + give-up | PASS（机制面） | attempts 1→5；退避 2/4/8/16s；20:54:54 `effect_giveup \| kind=notify \| key=sched_done:5269…`；行留库 attempts=5 | 原判据前提在 macOS 不可达（D-2），用 env 门控故障注入复现，注入已还原 |
+| M118 同 key 再入队复活 | 部分 PASS | 同 key 再入队 → `generation` 1→2、attempts 由 5 归零后重新计次 | 「投递成功、行删净」半因注入态不可验 |
+| M119 ask_user 门铃 | 部分 PASS | 提问卡 → 「回答并继续」→ 20:10:01 `ask_answered action=answer`；Q1 无 `ask:` 残留 | 横幅半未取到（同 D-2） |
+| M120 app 完成通知 | 未覆盖 | — | 程序页无可运行的 app，构造不出「app 跑完」现场 |
+| M121 一次性提醒弹一次删净 | 部分 PASS | 20:00:04 `schedule_reminder`(+2m/none) → 20:02:29 `reminder.fired`；Q2 该行已删；Q1 无 `reminder:` 残留 | 横幅半未取到 |
+| M122 杀进程不重复弹 | PASS | 21:38:11.771 `reminder.fired` 后 SIGKILL → 重启后同 id 无第二条；Q2 该行已不在、Q1 无残留 | 对照：V138 变异下 21:28:29.808 → 21:29:31.595 同 id 再弹一次 |
+| M123 周期提醒推进 | 部分 PASS | daily:20:21 到点弹一次；Q2 `remind_at` 推进到 11-04 20:21、`fired_count=1`、`schedule=daily:20:21` | 「次日再弹」半未覆盖（需拨系统时钟，本轮未改系统时间） |
+| M124 授权关闭下提醒 give-up | PASS（机制面） | 20:49:58 首次失败 → 20:50:26 `reminder.fire_failed`；Q2 提醒行已删；Q1 行 attempts=5 留库 | 同 M117：用受控故障注入复现 |
+| M125 子 agent 正常终态 | PASS | 子 agent `sa_f1eda01a…` 终态 `succeeded`；`subagent_done`；Q1 无 `subagent_finalize:`/`subagent_dispatch:` 残留 | |
+| M126 queued 窗口补派 | 部分 PASS（依赖变异） | V140 → 行被清/无补派；V141 → `exempted=0`/行被清（判据 FAIL 成立） | pristine 侧 `exempted=1`+补派路径实机未取到（queued 窗口毫秒级，手工不可命中） |
+| M127 running 窗口收 failed | PASS | 行终态 `failed`，error「应用重启，执行现场已不存在（僵尸行清理）」；`subagent_zombie_sweep_done count:1 exempted:0` | |
+| M128 取消路径回归 | PASS | `subagent_cancelled`（用户取消）；行 `cancelled`；无 `subagent_dispatch_giveup`；侧栏即时更新 | |
+| M129 双作业 2 槽并发 | PASS | 20:30:02.100 两条 `sched_job_run` 同毫秒；两作业最终 ok | |
+| M130 第三作业排队不羊群 | PASS | B 20:32:37.501 完成 → C 20:32:37.508 起跑（7ms）；全库零 `sched_job_skip`/`sched_job_slot_error`；C 最终 ok | |
+| M131 手动触发也过闸 | PASS | 两槽占满时点「立即执行」按钮变灰（请求在途）；A 20:34:10.396 完成 → D 20:34:10.399 起跑（3ms）；全程无三路并发 | |
+| M132 失败重试链路 | **FAIL** | 失败后 `retry_at` 空、`retry_count` 空、无 `sched_job_retry`/无 `sched_job_autopaused`；徽标 `fail` 正常更新 | 根因见报告 D-3：`upsert_scheduled_job` 不写 `retry_max`/`pause_on_failure` 两列 → UI 失败策略从未落库 |
+| M133 清扫先于派发 | 部分 PASS | 20:05:07.447 `app_data_dir` → 20:05:07.454 `subagent_zombie_cleared` → `subagent_zombie_sweep_done`（清扫早于派发） | 「queued 行被补派」对比半未覆盖（已由 V140/V141 轮补强） |
+| M134 活动页标题 | PASS | 首行标题「帮我看看今天的日程安排」；旧行仍是裸 session id；定时作业行仍显示作业内容 | |
+| M135 换行与长文本 | PASS | 标题换行转义为字面 `\n`、40 字截断带「…」、单行无破版 | |
+| M136 队列不堆积 | PASS | Q1 成功投递过的行全部已删，只剩 give-up 行与进行中行 | give-up 行来自注入期；真实授权关闭场景不可达（D-2） |
+| W16 Windows 通知授权 | 未执行 | — | 本机 macOS，判定不适用 |
+| W17 Windows 子 agent 杀进程 | 未执行 | — | 同上 |
+| W18 Windows 活动页标题 | 未执行 | — | 同上 |
 
 ### 10.2 变异注入结论
 
 | 编号 | 卡 | 注入后判据 FAIL？ | 观测到的具体现象 |
 |---|---|---|---|
-| V136 | M116 | | |
-| V137 | M117 | | |
-| V138 | M122 | | |
-| V139 | M117 | | |
-| V140 | M126 | | |
-| V141 | M126 | | |
-| V142 | M130 | | |
-| V143 | M134 | | |
-| V144 | M126 变体 | | |
+| V136 | M116 | **是 ✓** | 投递成功后行不删，`due` 每 5s 前移（…758035→…763047→…768060→…773072）→ 通知每 5s 反复投递、行堆积 |
+| V137 | M117 | **是 ✓** | `attempts` 恒 0（11 次采样全 0）、due 每 2s 前移 → 无限重试、**无** `effect_giveup` |
+| V138 | M122 | **是 ✓** | 同一提醒 id 重启后再弹一次：21:28:29.808 → 21:29:31.595（pristine 同场景仅一条） |
+| V139 | M117 | **是 ✓** | give-up 行逼派发器 50ms 空转：10s 墙钟烧 2.1s CPU（≈21%）；同库同行在 pristine 下 10s 只烧 0.05s（0.0%） |
+| V140 | M126 | **是 ✓** | 21:11:56.953 `subagent_zombie_cleared \| was: queued` + `sweep_done count:1 exempted:0`；行 `cancelled`、Q1 无 `subagent_dispatch:` → 无补派 |
+| V141 | M126 | **是 ✓** | 造出「queued 行 + 派发待办在队列」后杀进程 → 21:18:51.085 `sweep_done count:1 exempted:0`、行被清 → 补派不发生 |
+| V142 | M130 | 未跑 | 时间预算未覆盖：需两槽被长作业占满 + 第三作业排队 ≥90s 才能在槽位释放瞬间看到 N−1 条 `sched_job_skip` |
+| V143 | M134 | **是 ✓** | 活动页首行标题回落为会话 id `5709e7d9166d4b348f3022e0a0821382` |
+| V144 | M126 变体 | 未覆盖（触发条件不可达） | 让 queued 行收到 failed 终态的唯一生产路径是「行不存在」的幽灵收尾（`subagent_runner.rs:106`），UI 造不出「行已删」；其余终态入队点都在行已转 running 之后 |
 
 ### 10.3 未覆盖（诚实清单）
 
@@ -355,7 +355,17 @@ sqlite3 "$DB" "SELECT DISTINCT kind FROM effect_queue;"
 
 | 卡 / 项 | 为什么没跑 |
 |---|---|
-| | |
+| M116 / M119 / M121 / M123 的 OS 横幅半 | macOS 通知授权未在系统设置里开启 → `show()` 返回 Ok 但横幅不弹（报告 D-2）。已请用户在「系统设置 → 通知 → wmessage」开启，本轮未获回执；库证侧全部取到 |
+| M117 / M124 的原判据（关闭授权→失败） | 平台不可达（D-2）→ 改用 env 门控受控故障注入复现机制面语义，注入已还原并登记 |
+| M120 app 运行完成通知 | 程序页无可运行的 app，构造不出「app 跑完」现场 |
+| M123「次日到点再弹」半 | 需拨系统时钟验证，本轮未改系统时间（避免污染用户环境） |
+| M126 的 pristine 侧（`exempted=1` + 补派跑完） | queued 窗口毫秒级，手工无法稳定命中（方案已注明本卡依赖 V140/V141）；已用两条变异分别构造「行被清 / exempted=0」对照组 |
+| M133「queued 行被补派」对比半 | 本轮启动时无 queued 行；已在 V140/V141 轮补强 |
+| M136「give-up 行自然产生」半 | 本轮 give-up 行来自故障注入；真实授权关闭场景不可达（D-2） |
+| V142 变异 | 时间预算未覆盖（需两槽被长作业占满 + 第三作业排队 ≥90s） |
+| V144 变异 | 触发条件在 UI 路径上不可达（唯一生产路径是「行不存在」的幽灵收尾） |
+| W16 / W17 / W18 | 本机 macOS，判定不适用；需 Windows 实机 |
+| 方案 §十一列出的方案层缺口 | panic 隔离路径、`sched_job_finalize_skip` / `sched_job_slot_error` 分支、服务资源告警通知等——本轮未新增覆盖 |
 
 ### 10.4 环境操作台账
 
@@ -364,7 +374,18 @@ sqlite3 "$DB" "SELECT DISTINCT kind FROM effect_queue;"
 
 | 改了什么 | 改在哪 | 还原了吗 |
 |---|---|---|
-| | | |
+| **故障注入（env 门控）**：`deliver_notify` 在 `WM_INJECT_NOTIFY_FAIL` 存在时直接返回 Fail（macOS 通知失败不可达，用它复现退避/give-up） | `src-tauri/src/bot/effects.rs`（`deliver_notify` 函数头，+6 行） | **已还原**（`git checkout`）+ 重建 pristine 产物 |
+| **V136**：`finish_ok` 调用点改 `reschedule`（成功也留行） | `src-tauri/src/bot/effects.rs` | 已还原 |
+| **V137**：`record_failure` 的 SQL 按 `cfg!(test)` 分叉（非测试构建 attempts 不自增） | `src-tauri/src/db/effects.rs` | 已还原 |
+| **V138**：提醒删行与入队拆两事务，中间 `sleep 10s` | `src-tauri/src/bot_reminders.rs` | 已还原 |
+| **V139**：`read_next_due` 的 attempts 闸放开为 `i64::MAX` | `src-tauri/src/bot/effects.rs` | 已还原 |
+| **V140**：`spawn_subagent_locked` 建行与入队拆开，中间 `sleep 10s` | `src-tauri/src/bot/subagent_spawn.rs` | 已还原 |
+| **V141**：清扫的 queued 豁免改为 `WM_SWEEP_EXEMPT` 环境变量门 | `src-tauri/src/bot_orchestrator.rs` | 已还原 |
+| **V143**：`begin_trace` 的 title 恒 `None` | `src-tauri/src/bot_chat/flow.rs` | 已还原 |
+| **V142 / V144** | — | 未注入 |
+| **运行期环境变量**：`WM_INJECT_NOTIFY_FAIL=1`（仅故障注入窗口）、`HTTPS_PROXY=http://127.0.0.1:9`（仅 M132 失败构造窗口，指向本地死端口让模型调用必败） | 被测应用进程启动参数 | 已随重启去除 |
+| **测试数据**：7 个定时作业（M116 / M129-A / M129-B / M130-C / M130-D / M132 / V137）、4 条提醒（M121 / M123 / M124 / M122 用）、2 行 give-up 的 effect_queue 残留 | 应用数据目录 `~/Library/Application Support/com.renshi.wmessage/wmessage.db` | **已清空**：作业经 UI「取消定时」逐个删除；提醒经聊天 `cancel_reminder` 取消；2 行 effect_queue 残留经 `DELETE FROM effect_queue WHERE error LIKE '%注入故障%'` 删除（无 UI 入口，方案允许直写 sqlite 清数据） |
+| **代码库** | `src-tauri/src/**` | `git status` 干净（仅剩用户自己的 7z 分卷未跟踪），HEAD 仍为 `0c19c321`；收尾 `bash scripts/test-all.sh` 全绿 |
 
 ---
 
@@ -398,7 +419,7 @@ sqlite3 "$DB" "SELECT DISTINCT kind FROM effect_queue;"
 |---|---|---|---|
 | `docs/realmachine-smoke-test-2026-10-25.md` | 10-24 10:51 → 10-25 15:36 | M75–M92 + W10–W12 | 已执行 |
 | `docs/realmachine-smoke-test-2026-10-29.md` | 10-28 20:54 → 10-31 16:27 | M93–M115 + W13–W15 | 已执行 |
-| **`docs/realmachine-smoke-test-2026-11-03.md`（本份）** | **11-02 05:31 → 11-03 08:42** | **M116–M136 + W16–W18** | **待执行** |
+| **`docs/realmachine-smoke-test-2026-11-03.md`（本份）** | **11-02 05:31 → 11-03 08:42** | **M116–M136 + W16–W18** | **已执行**（报告见 `docs/realmachine-smoke-report-2026-11-03.md`：PASS 12 / 部分 6 / FAIL 1 / 未覆盖 2；变异 7 条验证通过、V142 未跑、V144 触发条件不可达；新发现 D-1 / D-2 / D-3） |
 | `docs/AGENT-RUNTIME-REFIT-PLAN-2026-11-02.md` | 方案全文（批 1–8） | — | 批 1–4 已落地；批 5–8 待推 |
 | `docs/ACCEPTANCE-PLAN-2026-10-30.md` | 按**功能条目**索引（全库 114 条） | `docs/acceptance/cards-*.md` | 与本份**互补** |
 
