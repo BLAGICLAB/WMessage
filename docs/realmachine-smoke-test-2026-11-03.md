@@ -419,7 +419,7 @@ sqlite3 "$DB" "SELECT DISTINCT kind FROM effect_queue;"
 |---|---|---|---|
 | `docs/realmachine-smoke-test-2026-10-25.md` | 10-24 10:51 → 10-25 15:36 | M75–M92 + W10–W12 | 已执行 |
 | `docs/realmachine-smoke-test-2026-10-29.md` | 10-28 20:54 → 10-31 16:27 | M93–M115 + W13–W15 | 已执行 |
-| **`docs/realmachine-smoke-test-2026-11-03.md`（本份）** | **11-02 05:31 → 11-03 08:42（V142 补跑 11-04 06:24 → 06:5x）** | **M116–M136 + W16–W18** | **已执行**（报告见 `docs/realmachine-smoke-report-2026-11-03.md`：PASS 12 / 部分 6 / FAIL 1 / 未覆盖 2；变异 8 条验证通过（V142 于 11-04 补跑，含 pristine 对照组）、V144 触发条件不可达；新发现 D-1 / D-2 / D-3） |
+| **`docs/realmachine-smoke-test-2026-11-03.md`（本份）** | **11-02 05:31 → 11-03 08:42（V142 补跑 11-04 06:24 → 06:5x）** | **M116–M136 + W16–W18** | **已执行**（报告见 `docs/realmachine-smoke-report-2026-11-03.md`：PASS 12 / 部分 7 / FAIL 1（M132）/ 未覆盖 1（M120 整卡，另有 7 张「部分」的另一半未覆盖，事由逐条见 §10.3）；变异 8 条验证通过（V142 于 11-04 补跑，含 pristine 对照组）、V144 触发条件不可达；新发现 D-1 / D-2 / D-3） |
 | `docs/AGENT-RUNTIME-REFIT-PLAN-2026-11-02.md` | 方案全文（批 1–8） | — | 批 1–4 已落地；批 5–8 待推 |
 | `docs/ACCEPTANCE-PLAN-2026-10-30.md` | 按**功能条目**索引（全库 114 条） | `docs/acceptance/cards-*.md` | 与本份**互补** |
 
