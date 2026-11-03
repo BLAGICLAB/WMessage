@@ -6,8 +6,12 @@
 驱动 = cliclick 坐标点击 + pbcopy/cmd+v 粘贴 + screencapture 截图 + **只读** sqlite3 库证。
 方案与判据原文见 `docs/realmachine-smoke-test-2026-11-03.md`。
 
+> **补跑（2026-11-04 06:24 → 06:5x）**：在同一个基线上补跑 11-03 因时间预算未做的 **V142 变异**
+> （去重集失效）——含一组 **pristine 对照组**（同场景、同样构造），
+> 使 V142 具备「变异前后同条件 A/B」证据。补跑只加这一条变异，其余结论未变。
+
 > **收尾状态**：`git status` 干净（仅剩用户自己的 7z 分卷未跟踪），全部注入补丁已还原并
-> 重建 pristine 产物；本轮产生的测试数据（7 个定时作业、4 条提醒、2 行 effect_queue 残留）
+> 重建 pristine 产物；本轮产生的测试数据（11 个定时作业、4 条提醒、2 行 effect_queue 残留）
 > 已清空（台账见 §六）。
 
 ## 一、总览
@@ -17,7 +21,7 @@
 | 基线门禁 | **全绿**：cargo nextest 2461 passed / 11 skipped、vitest 1188 tests、pytest 58 passed（跑前 + 收尾各一轮） |
 | 主卡 21 张（M116–M136） | **PASS 12 · 部分 PASS 6 · FAIL 1（M132）· 未覆盖 2（M120、M136 半）** |
 | Windows 专章（W16–W18） | 未执行（本机 macOS；判定不适用） |
-| 变异注入 9 条（V136–V144） | **7 条验证通过（V136/V137/V138/V139/V140/V141/V143 —— 注入后判据均 FAIL 成立 = 变异有牙齿）· V142 未跑（时间预算）· V144 触发条件在 UI 路径上不可达** |
+| 变异注入 9 条（V136–V144） | **8 条验证通过（V136/V137/V138/V139/V140/V141/V142/V143 —— 注入后判据均 FAIL 成立 = 变异有牙齿）· V144 触发条件在 UI 路径上不可达** |
 | 新发现 | **3 条**：D-1（P1，`at:` 一次性作业永不变更为 Dispatch）、D-2（平台口径，macOS 通知失败路径不可达）、D-3（P1，失败重试/自动暂停策略从未落库） |
 
 **卡结论一览**：M116 部分 · M117 PASS · M118 部分 · M119 部分 · M120 未覆盖 · M121 部分 ·
@@ -43,7 +47,7 @@ M136 PASS · W16–W18 未执行。
 | M127 running 窗口收 failed | **PASS** | 杀进程后重启：行终态 `failed`，error「应用重启，执行现场已不存在（僵尸行清理）」；`subagent_zombie_sweep_done \| count: 1 \| exempted: 0`；父会话收到失败回报 |
 | M128 取消路径回归 | **PASS** | 点行内取消方块 → `subagent_cancelled`（用户取消）；行 `cancelled`；无 `subagent_dispatch_giveup`；侧栏即时更新 |
 | M129 双作业 2 槽并发 | **PASS** | 20:30:02.100 两条 `sched_job_run` **同毫秒**（A=60b9c4ee…、B=5571520d…）→ 两路并发；两作业最终 `last_status=ok` |
-| M130 第三作业排队不羊群 | **PASS** | B 于 20:32:37.501 完成 → C 于 **20:32:37.508 起跑**（7ms，不等 30s tick）；**整个 bot.log 全文检索零 `sched_job_skip` / `sched_job_slot_error`**；C 最终 ok |
+| M130 第三作业排队不羊群 | **PASS** | B 于 20:32:37.501 完成 → C 于 **20:32:37.508 起跑**（7ms，不等 30s tick）；**整个 bot.log 全文检索零 `sched_job_skip` / `sched_job_slot_error`**；C 最终 ok。**补强（11-04 06:29–06:36 控制组）**：两个 180s 长作业占满两槽 + 第三个作业等槽 **101s**，C 于占槽作业完成后 **3ms** 起跑，全程 **0 条 `sched_job_skip`**（全库累计 skip 数在对照组结束时仍为 0） |
 | M131 手动触发也过闸 | **PASS** | 两槽占满时点「立即执行」→ 按钮变灰（请求在途、后端等 `JOB_RUN_SLOTS`）；A 于 20:34:10.396 完成 → 手动触发的 D 于 **20:34:10.399 起跑**（3ms）；全程无三路并发 |
 | M132 失败重试链路 | **FAIL** | 失败后 Q4 `retry_at` 空、`retry_count` 空、无 `sched_job_retry`、无 `sched_job_autopaused`；徽标 `fail` 正常更新。根因见 D-3（`upsert_scheduled_job` 不写 `retry_max`/`pause_on_failure` 两列 → UI 失败策略从未落库 → `will_retry` 恒 false） |
 | M133 清扫先于派发 | **部分 PASS** | 启动段顺序确证：20:05:07.447 `app_data_dir` → 20:05:07.454 `subagent_zombie_cleared` → `subagent_zombie_sweep_done`（同步清扫早于派发器）。「queued 行被补派」的对比半未覆盖（本轮启动无 queued 行，已在 V140/V141 轮补强） |
@@ -110,9 +114,15 @@ M136 PASS · W16–W18 未执行。
 | V139 | M117 | **是 ✓** | 去掉 attempts 过滤后，派发器被 give-up 行（due 停在过去）逼成 50ms 空转：**10s 墙钟烧 2.1s CPU（≈21%）**；同一队列在 pristine 产物下 **10s 只烧 0.05s（0.0%）** —— 同库同行的 A/B 对照 |
 | V140 | M126 | **是 ✓** | 建行与入队拆开 + 10s 窗口：窗口内杀进程 → 重启后 21:11:56.953 `subagent_zombie_cleared \| was: queued` + `sweep_done count: 1 \| exempted: 0`，行终态 `cancelled`，Q1 **无** `subagent_dispatch:` 待办 → 无补派（判据要求的 `exempted=1` + 补派跑完不成立） |
 | V141 | M126 | **是 ✓** | 清扫去掉 queued 豁免：造出「queued 行 + 派发待办仍在队列」现场后杀进程 → 重启 21:18:51.085 `sweep_done count: 1 \| exempted: 0`、行被清为 `cancelled` → 补派不发生（pristine 同现场应 `exempted=1`） |
-| V142 | M130 | **未跑** | 时间预算未覆盖：需「两槽被长作业占满 + 第三个到点作业排队 ≥90s」才能在槽位释放瞬间看到 N−1 条 `sched_job_skip`；M130 的 pristine 侧判据已实测成立（全库零 skip） |
+| V142 | M130 | **是 ✓** | 去重集恒失效：第三个作业等槽期间被 30s tick **重复派发**（等待者共 6 个 = 1 首发 + 5 次重复），槽位释放瞬间**同一毫秒**爆出 **5 条同 id 的 `sched_job_skip \| 上一次执行仍在进行，本次到点不触发`**（= N−1，id=ead6a0a9…，06:45:20.691）。**pristine 同场景对照**（同一套三作业、同样 180s 长作业占槽、等槽 101s）：**0 条 skip**、第三作业只跑 1 次 |
 | V143 | M134 | **是 ✓** | 活动页首行标题回落为会话 id `5709e7d9166d4b348f3022e0a0821382`（pristine 下同输入显示「帮我看看今天的日程安排」） |
 | V144 | M126 变体 | **未覆盖（触发条件不可达）** | 让 queued 行收到 failed 终态的唯一生产路径是「行不存在」的幽灵收尾（`subagent_runner.rs:106`），UI 造不出「行已删」；其余终态入队点都在行已转 running 之后 → 状态机允许 queued→running→failed，够不到 V144 的分支 |
+
+> **口径订正（V142 措辞）**：方案 §八 写「等待期每 30s 一条 `sched_job_skip`」，
+> 实测**等待期是静默的**——tick 每 30s 多派发一个等待者，不产生任何日志；
+> `sched_job_skip` 全部集中在**槽位释放那一刻**（同一毫秒 N−1 条）。
+> 判据含义不变（变异后必然出现同 id 的 N−1 条 skip），但计时口径按上面这版记。
+> 方案文档已同步订正（§十 10.2 与 §八 锚点表）。
 
 ## 五、未覆盖（诚实清单）
 
@@ -125,7 +135,6 @@ M136 PASS · W16–W18 未执行。
 | M126 的 pristine 侧（`exempted=1` + 补派跑完） | queued 窗口毫秒级，手工无法稳定命中（方案已注明本卡依赖 V140/V141）。已用两条变异分别构造出「行被清 / exempted=0」的对照组 |
 | M133 的「queued 行被补派」对比半 | 本轮启动时无 queued 行；已在 V140/V141 轮补强该对比 |
 | M136 的「give-up 行自然产生」半 | 本轮 give-up 行来自故障注入；真实授权关闭场景不可达（D-2） |
-| V142 变异 | 时间预算未覆盖（见 §四） |
 | V144 变异 | 触发条件在 UI 路径上不可达（见 §四） |
 | W16 / W17 / W18 | 本机 macOS，判定不适用；需 Windows 实机 |
 | 方案 §十一列出的方案层缺口 | panic 隔离路径、`sched_job_finalize_skip` / `sched_job_slot_error` 分支、服务资源告警通知等——本轮未新增覆盖 |
@@ -142,10 +151,11 @@ M136 PASS · W16–W18 未执行。
 | **V140**：`spawn_subagent_locked` 建行与入队拆开，中间 `sleep 10s` | `src-tauri/src/bot/subagent_spawn.rs` | 已还原 |
 | **V141**：清扫的 queued 豁免改为 `WM_SWEEP_EXEMPT` 环境变量门 | `src-tauri/src/bot_orchestrator.rs` | 已还原 |
 | **V143**：`begin_trace` 的 title 恒 `None` | `src-tauri/src/bot_chat/flow.rs` | 已还原 |
-| **V142 / V144** | — | 未注入 |
+| **V142**：`spawn_job_run` 的去重集闸改成 env 变量门（生产不设 `WM_JOB_DEDUP` → 去重恒失效） | `src-tauri/src/bot_scheduler.rs` | 已还原 |
+| **V144** | — | 未注入 |
 | **运行期环境变量**：`WM_INJECT_NOTIFY_FAIL=1`（仅故障注入窗口）、`HTTPS_PROXY=http://127.0.0.1:9`（仅 M132 失败构造窗口，指向本地死端口让模型调用必败） | 被测应用进程启动参数 | 已随重启去除；当前进程无上述变量 |
-| **测试数据**：7 个定时作业（M116 / M129-A / M129-B / M130-C / M130-D / M132 / V137）、4 条提醒（M121 / M123 / M124 / M122 用）、2 行 give-up 的 effect_queue 残留 | 应用数据目录 `~/Library/Application Support/com.renshi.wmessage/wmessage.db` | **已清空**：作业经 UI「取消定时」逐个删除、提醒经聊天 `cancel_reminder` 取消、2 行 effect_queue 残留经 `DELETE FROM effect_queue WHERE error LIKE '%注入故障%'` 删除（无 UI 入口，方案允许直写 sqlite 清数据） |
-| **代码库** | `src-tauri/src/**` | `git status` 干净（仅剩用户自己的 7z 分卷未跟踪），HEAD 仍为 `0c19c321`；收尾 `bash scripts/test-all.sh` 全绿 |
+| **测试数据**：11 个定时作业（7 个来自 11-03 轮：M116 / M129-A / M129-B / M130-C / M130-D / M132 / V137；4 个来自 11-04 的 V142 轮：控制组 2 占槽 + 1 排队、变异组 2 占槽 + 1 排队）、4 条提醒（M121 / M123 / M124 / M122 用）、2 行 give-up 的 effect_queue 残留 | 应用数据目录 `~/Library/Application Support/com.renshi.wmessage/wmessage.db` | **已清空**：作业经 UI「取消定时」逐个删除、提醒经聊天 `cancel_reminder` 取消、2 行 effect_queue 残留经 `DELETE FROM effect_queue WHERE error LIKE '%注入故障%'` 删除（无 UI 入口，方案允许直写 sqlite 清数据） |
+| **代码库** | `src-tauri/src/**` | 源码树干净（`git diff src-tauri/` 为空，注入补丁全部还原并重建 pristine 产物）；基线源码 HEAD 仍为 `0c19c321`（其后仅文档提交）；收尾 `bash scripts/test-all.sh` 全绿 |
 
 ## 七、驱动坑（方法论）
 
@@ -153,6 +163,10 @@ M136 PASS · W16–W18 未执行。
    「先构建、再启动」，不能边跑边构建（第一轮就这么丢了一次正在跑的作业）。
 2. **钥匙串弹窗只点「允许」，且 AX 按按钮名点比像素坐标稳**（坐标点在某些态下会切进输密码态
    且后续点击失效）。全程未代输任何密码。
+   **11-04 补记**：每次 `tauri build` 重签 bundle → 代码签名变了 → 钥匙串 ACL 失效 →
+   **每次重启都会再弹一次授权**；且 11-03 唤醒后出现过一次**孤儿弹窗**（旧进程的 SecurityAgent
+   残留，AX 与像素点「允许」都无效、`kill -9 SecurityAgent` 才清掉）。批量点「允许」后要
+   复查 `pgrep -x SecurityAgent` 是否为空。
 3. **cliclick 的首击常被窗口聚焦吞掉**：每个点击前先 `m:` 悬停，必要时点两次。
    另外**必须先 `set frontmost of process "wmessage" to true`**——否则点击落到 Finder，
    表现为「点了没反应」。

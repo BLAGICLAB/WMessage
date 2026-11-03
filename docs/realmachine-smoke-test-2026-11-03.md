@@ -273,7 +273,7 @@ sqlite3 "$DB" "SELECT DISTINCT kind FROM effect_queue;"
 | V139 | M117 | `db/effects.rs:145` `next_due` | 去掉 `attempts < ?1` 过滤 | give-up 后派发器 50ms 空转，CPU/日志异常 |
 | V140 | M126 | `bot/subagent_spawn.rs:145-198` | 建行事务与入队拆开 + 入队前 `sleep 10s` | 建行后杀进程 → 重启时行被清（无补派） |
 | V141 | M126 | `bot_orchestrator.rs:602-613` | 清扫去掉 queued 豁免（`has_pending` 恒 false） | exempted=0、行被清、补派不发生 |
-| V142 | M130 | `bot_scheduler.rs:725` `spawn_job_run` | 去重集 `set.insert` 改恒真返回 | 等待期每 30s 一条 `sched_job_skip` |
+| V142 | M130 | `bot_scheduler.rs:725` `spawn_job_run` | 去重集 `set.insert` 改恒真返回 | 等待期被 tick 重复派发（等待者静默积累，无日志），槽位释放瞬间同一毫秒集中出 N−1 条 `sched_job_skip` |
 | V143 | M134 | `bot_chat/flow.rs:645` | `begin_trace` 的 title 传 `None` | 活动页回落会话 id |
 | V144 | M126 变体 | `bot/effects.rs:471-477` `finalize_subagent` | queued 行写终态改回直写 failed（去掉改投 cancelled 的分支） | queued 行写终态必败 → `subagent_terminal_state_write_failed` 出现、行永挂 queued |
 
@@ -324,7 +324,7 @@ sqlite3 "$DB" "SELECT DISTINCT kind FROM effect_queue;"
 | M127 running 窗口收 failed | PASS | 行终态 `failed`，error「应用重启，执行现场已不存在（僵尸行清理）」；`subagent_zombie_sweep_done count:1 exempted:0` | |
 | M128 取消路径回归 | PASS | `subagent_cancelled`（用户取消）；行 `cancelled`；无 `subagent_dispatch_giveup`；侧栏即时更新 | |
 | M129 双作业 2 槽并发 | PASS | 20:30:02.100 两条 `sched_job_run` 同毫秒；两作业最终 ok | |
-| M130 第三作业排队不羊群 | PASS | B 20:32:37.501 完成 → C 20:32:37.508 起跑（7ms）；全库零 `sched_job_skip`/`sched_job_slot_error`；C 最终 ok | |
+| M130 第三作业排队不羊群 | PASS | B 20:32:37.501 完成 → C 20:32:37.508 起跑（7ms）；全库零 `sched_job_skip`/`sched_job_slot_error`；C 最终 ok。**11-04 补强（V142 对照组）**：两槽被 180s 长作业占满 + 第三作业等槽 101s → 占槽作业完成后 3ms 起跑，全程 0 条 skip | |
 | M131 手动触发也过闸 | PASS | 两槽占满时点「立即执行」按钮变灰（请求在途）；A 20:34:10.396 完成 → D 20:34:10.399 起跑（3ms）；全程无三路并发 | |
 | M132 失败重试链路 | **FAIL** | 失败后 `retry_at` 空、`retry_count` 空、无 `sched_job_retry`/无 `sched_job_autopaused`；徽标 `fail` 正常更新 | 根因见报告 D-3：`upsert_scheduled_job` 不写 `retry_max`/`pause_on_failure` 两列 → UI 失败策略从未落库 |
 | M133 清扫先于派发 | 部分 PASS | 20:05:07.447 `app_data_dir` → 20:05:07.454 `subagent_zombie_cleared` → `subagent_zombie_sweep_done`（清扫早于派发） | 「queued 行被补派」对比半未覆盖（已由 V140/V141 轮补强） |
@@ -345,7 +345,7 @@ sqlite3 "$DB" "SELECT DISTINCT kind FROM effect_queue;"
 | V139 | M117 | **是 ✓** | give-up 行逼派发器 50ms 空转：10s 墙钟烧 2.1s CPU（≈21%）；同库同行在 pristine 下 10s 只烧 0.05s（0.0%） |
 | V140 | M126 | **是 ✓** | 21:11:56.953 `subagent_zombie_cleared \| was: queued` + `sweep_done count:1 exempted:0`；行 `cancelled`、Q1 无 `subagent_dispatch:` → 无补派 |
 | V141 | M126 | **是 ✓** | 造出「queued 行 + 派发待办在队列」后杀进程 → 21:18:51.085 `sweep_done count:1 exempted:0`、行被清 → 补派不发生 |
-| V142 | M130 | 未跑 | 时间预算未覆盖：需两槽被长作业占满 + 第三作业排队 ≥90s 才能在槽位释放瞬间看到 N−1 条 `sched_job_skip` |
+| V142 | M130 | **是 ✓** | 去重集恒失效 → 排队作业被 tick 重复派发（等待者 6 个 = 1 首发 + 5 次重复），槽位释放瞬间**同一毫秒** 5 条同 id `sched_job_skip`（N−1，id=ead6a0a9…，06:45:20.691）；pristine 同场景对照组 0 条 skip |
 | V143 | M134 | **是 ✓** | 活动页首行标题回落为会话 id `5709e7d9166d4b348f3022e0a0821382` |
 | V144 | M126 变体 | 未覆盖（触发条件不可达） | 让 queued 行收到 failed 终态的唯一生产路径是「行不存在」的幽灵收尾（`subagent_runner.rs:106`），UI 造不出「行已删」；其余终态入队点都在行已转 running 之后 |
 
@@ -362,7 +362,6 @@ sqlite3 "$DB" "SELECT DISTINCT kind FROM effect_queue;"
 | M126 的 pristine 侧（`exempted=1` + 补派跑完） | queued 窗口毫秒级，手工无法稳定命中（方案已注明本卡依赖 V140/V141）；已用两条变异分别构造「行被清 / exempted=0」对照组 |
 | M133「queued 行被补派」对比半 | 本轮启动时无 queued 行；已在 V140/V141 轮补强 |
 | M136「give-up 行自然产生」半 | 本轮 give-up 行来自故障注入；真实授权关闭场景不可达（D-2） |
-| V142 变异 | 时间预算未覆盖（需两槽被长作业占满 + 第三作业排队 ≥90s） |
 | V144 变异 | 触发条件在 UI 路径上不可达（唯一生产路径是「行不存在」的幽灵收尾） |
 | W16 / W17 / W18 | 本机 macOS，判定不适用；需 Windows 实机 |
 | 方案 §十一列出的方案层缺口 | panic 隔离路径、`sched_job_finalize_skip` / `sched_job_slot_error` 分支、服务资源告警通知等——本轮未新增覆盖 |
@@ -382,10 +381,11 @@ sqlite3 "$DB" "SELECT DISTINCT kind FROM effect_queue;"
 | **V140**：`spawn_subagent_locked` 建行与入队拆开，中间 `sleep 10s` | `src-tauri/src/bot/subagent_spawn.rs` | 已还原 |
 | **V141**：清扫的 queued 豁免改为 `WM_SWEEP_EXEMPT` 环境变量门 | `src-tauri/src/bot_orchestrator.rs` | 已还原 |
 | **V143**：`begin_trace` 的 title 恒 `None` | `src-tauri/src/bot_chat/flow.rs` | 已还原 |
-| **V142 / V144** | — | 未注入 |
+| **V142**：`spawn_job_run` 的去重集闸改成 env 变量门（生产不设 `WM_JOB_DEDUP` → 去重恒失效） | `src-tauri/src/bot_scheduler.rs` | 已还原 |
+| **V144** | — | 未注入 |
 | **运行期环境变量**：`WM_INJECT_NOTIFY_FAIL=1`（仅故障注入窗口）、`HTTPS_PROXY=http://127.0.0.1:9`（仅 M132 失败构造窗口，指向本地死端口让模型调用必败） | 被测应用进程启动参数 | 已随重启去除 |
-| **测试数据**：7 个定时作业（M116 / M129-A / M129-B / M130-C / M130-D / M132 / V137）、4 条提醒（M121 / M123 / M124 / M122 用）、2 行 give-up 的 effect_queue 残留 | 应用数据目录 `~/Library/Application Support/com.renshi.wmessage/wmessage.db` | **已清空**：作业经 UI「取消定时」逐个删除；提醒经聊天 `cancel_reminder` 取消；2 行 effect_queue 残留经 `DELETE FROM effect_queue WHERE error LIKE '%注入故障%'` 删除（无 UI 入口，方案允许直写 sqlite 清数据） |
-| **代码库** | `src-tauri/src/**` | `git status` 干净（仅剩用户自己的 7z 分卷未跟踪），HEAD 仍为 `0c19c321`；收尾 `bash scripts/test-all.sh` 全绿 |
+| **测试数据**：11 个定时作业（11-03 轮 7 个：M116 / M129-A / M129-B / M130-C / M130-D / M132 / V137；11-04 V142 补跑 4 个：对照组 2 占槽 + 1 排队、变异组 2 占槽 + 1 排队）、4 条提醒（M121 / M123 / M124 / M122 用）、2 行 give-up 的 effect_queue 残留 | 应用数据目录 `~/Library/Application Support/com.renshi.wmessage/wmessage.db` | **已清空**：作业经 UI「取消定时」逐个删除；提醒经聊天 `cancel_reminder` 取消；2 行 effect_queue 残留经 `DELETE FROM effect_queue WHERE error LIKE '%注入故障%'` 删除（无 UI 入口，方案允许直写 sqlite 清数据） |
+| **代码库** | `src-tauri/src/**` | 源码树干净（`git diff src-tauri/` 为空，注入补丁全部还原并重建 pristine 产物）；基线源码 HEAD 仍为 `0c19c321`（其后仅文档提交）；收尾 `bash scripts/test-all.sh` 全绿 |
 
 ---
 
@@ -419,7 +419,7 @@ sqlite3 "$DB" "SELECT DISTINCT kind FROM effect_queue;"
 |---|---|---|---|
 | `docs/realmachine-smoke-test-2026-10-25.md` | 10-24 10:51 → 10-25 15:36 | M75–M92 + W10–W12 | 已执行 |
 | `docs/realmachine-smoke-test-2026-10-29.md` | 10-28 20:54 → 10-31 16:27 | M93–M115 + W13–W15 | 已执行 |
-| **`docs/realmachine-smoke-test-2026-11-03.md`（本份）** | **11-02 05:31 → 11-03 08:42** | **M116–M136 + W16–W18** | **已执行**（报告见 `docs/realmachine-smoke-report-2026-11-03.md`：PASS 12 / 部分 6 / FAIL 1 / 未覆盖 2；变异 7 条验证通过、V142 未跑、V144 触发条件不可达；新发现 D-1 / D-2 / D-3） |
+| **`docs/realmachine-smoke-test-2026-11-03.md`（本份）** | **11-02 05:31 → 11-03 08:42（V142 补跑 11-04 06:24 → 06:5x）** | **M116–M136 + W16–W18** | **已执行**（报告见 `docs/realmachine-smoke-report-2026-11-03.md`：PASS 12 / 部分 6 / FAIL 1 / 未覆盖 2；变异 8 条验证通过（V142 于 11-04 补跑，含 pristine 对照组）、V144 触发条件不可达；新发现 D-1 / D-2 / D-3） |
 | `docs/AGENT-RUNTIME-REFIT-PLAN-2026-11-02.md` | 方案全文（批 1–8） | — | 批 1–4 已落地；批 5–8 待推 |
 | `docs/ACCEPTANCE-PLAN-2026-10-30.md` | 按**功能条目**索引（全库 114 条） | `docs/acceptance/cards-*.md` | 与本份**互补** |
 
