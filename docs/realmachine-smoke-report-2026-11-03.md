@@ -22,7 +22,7 @@
 | 主卡 21 张（M116–M136） | **PASS 12 · 部分 PASS 7 · FAIL 1（M132）· 未覆盖 1（M120 整卡）**——7 张「部分」的另一半未覆盖事由逐条见 §五 |
 | Windows 专章（W16–W18） | 未执行（本机 macOS；判定不适用） |
 | 变异注入 9 条（V136–V144） | **8 条验证通过（V136/V137/V138/V139/V140/V141/V142/V143 —— 注入后判据均 FAIL 成立 = 变异有牙齿）· V144 触发条件在 UI 路径上不可达** |
-| 新发现 | **3 条**：D-1（P1，`at:` 一次性作业永不变更为 Dispatch）、D-2（平台口径，macOS 通知失败路径不可达）、D-3（P1，失败重试/自动暂停策略从未落库） |
+| 新发现 | **3 条**：D-1（P1，`at:` 一次性作业永不变更为 Dispatch，**已修 cd1bec19**）、D-2（平台口径，macOS 通知失败路径不可达，产品面待拍板）、D-3（P1，失败重试/自动暂停策略从未落库，**已修 e5af9aee**） |
 
 **卡结论一览**：M116 部分 · M117 PASS · M118 部分 · M119 部分 · M120 未覆盖 · M121 部分 ·
 M122 PASS · M123 部分 · M124 PASS · M125 PASS · M126 部分 · M127 PASS · M128 PASS ·
@@ -72,8 +72,15 @@ M136 PASS · W16–W18 未执行。
   `occ > now` 时 `classify_due` 判 NotDue → 也不跑。两条路都不通。
 - **归属**：由 `633e7111`（2026-10-23「机器人总开关关闭时到点作业不再每 30s 空转一轮」，
   引入 `classify_job` 的 Held/Delete 判定顺序）引入，**非本批 8 提交引入**。
+  （**修复时订正**：Delete-before-Run 顺序在 633e7111 父提交的 `jobs_tick` 里已存在；
+  真正引入点是 `114330be` 批 1 清扫——删旧任务卡定时链时把 `at_first_run_stale` 的
+  2×tick 首跑宽限层一并删掉，只剩裸 `at_expired`。）
 - **影响面**：M116（`at:+1m`）、M129–M132（方案里都用 `at:` 一次性作业）全部受影响。
   本轮改用 `daily` 作业替代（构造偏离，已登记），并记录在案：一次性定时能力当前**整体不可用**。
+- **已修（cd1bec19）**：恢复 `AT_FIRST_RUN_GRACE = 2×tick` 首跑宽限——宽限内视为
+  「刚到点」照常首跑，超宽限仍未跑过才判过期删除（防重启补跑过期任务语义不变）。
+  复现测试 `classify_job_at_first_run_within_grace_dispatches` +
+  `at_expired_first_run_grace_boundary`。
 
 ### D-2（平台口径）macOS 上「通知发送失败」不可达——M117/M124 的原判据前提不成立
 
@@ -103,6 +110,10 @@ M136 PASS · W16–W18 未执行。
 - **归属**：随 `35e8338b`（T1 定时作业模块）引入，**非本批 8 提交引入**；属长期潜伏缺陷。
 - **建议**：`upsert_scheduled_job` 的 INSERT 与 ON CONFLICT 补上这两列（`Option<i64>` → NULL 语义），
   并补一条落库往返单测（现无任何测试覆盖这两列的持久化）。
+- **已修（e5af9aee）**：INSERT 与 ON CONFLICT 补上 `retry_max` / `pause_on_failure`
+  （Option → NULL 语义），三个调用点（create/update/set_enabled）均为 load-后-全量-upsert
+  往返、无抹列风险；补落库往返单测 `upsert_persists_retry_policy_columns`
+  （新建带值 / 编辑改值 / NULL 三段）。
 
 ## 四、变异注入结论（对应方案 §八）
 
