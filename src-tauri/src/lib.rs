@@ -579,6 +579,31 @@ pub fn run() {
             // 置回 running，清扫若在其后跑会把恢复中的行误杀成 failed
             bot_orchestrator::sweep_zombie_subagents(app.handle());
 
+            // 工作单元启动清扫：working 行的执行现场随进程消失，一律按中断收
+            {
+                let handle = app.handle().clone();
+                let audit_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let res = tauri::async_runtime::spawn_blocking(move || {
+                        let conn = crate::db::open_db(&handle)?;
+                        let _g = crate::db::lock_db_write();
+                        crate::db::work_items::sweep_all_working(&conn)
+                    })
+                    .await;
+                    let err = match res {
+                        Ok(Ok(_)) => return,
+                        Ok(Err(e)) => e,
+                        Err(e) => e.to_string(),
+                    };
+                    audit::write_event(
+                        &audit_handle,
+                        audit::AuditLevel::Warn,
+                        "work_items_sweep_failed",
+                        &[("err", err)],
+                    );
+                });
+            }
+
             // 执行痕迹保留期自动清扫（启动一次 + 每天一次）：设置页公示的
             // 「保留期（天）」原先只有手动按钮会删，公示值与实际行为不符
             db::trace::spawn_retention_sweep(app.handle());
@@ -750,6 +775,8 @@ pub fn run() {
             crate::bot::scheduled_job_fire,
             crate::bot::plan_state::bot_plan_state,
             crate::db::schedule_jobs::scheduled_job_create,
+            crate::db::work_items::work_items_list,
+            crate::db::work_items::work_items_needing_human,
             crate::db::trace::trace_list,
             crate::db::trace::trace_detail,
             crate::db::trace::trace_clear_before,

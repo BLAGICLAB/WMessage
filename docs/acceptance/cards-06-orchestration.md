@@ -336,3 +336,21 @@
 - **证据**：截图（程序页归档图标 + 归档视图垃圾桶图标 + 两个确认框全文 + 运行记录状态）+ 三张表的查询输出 + `apps/` 目录列表（删除前后）+ grep 终端输出
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——本卡无审计事件，改用源码检索分家：`grep -n "fn delete_core" src-tauri/src/apps/manage.rs` 命中 = 彻底删除逻辑还在；不命中 = 卡片过期
 - **缺口补验**：归档视图、彻底删除三表与目录、整文件集上架、版本回滚、timeoutSecs 未验
+
+### ACC-P-13 · 工作单元 work_items（批 5）
+
+- **SPEC**：6-118
+- **层级**：L1（自动档 `src-tauri/src/db/work_items.rs` 4 例）+ 实机观察
+- **前置**：应用已启动；活动页可开
+- **步骤**：
+  1. 主聊天发一句话让它干活 → 查库 `SELECT id, kind, session_id, objective, stage FROM work_items;`——该会话应只有一行（kind=chat、objective=输入摘要、stage=working）。
+  2. 让 bot 调 `ask_user` 提问 → stage 变 `awaiting_answer`；回答后把话聊完 → stage 回 `idle`。
+  3. 同会话再派新活 → 仍是同一行（objective 刷新、failed 行被唤醒回 working）。
+  4. 杀进程重启 → 上一世 working 行变 `failed`（error 带「进程重启」）。
+  5. 同一会话快速连发两条消息（前一条未收尾）→ 仍一行、无唯一索引冲突报错。
+- **判据**：
+  1. 【可核对】步骤 1-3 每步的查询输出与所述一致；`session_id` 唯一索引存在（`grep -n "idx_work_items_session" src-tauri/src/db/work_items.rs`）。
+  2. 【可观测】步骤 4：`stage=failed` 且 error 文案含「进程重启」；调度 tick 的陈旧清扫不误伤 `awaiting_answer` 行（`grep -n "sweep_stale_working" src-tauri/src/bot_scheduler.rs` 命中 30s tick 接线）。
+  3. 【可核对】`work_items_list` / `work_items_needing_human` 两命令注册（`grep -n "work_items_list" src-tauri/src/lib.rs`）。
+- **证据**：work_items 表查询输出（各步骤）+ 重启前后对比 + grep 终端输出
+- **失败处置**：`grep -n "upsert_for_session" src-tauri/src/bot_chat/flow.rs` 命中 = 接线在；不命中 = 卡片过期

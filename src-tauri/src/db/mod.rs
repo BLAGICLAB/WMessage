@@ -45,6 +45,7 @@ pub mod trace_query;
 pub mod trace_session;
 pub mod trace_usage;
 pub mod tx;
+pub mod work_items;
 pub mod workspace;
 
 pub mod apps;
@@ -272,6 +273,9 @@ pub fn open_db<R: tauri::Runtime>(
     // 通用持久化副作用队列：状态已写、动作未做的中间态可恢复
     // （notify / subagent_finalize / subagent_dispatch 三 kind）
     conn.execute_batch(crate::db::effects::EFFECT_QUEUE_DDL)
+        .map_err(|e| e.to_string())?;
+    // 工作单元：主 agent 在干的活的一等表达（每会话一行，stage 二分 person/working）
+    conn.execute_batch(crate::db::work_items::WORK_ITEMS_DDL)
         .map_err(|e| e.to_string())?;
     // 模型元数据双表（meta_provider/meta_model，meta 模块的存储面），幂等
     migrations::ensure_meta_tables(&conn)?;

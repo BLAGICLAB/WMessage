@@ -644,6 +644,30 @@ pub(super) async fn bot_chat_inner(
         };
         let trace_id = crate::trace_sink::begin_trace(&trace_app, sid, None, "chat", title).await;
         chat_trace_id = trace_id;
+        // 工作单元开票（机械动作，每会话一行）：objective 取本轮用户输入
+        // 摘要（汇报轮不覆盖既有目标），stage=working；失败不阻断聊天主链
+        {
+            let app_wi = trace_app.clone();
+            let sid_wi = sid.clone();
+            let obj_wi = match origin {
+                TurnOrigin::User => user_input
+                    .as_ref()
+                    .map(|m| crate::bot::truncate_for_log(m.content.trim(), 40)),
+                TurnOrigin::Report => None,
+            };
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::db::lock::with_write_conn(&app_wi, move |conn| {
+                    crate::db::work_items::upsert_for_session(
+                        conn,
+                        &sid_wi,
+                        "chat",
+                        obj_wi.as_deref(),
+                        None,
+                    )
+                })
+                .await;
+            });
+        }
         if let Ok(mut c) = trace_capture.lock() {
             c.trace_id = trace_id;
             c.session_id = Some(sid.clone());
@@ -719,6 +743,22 @@ pub(super) async fn bot_chat_inner(
         loop_result.as_ref().err().map(|e| e.to_string()),
     )
     .await;
+    // 工作单元收尾：成功（含用户停止的自然结束）→ idle，失败 → failed。
+    // result/机器判据归批 6 的验收管线，这里只落阶段
+    if chat_trace_id.is_some() {
+        if let Some(sid) = session_id.as_ref() {
+            let app_wi = trace_app.clone();
+            let sid_wi = sid.clone();
+            let ok = loop_result.is_ok();
+            let err_wi = loop_result.as_ref().err().map(|e| e.to_string());
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::db::lock::with_write_conn(&app_wi, move |conn| {
+                    crate::db::work_items::finish(conn, &sid_wi, ok, None, err_wi.as_deref())
+                })
+                .await;
+            });
+        }
+    }
     let (text, refs, _loop_trace) = match loop_result {
         Ok(v) => v,
         Err(e) => {

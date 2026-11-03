@@ -1053,6 +1053,15 @@ async fn scheduler_tick(app: &AppHandle) {
     jobs_tick(app).await;
     // 提醒扫描（到点发系统通知，不建卡不执行）
     crate::bot_reminders::reminders_tick(app).await;
+    // 工作单元阶段重估：working 行超时无更新（轮死残留）按中断收尾。
+    // awaiting_answer 不参与——提问等待可达 24h，属合法长挂
+    let _ = crate::db::lock::with_write_conn(app, |conn| {
+        crate::db::work_items::sweep_stale_working(conn, 2 * 60 * 60 * 1000)
+    })
+    .await
+    .map_err(|e| {
+        crate::bot::audit_log(app, &format!("work_items_sweep_failed | {e}"));
+    });
 }
 
 // 定时任务模块命令

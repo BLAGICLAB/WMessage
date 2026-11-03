@@ -1,13 +1,13 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 322 个文件、约 13.9 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 323 个文件、约 13.9 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1203)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1230)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 │                        （setup 里另起清扫：上次被杀留下的 app_runs running 僵尸行）
 ├── app_state.rs (292)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        14 张执行期表 + 「全局状态总表」文档；详见 §2.1
@@ -64,6 +64,8 @@ src-tauri/src/
 │   │                     （open_db 迁移把旧 tasks.schedule 迁入并清空任务卡侧）
 │   ├── db/tx.rs         with_write_conn 的加事务层（with_tx）：闭包 Err 即整体回滚；
 │   │                     同步闭包 + 禁再取锁（std Mutex 非重入）+ 禁外部副作用
+│   ├── db/work_items.rs 工作单元 work_items：主 agent 在干的活（每会话一行 upsert，stage 二分
+│   │                     person/working）；轮循环机械开票、ask 挂起、双清扫（启动 + tick 陈旧）
 │   ├── db/effects.rs    通用持久化副作用队列 effect_queue（语义对拍 superagent effects.ts）：
 │   │                     同 kind+key 一行、再入队保队位重置计次、CAS 收尾、成功删行、
 │   │                     kind 健康度统计；派发器在 bot/effects.rs
@@ -125,7 +127,7 @@ src-tauri/src/
 │─ Bot 核心（编排 → 决策 → 工具分发）
 ├── bot_chat.rs (431)    入口编排门面：bot_chat / bot_compact / bot_execute_task 命令 + 公共类型
 │                        （ChatMsg/TaskRef/BotChatResult）+ 子模块转出（旧路径 1:1 保持）
-│   ├── bot_chat/flow.rs (747)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
+│   ├── bot_chat/flow.rs (781)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
 │   ├── bot_chat/exec.rs (557)   任务执行面：批量执行 + ExecGuard + run_task_in_chat 全链路
 │   ├── bot_chat/media.rs (152)  多模态图片组装：base64 入模 + 扩展名白名单 + 附件索引
 │   ├── bot_chat/summary.rs (322) 历史摘要面：截断点选择 + 摘要请求 + 压缩
@@ -1124,6 +1126,7 @@ flowchart TD
 - `db/tests/upsert.rs`
 - `db/trace.rs`
 - `db/tx.rs`
+- `db/work_items.rs`
 - `db/trace/tests.rs`
 - `db/trace_query.rs`
 - `db/trace_session.rs`

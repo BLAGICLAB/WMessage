@@ -513,6 +513,23 @@ pub(crate) async fn engine_ask_user(
         ],
     );
     crate::notifications::emit_changed(app);
+    // 工作单元挂起：等人回答是 person 族阶段，挂在工作行上。
+    // 轮收尾（flow 的 finish）会在回答后落 idle/failed，这里只负责挂起
+    {
+        let app_wi = app.clone();
+        let sid_wi = sid.to_string();
+        tauri::async_runtime::spawn(async move {
+            let _ = crate::db::lock::with_write_conn(&app_wi, move |conn| {
+                crate::db::work_items::set_stage(
+                    conn,
+                    &sid_wi,
+                    crate::db::work_items::STAGE_AWAITING_ANSWER,
+                    None,
+                )
+            })
+            .await;
+        });
+    }
     // 系统通知门铃（OS 通知放不下富回答，点击进应用通知页）：走 Effects 队列
     // 投递——发送失败重试，不再 `let _` 静默丢；入队失败留审计（问题卡与
     // 通知中心行已落库，丢失的只是门铃）
