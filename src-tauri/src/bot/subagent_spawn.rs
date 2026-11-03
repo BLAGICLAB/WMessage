@@ -172,6 +172,28 @@ pub(crate) fn spawn_subagent_locked(
         cache_read_tokens: None,
     };
     crate::db::insert_subagent(&tx, &row).map_err(CommandError::DbError)?;
+    // 派发待办与建行**同一事务**：行与待办要么都在、要么都不在——
+    // 「有行无待办」的中间态不存在，重启补派与进程内投递共享同一事实。
+    // stage / onion 是内存闭包参数不落 subagents 行，随 payload 带给派发器
+    let runner_stage = req.stage;
+    let runner_onion = req.onion.clone();
+    let dispatch_payload = serde_json::json!({
+        "subagentId": subagent_id,
+        "stage": runner_stage.map(|s| s.as_str()),
+        "onion": runner_onion.map(|o| serde_json::json!({
+            "config": o.config,
+            "maxTurn": o.max_turn,
+        })),
+    })
+    .to_string();
+    crate::db::effects::enqueue(
+        &tx,
+        crate::bot::effects::KIND_SUBAGENT_DISPATCH,
+        &crate::bot::effects::subagent_dispatch_key(&subagent_id),
+        &dispatch_payload,
+        now,
+    )
+    .map_err(CommandError::DbError)?;
     tx.commit()
         .map_err(|e| CommandError::DbError(e.to_string()))?;
     Ok(SpawnAck {
@@ -213,11 +235,6 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
     let audit_parent_session = req.parent_session_id.clone();
     let audit_profile = req.profile;
     let audit_model = req.model_profile.clone();
-    // stage 走 in-memory 闭包——spawn 触发 runner 是同步启动，闭包 move 进 runner；
-    // 不落库（详见 SubagentStage 注释）。SubagentStage 是 Copy，所以这里直接搬走。
-    let runner_stage = req.stage;
-    // 配置档同理走内存闭包（理由见 SpawnOnion 注释）
-    let runner_onion = req.onion.clone();
     let app2 = app.clone();
     let ack = tauri::async_runtime::spawn_blocking(move || -> CommandResult<SpawnAck> {
         let _g = crate::db::lock_db_write();
@@ -271,33 +288,9 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
         ),
     );
     // 非阻塞派发 runner（设计 §5：spawn 立即返回；执行在后台推进状态机）。
-    // 派发改走 Effects 队列（subagent_dispatch kind）：崩溃在「插行之后、
-    // runner 起来之前」时，行+派发待办都在库里，重启后自动补派——
-    // 「插行了但 runner 没起」不再是丢失态。stage/onion 是内存闭包参数，
-    // 不落库，随 payload 带给派发器。
+    // 派发待办已随建行同事务入队（见 spawn_subagent_locked）——这里只唤醒
+    // 派发器；崩溃在插行之后任何点，行+待办都在库里，重启后自动补派
     emit_subagent_spawned(app, &ack.subagent_id, audit_parent_session.as_deref());
-    let key = crate::bot::effects::subagent_dispatch_key(&ack.subagent_id);
-    let payload = serde_json::json!({
-        "subagentId": ack.subagent_id,
-        "stage": runner_stage.map(|s| s.as_str()),
-        "onion": runner_onion.map(|o| serde_json::json!({
-            "config": o.config,
-            "maxTurn": o.max_turn,
-        })),
-    })
-    .to_string();
-    let (key2, payload2) = (key.clone(), payload);
-    crate::db::lock::with_write_conn(app, move |conn| {
-        crate::db::effects::enqueue(
-            conn,
-            crate::bot::effects::KIND_SUBAGENT_DISPATCH,
-            &key2,
-            &payload2,
-            crate::db::now_ms(),
-        )
-    })
-    .await
-    .map_err(CommandError::DbError)?;
     crate::bot::effects::kick();
     Ok(ack)
 }

@@ -20,9 +20,12 @@ fn orch_prod_src() -> String {
 fn test_conn() -> rusqlite::Connection {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     // tasks 表内联最小 schema（列序与 open_db 一致，含  新增三列）；
-    // subagents 表与生产同源 DDL（单源真相）
+    // subagents 表与生产同源 DDL（单源真相）；spawn 建行与派发待办同事务，
+    // effect_queue 也是建行路径的依赖表
     conn.execute_batch(crate::db::tasks::TASKS_DDL).unwrap();
     conn.execute_batch(crate::db::SUBAGENTS_DDL).unwrap();
+    conn.execute_batch(crate::db::effects::EFFECT_QUEUE_DDL)
+        .unwrap();
     conn
 }
 fn parent_card(conn: &rusqlite::Connection) -> String {

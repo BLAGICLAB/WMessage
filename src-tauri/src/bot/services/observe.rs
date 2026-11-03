@@ -292,6 +292,12 @@ async fn notify_system<R: tauri::Runtime>(
         return;
     }
     if let Err(e) = crate::bot::effects::enqueue_notify(app, &key, title, body).await {
-        eprintln!("[bot::services] 系统通知入队失败：{e}");
+        crate::audit_event!(
+            app,
+            crate::audit::AuditLevel::Warn,
+            "notify_enqueue_failed",
+            "key" => key,
+            "err" => crate::bot::truncate_for_log(&e, 120)
+        );
     }
 }

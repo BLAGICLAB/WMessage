@@ -119,7 +119,13 @@ pub async fn apps_run(app: AppHandle, args: RunArgs) -> CommandResult<AppRunResu
     )
     .await
     {
-        eprintln!("[apps] 运行完成通知入队失败：{e}");
+        crate::audit_event!(
+            &app,
+            crate::audit::AuditLevel::Warn,
+            "notify_enqueue_failed",
+            "key" => key,
+            "err" => crate::bot::truncate_for_log(&e, 120)
+        );
     }
     Ok(res)
 }

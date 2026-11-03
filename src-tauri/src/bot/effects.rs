@@ -9,6 +9,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use futures_util::FutureExt;
+use rusqlite::OptionalExtension;
 use tauri::{AppHandle, Manager};
 
 use crate::db::effects::EffectRow;
@@ -172,8 +174,71 @@ impl Dispatcher {
 
     fn spawn_attempt(self: &Arc<Self>, kind: &'static str, cfg: KindConfig, row: EffectRow) {
         let this = Arc::clone(self);
+        let key = row.key.clone();
         tauri::async_runtime::spawn(async move {
-            this.attempt(kind, cfg, row).await;
+            // panic 隔离：handler panic 若不接住，tokio task 直接死亡，release 与
+            // CAS 收尾都跳过——in-flight 集合永久泄漏该 key，busy 过滤会让这行
+            // 本进程内永远不再投递。panic 按一次普通失败计次落库，行留待重跑
+            let runner = Arc::clone(&this);
+            let body = std::panic::AssertUnwindSafe(runner.attempt(kind, cfg, row));
+            if let Err(panic) = body.catch_unwind().await {
+                let msg = crate::audit::panic_message(panic);
+                this.release(kind, &key);
+                this.record_handler_panic(kind, &key, &msg);
+                kick();
+            }
+        });
+    }
+
+    /// panic 兜底：按普通失败计次落库（指数退避，行留待重跑），超限照常
+    /// give-up 审计。行查不到（已被再入队/删除）就无事可做——新 payload
+    /// 由派发器接管，本任务那代 payload 已无关紧要。
+    fn record_handler_panic(self: &Arc<Self>, kind: &'static str, key: &str, msg: &str) {
+        let Some(cfg) = config_of(kind) else {
+            return;
+        };
+        let app = self.app.clone();
+        let app_audit = self.app.clone();
+        let key = key.to_string();
+        let msg = msg.to_string();
+        tauri::async_runtime::spawn(async move {
+            let outcome = crate::db::lock::with_write_conn(&app, move |conn| {
+                let row = conn
+                    .query_row(
+                        "SELECT kind, key, payload, seq, generation, attempts \
+                         FROM effect_queue WHERE kind = ?1 AND key = ?2",
+                        rusqlite::params![kind, key],
+                        |r| {
+                            Ok(EffectRow {
+                                kind: r.get(0)?,
+                                key: r.get(1)?,
+                                payload: r.get(2)?,
+                                seq: r.get(3)?,
+                                generation: r.get(4)?,
+                                attempts: r.get(5)?,
+                            })
+                        },
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                let Some(row) = row else {
+                    return Ok(None);
+                };
+                let due = crate::db::now_ms() + backoff_delay(&cfg, row.attempts) as i64;
+                let attempts =
+                    crate::db::effects::record_failure(conn, &row, &truncate_err(&msg), due)?;
+                Ok(Some((row, attempts)))
+            })
+            .await;
+            match outcome {
+                Ok(Some((row, Some(attempts)))) if attempts >= cfg.max_attempts => {
+                    give_up_audit(&app_audit, kind, &row, "handler panic 重试耗尽");
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("[effects] panic 兜底计次失败（行留待重跑）：{e}");
+                }
+            }
         });
     }
 
@@ -216,14 +281,26 @@ impl Dispatcher {
 }
 
 async fn read_next_due<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<i64> {
+    // 睡眠只看还可投递的行（各 kind 的 max_attempts 取最小作闸）——超限留行的
+    // due 停在过去，混进来会把派发器逼成 50ms 空转；读库失败退 30s 重试而不是
+    // 盲睡 1h，故障恢复后存量到期行不必等满一小时
+    let attempts_lt = registered_kinds()
+        .iter()
+        .filter_map(|k| config_of(k))
+        .map(|c| c.max_attempts)
+        .min()
+        .unwrap_or(i64::MAX);
     let app2 = app.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<Option<i64>, String> {
+    let res: Result<Option<i64>, String> = tauri::async_runtime::spawn_blocking(move || {
         let conn = crate::db::open_db(&app2)?;
-        crate::db::effects::next_due(&conn)
+        crate::db::effects::next_due(&conn, attempts_lt)
     })
     .await
-    .unwrap_or_else(|e| Err(format!("effect 派发线程失败：{e}")))
-    .unwrap_or(None)
+    .unwrap_or_else(|e| Err(format!("effect 派发线程失败：{e}")));
+    match res {
+        Ok(v) => v,
+        Err(_) => Some(crate::db::now_ms() + 30_000),
+    }
 }
 
 async fn fetch_due_rows<R: tauri::Runtime>(
@@ -361,7 +438,9 @@ struct FinalizePayload {
 }
 
 /// 子 agent 终态落库（幂等）：行已是任意终态即视为完成（重放、与正常收尾
-/// 赛跑都安全），否则按状态机写入目标终态。
+/// 赛跑都安全），否则按状态机写入目标终态。runner 从未开跑的行（仍在
+/// queued）写不出 failed/budget_exceeded——状态机只放行 queued→cancelled，
+/// 此时按 cancelled 收（与启动清扫的「按事实选终态」同一口径）。
 async fn finalize_subagent<R: tauri::Runtime>(
     app: &AppHandle<R>,
     payload: &str,
@@ -372,13 +451,30 @@ async fn finalize_subagent<R: tauri::Runtime>(
         return Err(EffectError::Fail(format!("未知终态：{}", p.status)));
     };
     crate::db::lock::with_write_conn(app, move |conn| -> Result<(), String> {
-        if let Some(row) =
-            crate::db::load_subagent(conn, &p.subagent_id).map_err(|e| e.to_string())?
-        {
-            if row.status.is_terminal() {
-                return Ok(()); // 已有终态（重放或赛跑），幂等成功
-            }
+        let row = crate::db::load_subagent(conn, &p.subagent_id).map_err(|e| e.to_string())?;
+        let Some(row) = row else {
+            // 行不存在：交给 update_subagent_status 报错（Fail 重试后可见）
+            return crate::db::update_subagent_status(
+                conn,
+                &p.subagent_id,
+                status,
+                p.finished_at,
+                Some(&p.error),
+            )
+            .map(|_| ());
+        };
+        if row.status.is_terminal() {
+            return Ok(()); // 已有终态（重放或赛跑），幂等成功
         }
+        // runner 从未开跑的行（queued）写不出 failed/budget_exceeded——
+        // 状态机只放行 queued→cancelled，按事实改投 cancelled
+        let status = if row.status == crate::db::subagents::SubagentStatus::Queued
+            && status != crate::db::subagents::SubagentStatus::Cancelled
+        {
+            crate::db::subagents::SubagentStatus::Cancelled
+        } else {
+            status
+        };
         crate::db::update_subagent_status(
             conn,
             &p.subagent_id,

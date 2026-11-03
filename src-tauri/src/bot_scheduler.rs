@@ -711,8 +711,21 @@ const JOB_RUN_MAX_CONCURRENT: usize = 2;
 static JOB_RUN_SLOTS: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(JOB_RUN_MAX_CONCURRENT));
 
+/// 已派发未运行的去重集：作业在信号量上排队期间水位（sched_last / retry_at）
+/// 未推进，30s tick 会对同一作业重复 spawn——集合挡住重复等待者，槽释放后
+/// 只有一个在等。摘牌时机 = 拿到槽位之后（防重入自此由 SchedGuard 接管）。
+static DISPATCHED_JOBS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
 /// spawn 一个作业执行（并发闸 + panic 隔离 + 审计，供到点分发与重试触发共用）
 fn spawn_job_run(app: &AppHandle, job: crate::db::ScheduledJob) {
+    {
+        let mut set =
+            crate::db::lock::lock_or_recover(&DISPATCHED_JOBS, "bot_scheduler::dispatched_jobs");
+        if !set.insert(job.id.clone()) {
+            return; // 已有等待者/执行者，tick 的重复派发到此为止
+        }
+    }
     let app2 = app.clone();
     let app_audit = app.clone();
     let job_id = job.id.clone();
@@ -722,12 +735,17 @@ fn spawn_job_run(app: &AppHandle, job: crate::db::ScheduledJob) {
         // 并发闸：信号量进程内不 close，acquire 不会 Err；真发生（编程错误）
         // 就放弃本次执行并留痕，不放行不限流
         let Ok(_slot) = JOB_RUN_SLOTS.acquire().await else {
+            crate::db::lock::lock_or_recover(&DISPATCHED_JOBS, "bot_scheduler::dispatched_jobs")
+                .remove(&job_id);
             crate::bot::audit_log(
                 &app_audit,
                 &format!("sched_job_slot_error | id: {job_id} | 并发闸已关闭（不该发生）"),
             );
             return;
         };
+        // 槽位到手即摘牌：防重入自此由 SchedGuard 接管（run_scheduled_job 内）
+        crate::db::lock::lock_or_recover(&DISPATCHED_JOBS, "bot_scheduler::dispatched_jobs")
+            .remove(&job_id);
         // per-task panic 可见性（同任务卡/工作流路径）
         let body = std::panic::AssertUnwindSafe(run_scheduled_job(app2, job));
         if let Err(panic) = body.catch_unwind().await {
@@ -985,6 +1003,12 @@ pub async fn scheduled_job_fire(app: AppHandle, id: String) -> CommandResult<()>
     {
         return Ok(());
     }
+    // 手动触发与到点触发同一并发闸：信号量不 close，acquire 不会 Err
+    let Ok(_slot) = JOB_RUN_SLOTS.acquire().await else {
+        return Err(CommandError::Internal(
+            "作业并发闸已关闭（不该发生），本次未执行".into(),
+        ));
+    };
     run_scheduled_job(app, job).await;
     Ok(())
 }

@@ -7,7 +7,7 @@
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1201)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1203)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 │                        （setup 里另起清扫：上次被杀留下的 app_runs running 僵尸行）
 ├── app_state.rs (292)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        14 张执行期表 + 「全局状态总表」文档；详见 §2.1
@@ -322,7 +322,7 @@ src-tauri/src/
 │   ├── bot/services/logs.rs (189)  日志与输出上限面：服务日志目录 / append 写 /
 │   │                        尾部读（字节与行两种口径）+ 截断到 OUTPUT_CAP_BYTES +
 │   │                        每 30s 一轮的输出上限巡检
-│   ├── bot/services/observe.rs (297) 资源观测面：合计口径判定（阈值 / 持续 / 去重）+
+│   ├── bot/services/observe.rs (303) 资源观测面：合计口径判定（阈值 / 持续 / 去重）+
 │   │                        采样一轮（整棵进程树 RSS / CPU）+ 告警落审计 + 系统通知
 │   ├── bot/services/serialize.rs (114) 序列化面：服务条目 → JSON（给模型看）+
 │   │                        受管服务全景快照（合计 RSS / 合计告警 / 本平台能否采样；
@@ -432,11 +432,11 @@ src-tauri/src/
 │                        零 token 零延迟）+ parse_final_json + classify_outcome
 ├── bot/subagent_runner.rs (1017) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
 │                        + panic 隔离 + 任务包装渲染
-├── bot/subagent_spawn.rs (446) 子 agent 派发：入参校验 / 建行 / 并发闸 SubagentGate（per-session 2 /
+├── bot/subagent_spawn.rs (439) 子 agent 派发：入参校验 / 建行 / 并发闸 SubagentGate（per-session 2 /
 │                        global 3，闸满排队）
 ├── bot/subagent_tools.rs (424) 子 agent 的五个 LLM 工具：tool_spawn_subagent / tool_check_subagent /
 │                        tool_cancel_subagent / tool_write_artifact_file / tool_read_own_card
-├── bot_orchestrator.rs (721) 子 Agent 编排器门面（方案 B，SUBA 设计 2026-09-27）：类型与生命周期
+├── bot_orchestrator.rs (717) 子 Agent 编排器门面（方案 B，SUBA 设计 2026-09-27）：类型与生命周期
 │                        核心 + 子模块 re-export；受管子 agent 的
 │                        spawn/check/cancel 生命周期状态机 + 无任务卡（子 agent 不再建卡，行上
 │                        只存 parent_session_id 指向派发会话，遗留可空 task_id 不再写入）+ acceptance
@@ -448,7 +448,7 @@ src-tauri/src/
 │                        机器可判定条目的派发期形状校验
 │                        采样接线（run_task_in_chat 闭包喂 maybe_record_trace）
 │   └── orchestrator_tests/  编排器测试模块（门面只留生产码，测试按职责拆三份）
-│       ├── orchestrator_tests.rs (111) 共享夹具：orch_prod_src（源码全景）/ test_conn /
+│       ├── orchestrator_tests.rs (114) 共享夹具：orch_prod_src（源码全景）/ test_conn /
 │       │                          parent_card / fake_state / digest_row / req / OK_RESULT
 │       ├── orchestrator_tests/lifecycle.rs (554) 生命周期与接线守卫：panic 隔离 / 收尾事件唤醒 /
 │       │                          wait 策略 / 摘要注入位置

@@ -574,7 +574,9 @@ pub fn run() {
             bot_py::sweep_stale_py_runs(app.handle());
 
             // 清扫上一世遗留的子 agent 僵尸行（running/queued）：进程重启后
-            // 没有 runner 会再收尾它们，不清就在子 agent 面板里永远转圈
+            // 没有 runner 会再收尾它们，不清就在子 agent 面板里永远转圈。
+            // 同步执行且必须先于下面的派发器——派发器会把待补派的 queued 行
+            // 置回 running，清扫若在其后跑会把恢复中的行误杀成 failed
             bot_orchestrator::sweep_zombie_subagents(app.handle());
 
             // 执行痕迹保留期自动清扫（启动一次 + 每天一次）：设置页公示的

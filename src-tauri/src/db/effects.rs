@@ -134,11 +134,18 @@ pub(crate) fn pending(conn: &rusqlite::Connection, kind: &str, key: &str) -> Res
     .map_err(|e| e.to_string())
 }
 
-/// 最早 due（派发器睡眠时长依据；空队列返回 None）
-pub(crate) fn next_due(conn: &rusqlite::Connection) -> Result<Option<i64>, String> {
-    conn.query_row("SELECT MIN(due) FROM effect_queue", [], |r| {
-        r.get::<_, Option<i64>>(0)
-    })
+/// 最早 due（派发器睡眠时长依据；空队列返回 None）。
+/// `attempts_lt`：只统计还可投递的行——超限留行的 due 停在过去，
+/// 不过滤会让派发器以最小睡眠间隔（50ms）永久空转。
+pub(crate) fn next_due(
+    conn: &rusqlite::Connection,
+    attempts_lt: i64,
+) -> Result<Option<i64>, String> {
+    conn.query_row(
+        "SELECT MIN(due) FROM effect_queue WHERE attempts < ?1",
+        [attempts_lt],
+        |r| r.get::<_, Option<i64>>(0),
+    )
     .optional()
     .map(|o| o.flatten())
     .map_err(|e| e.to_string())
@@ -190,46 +197,6 @@ pub(crate) fn record_failure(
     )
     .optional()
     .map_err(|e| e.to_string())
-}
-
-/// 每 kind 健康度（健康面板数据源；superagent report 同口径：等待数 / 最大
-/// 重试次数 / 最近一次错误 / 最早入队时间）
-#[derive(serde::Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct EffectKindStat {
-    pub kind: String,
-    pub waiting: i64,
-    pub max_attempts: i64,
-    pub last_error: Option<String>,
-    pub oldest_since: Option<i64>,
-}
-
-pub fn kind_stats(conn: &rusqlite::Connection) -> Result<Vec<EffectKindStat>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT kind, COUNT(*), IFNULL(MAX(attempts), 0), \
-               (SELECT error FROM effect_queue e2 WHERE e2.kind = e.kind AND e2.error IS NOT NULL \
-                ORDER BY e2.seq DESC LIMIT 1), \
-               MIN(since) \
-             FROM effect_queue e GROUP BY kind",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok(EffectKindStat {
-                kind: r.get(0)?,
-                waiting: r.get(1)?,
-                max_attempts: r.get(2)?,
-                last_error: r.get(3)?,
-                oldest_since: r.get(4)?,
-            })
-        })
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r.map_err(|e| e.to_string())?);
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -390,23 +357,21 @@ mod tests {
     }
 
     #[test]
-    fn next_due_and_stats_report_queue_health() {
+    fn next_due_excludes_give_up_rows() {
         let conn = mem_conn();
         let _g = crate::db::lock_db_write();
-        assert_eq!(next_due(&conn).unwrap(), None, "空队列无 due");
+        assert_eq!(next_due(&conn, 5).unwrap(), None, "空队列无 due");
         enqueue(&conn, "notify", "a", "{}", 100).unwrap();
         enqueue(&conn, "notify", "b", "{}", 300).unwrap();
         enqueue(&conn, "schedule", "c", "{}", 200).unwrap();
-        assert_eq!(next_due(&conn).unwrap(), Some(100));
+        assert_eq!(next_due(&conn, 5).unwrap(), Some(100));
+        // 超限留行的 due 停在过去：不滤掉会把派发器逼成 50ms 空转
         conn.execute(
-            "UPDATE effect_queue SET attempts = 4, error = '最后的错误' WHERE key = 'b'",
+            "UPDATE effect_queue SET attempts = 5, due = 1, error = '耗尽' WHERE key = 'a'",
             [],
         )
         .unwrap();
-        let stats = kind_stats(&conn).unwrap();
-        let notify = stats.iter().find(|s| s.kind == "notify").unwrap();
-        assert_eq!(notify.waiting, 2);
-        assert_eq!(notify.max_attempts, 4);
-        assert_eq!(notify.last_error.as_deref(), Some("最后的错误"));
+        assert_eq!(next_due(&conn, 5).unwrap(), Some(200), "超限行不进睡眠计算");
+        assert_eq!(next_due(&conn, 6).unwrap(), Some(1), "闸放宽后重新可见");
     }
 }

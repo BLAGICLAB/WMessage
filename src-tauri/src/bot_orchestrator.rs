@@ -551,103 +551,99 @@ pub(crate) fn clip(s: &str, max: usize) -> String {
 /// 上一世的僵尸——不收尾就在子 agent 面板里永远转圈。逐行落终态 + 审计，
 /// 谁被清的、可追溯；取消原因写进行上的 error，`check` 回传给父 agent 与面板。
 ///
-/// 排队中的行**不恢复**，是刻意的：恢复需要连 stage（角色语义层）与 onion
-/// （per-agent 配置）一起还原，而这两项没落在行上（行只有 profile / model）。
-/// 只按 profile 重投会跑出一个「用默认角色和默认配置完成」的成功结果，比取消
-/// 更难发现。真要恢复，先把 stage / onion 持久化，再谈重投。
+/// 排队中的行**恢复**而非取消：queued 行的派发待办在 Effects 队列里时
+/// 豁免清扫，由派发器补派 runner（stage / onion 随派发 payload 带回）；
+/// 待办不在队列的 queued 行仍按 cancelled 收。执行中的行按 failed 收——
+/// 模型循环现场不可重建，只认事实。
+///
+/// **同步执行**（不 spawn）：调用方必须在启动派发器**之前**跑完本函数——
+/// 否则派发器先把恢复行置 running、本函数随后会把它误杀成 failed
+/// （本函数的安全前提是「启动期无活 runner」，派发器恢复行恰好打破它）。
 ///
 /// 前置前提：应用是单实例（tauri-plugin-single-instance），所以本进程启动时
 /// 不可能有另一个进程正跑着同一份库的子 agent——否则这里会误杀活跑的。
 pub fn sweep_zombie_subagents(app: &AppHandle) {
     let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let sweep = {
-            let conn = match crate::db::open_db(&app) {
-                Ok(c) => c,
+    let sweep = {
+        let conn = match crate::db::open_db(&app) {
+            Ok(c) => c,
+            Err(e) => {
+                crate::bot::audit_log(&app, &format!("subagent_zombie_sweep_db_fail | err: {e}"));
+                return;
+            }
+        };
+        let _g = crate::db::lock_db_write();
+        let mut cleaned = 0usize;
+        let mut exempted = 0usize;
+        // 终态按「事实」选：排队中的从未开跑，是被重启丢弃（cancelled）；
+        // 已开跑的中途断掉才算失败（failed）。状态机也只放行这两条边
+        for (st, to) in [
+            (SubagentStatus::Queued, SubagentStatus::Cancelled),
+            (SubagentStatus::Running, SubagentStatus::Failed),
+        ] {
+            let rows = match crate::db::load_subagents_by_status(&conn, st) {
+                Ok(r) => r,
                 Err(e) => {
                     crate::bot::audit_log(
                         &app,
-                        &format!("subagent_zombie_sweep_db_fail | err: {e}"),
+                        &format!(
+                            "subagent_zombie_sweep_load_fail | status: {} | err: {e}",
+                            st.as_str()
+                        ),
                     );
-                    return;
+                    continue;
                 }
             };
-            let _g = crate::db::lock_db_write();
-            let mut cleaned = 0usize;
-            let mut exempted = 0usize;
-            // 终态按「事实」选：排队中的从未开跑，是被重启丢弃（cancelled）；
-            // 已开跑的中途断掉才算失败（failed）。状态机也只放行这两条边
-            for (st, to) in [
-                (SubagentStatus::Queued, SubagentStatus::Cancelled),
-                (SubagentStatus::Running, SubagentStatus::Failed),
-            ] {
-                let rows = match crate::db::load_subagents_by_status(&conn, st) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        crate::bot::audit_log(
-                            &app,
-                            &format!(
-                                "subagent_zombie_sweep_load_fail | status: {} | err: {e}",
-                                st.as_str()
-                            ),
-                        );
+            for row in rows {
+                let id = row.id.clone();
+                // queued 行的派发待办还在 Effects 队列里（上次崩溃在「插行
+                // 之后、runner 起来之前」）→ 行留给派发器接管，这里不清：
+                // 清了就是把可恢复的活降级成取消，恢复语义落空
+                if st == SubagentStatus::Queued {
+                    let has_pending = crate::db::effects::pending(
+                        &conn,
+                        crate::bot::effects::KIND_SUBAGENT_DISPATCH,
+                        &crate::bot::effects::subagent_dispatch_key(&id),
+                    )
+                    .unwrap_or(true);
+                    if has_pending {
+                        exempted += 1;
                         continue;
                     }
-                };
-                for row in rows {
-                    let id = row.id.clone();
-                    // queued 行的派发待办还在 Effects 队列里（上次崩溃在「插行
-                    // 之后、runner 起来之前」）→ 行留给派发器接管，这里不清：
-                    // 清了就是把可恢复的活降级成取消，恢复语义落空
-                    if st == SubagentStatus::Queued {
-                        let has_pending = crate::db::effects::pending(
-                            &conn,
-                            crate::bot::effects::KIND_SUBAGENT_DISPATCH,
-                            &crate::bot::effects::subagent_dispatch_key(&id),
-                        )
-                        .unwrap_or(true);
-                        if has_pending {
-                            exempted += 1;
-                            continue;
-                        }
-                    }
-                    let res = crate::db::update_subagent_status(
-                        &conn,
-                        &id,
-                        to,
-                        now_ms(),
-                        Some("应用重启，执行现场已不存在（僵尸行清理）"),
-                    );
-                    match res {
-                        Ok(_) => {
-                            cleaned += 1;
-                            crate::bot::audit_log(
-                                &app,
-                                &format!(
-                                    "subagent_zombie_cleared | id: {id} | was: {}",
-                                    st.as_str()
-                                ),
-                            );
-                        }
-                        Err(e) => crate::bot::audit_log(
+                }
+                let res = crate::db::update_subagent_status(
+                    &conn,
+                    &id,
+                    to,
+                    now_ms(),
+                    Some("应用重启，执行现场已不存在（僵尸行清理）"),
+                );
+                match res {
+                    Ok(_) => {
+                        cleaned += 1;
+                        crate::bot::audit_log(
                             &app,
-                            &format!("subagent_zombie_clear_fail | id: {id} | err: {e}"),
-                        ),
+                            &format!("subagent_zombie_cleared | id: {id} | was: {}", st.as_str()),
+                        );
                     }
+                    Err(e) => crate::bot::audit_log(
+                        &app,
+                        &format!("subagent_zombie_clear_fail | id: {id} | err: {e}"),
+                    ),
                 }
             }
-            (cleaned, exempted)
-        };
-        if sweep.0 > 0 || sweep.1 > 0 {
-            crate::bot::audit_log(
-                &app,
-                &format!(
-                    "subagent_zombie_sweep_done | count: {} | exempted: {}（派发待办在队列，留待补派）",
-                    sweep.0, sweep.1
-                ),
-            );
         }
-    });
+        (cleaned, exempted)
+    };
+    if sweep.0 > 0 || sweep.1 > 0 {
+        crate::bot::audit_log(
+            &app,
+            &format!(
+                "subagent_zombie_sweep_done | count: {} | exempted: {}（派发待办在队列，留待补派）",
+                sweep.0, sweep.1
+            ),
+        );
+    }
 }
 
 // final_text 由上面的 move 闭包直接捕获（历史落库后不再外用）

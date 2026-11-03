@@ -9,7 +9,7 @@
 > 为什么不用「只取发射点」：有些事件的落点是 `format!` 拼串或别的 helper（如 `skill_step_fail`），
 > 只认发射点会漏收真事件，而漏收的代价是卡里写了白名单外的名字、门禁当场拦下。
 >
-> 共 250 条。表外的名字有两种合法用法：运行时拼出的（`前缀.{动作}` 形态，源码里能找到 `前缀.{`）、
+> 共 258 条。表外的名字有两种合法用法：运行时拼出的（`前缀.{动作}` 形态，源码里能找到 `前缀.{`）、
 > 以及中文期望文案（按 `format!` 运行时拼出，按既有约定不进对拍闸）。
 
 - `api.handler_panic`
@@ -21,6 +21,7 @@
 - `app_data_dir`
 - `app_exit_cleanup`
 - `ask_answered`
+- `ask_notify_enqueue_failed`
 - `ask_user_asked`
 - `ask_user_queue_error`
 - `bot-ask`
@@ -81,6 +82,7 @@
 - `dst.copying`
 - `error.log.old.1`
 - `error_log_read_fail`
+- `effect_giveup`
 - `evt`
 - `exec_steps.ambiguous_reply`
 - `file.rollback`
@@ -175,12 +177,16 @@
 - `rmw_conflict`
 - `rules.import_confirmed`
 - `rules.import_rejected`
+- `reminder.enqueue_failed`
+- `reminder.fire_failed`
+- `reminder.fired`
 - `rules.json.tmp`
 - `runtime_files_migrated`
 - `sched_enabled`
 - `scheduled_job_create`
 - `scheduled_job_delete`
 - `scheduled_job_update`
+- `notify_enqueue_failed`
 - `service.denied`
 - `service.enable_toggle`
 - `service.exited`
@@ -208,11 +214,13 @@
 - `subagent.parse_failure_recovered`
 - `subagent_cancelled`
 - `subagent_check_wait`
+- `subagent_dispatch_giveup`
 - `subagent_progress`
 - `subagent_report.history_load_failed`
 - `subagent_report.persist_failed`
 - `subagent_report_failed`
 - `subagent_spawned`
+- `subagent_terminal_state_write_failed`
 - `subagent_whitelist_deny`
 - `tag_merge`
 - `tag_merge_rollback`
