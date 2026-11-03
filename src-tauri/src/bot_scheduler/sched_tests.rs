@@ -291,6 +291,38 @@ fn classify_job_expired_at_is_deleted_regardless_of_switch() {
     assert_eq!(classify_job(&j, now, false), JobAction::Delete);
 }
 
+/// 从未执行的 at: 到点在首跑宽限（2×tick）内判「刚到点」，照常派发/Held——
+/// 宽限层缺失时 Delete 分支与到点判定条件重叠且恒先命中，at: 一次性作业
+/// 永远走不到 Dispatch。
+#[test]
+fn classify_job_at_first_run_within_grace_dispatches() {
+    let due = dt(2026, 8, 16, 10, 0);
+    // 到点后 20s（运行中的调度器至多一个 tick 后扫到）→ 刚到点，首跑
+    let now = due + chrono::Duration::seconds(20);
+    let j = job("at:2026-08-16T10:00");
+    assert_eq!(classify_job(&j, now, true), JobAction::Dispatch);
+    assert_eq!(classify_job(&j, now, false), JobAction::Held);
+}
+
+/// 首跑宽限边界：宽限内（含恰好 2×tick）不算过期，超宽限 1s 起判过期删除
+/// （防重启后补跑过期任务）。
+#[test]
+fn at_expired_first_run_grace_boundary() {
+    let due = dt(2026, 8, 16, 10, 0);
+    let sched = "at:2026-08-16T10:00";
+    assert!(!at_expired(
+        sched,
+        None,
+        due + chrono::Duration::seconds(30)
+    ));
+    assert!(!at_expired(sched, None, due + AT_FIRST_RUN_GRACE));
+    assert!(at_expired(
+        sched,
+        None,
+        due + AT_FIRST_RUN_GRACE + chrono::Duration::seconds(1)
+    ));
+}
+
 /// 待触发的重试：到点且开关开启才派发；开关关闭同样不派发（不产生跳过噪声）。
 #[test]
 fn classify_job_retry_paths() {

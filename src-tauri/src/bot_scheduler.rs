@@ -259,7 +259,9 @@ pub(crate) fn validate_schedule(s: &str) -> Result<(), String> {
     Err("无法识别的定时格式（支持 daily:/weekly:/monthly:/at:）".to_string())
 }
 
-/// at: 一次性任务是否已错过且从未执行（应放弃补执行，防重启后补跑过期任务）
+/// at: 一次性任务是否已错过且从未执行（应放弃补执行，防重启后补跑过期任务）。
+/// 首跑宽限（2×tick）内不算过期：运行中的调度器至多一个 tick 后扫到，此时
+/// 仍是「刚到点」，照常首跑；超宽限仍未跑过（应用关闭/机器人关闭期间到点）→ 清理。
 fn at_expired(sched: &str, sched_last: Option<i64>, now: chrono::DateTime<chrono::Local>) -> bool {
     let Some(at) = sched.strip_prefix("at:") else {
         return false;
@@ -271,7 +273,7 @@ fn at_expired(sched: &str, sched_last: Option<i64>, now: chrono::DateTime<chrono
         .ok()
         .and_then(resolve_local)
     {
-        Some(occ) => occ <= now,
+        Some(occ) => now - occ > AT_FIRST_RUN_GRACE,
         None => true, // 解析失败按过期处理（放弃）
     }
 }
@@ -293,6 +295,12 @@ const CATCHUP_WINDOW: chrono::Duration = chrono::Duration::hours(2);
 
 /// 调度扫描周期（秒），start_scheduler 的 interval 与 at: 首跑宽限共用同一常量防漂移
 pub const SCHED_TICK_SECS: u64 = 30;
+
+/// at: 一次性首跑宽限：2×tick。从未执行的 at: 到点超窗才判过期清理（at_expired）；
+/// 窗口内视为「刚到点」，保留既有首跑语义——运行中的调度器至多一个 tick 后
+/// 必扫到，宽限取 2 倍留余量。
+const AT_FIRST_RUN_GRACE: chrono::Duration =
+    chrono::Duration::seconds((SCHED_TICK_SECS * 2) as i64);
 
 /// 到点判定（纯函数，可测）：
 /// - Run：触发点已到且未超补跑窗口（或新任务首跑），正常执行；
