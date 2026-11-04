@@ -1,6 +1,6 @@
 # Windows 安装版落地方案（2026-11-05）
 
-> **状态**：方案，未实施。本文给「配置改法 + 打包流程 + 校验清单」三件，
+> **状态**：代码侧已落地（2026-11-05，B1–B4 + B6），B5 实机验证待做。本文给「配置改法 + 打包流程 + 校验清单」三件，
 > 落地按 §七 的六批切分推进；每批一个逻辑变更一个 commit。
 >
 > **一句话**：Windows 分发形态从「绿色 zip（解压即用）」改成「NSIS 安装版
@@ -294,4 +294,23 @@ B2 与 B1 有依赖顺序（先 B1 定资源布局，再 B2 定数据目录，�
 
 ## 十、偏离登记
 
-（实施时如有偏离，逐条记在这里：现象 → 原因 → 处置 → 是否回填本方案）
+落地偏离三条，均已回填本文相应段落：
+
+1. **Windows 资源拆进 `tauri.windows.conf.json` 平台配置**（方案原稿把 staging 资源放 base conf）。
+   原因：base conf 的资源表对所有目标生效，放 staging 三来源会让 mac 构建也强依赖暂存目录
+   （`tauri-build` 编译期就校验资源存在性，缺件直接构建失败）；平台配置按 `--target` triple 生效
+   （tauri-utils `config/parse.rs` 的 `read_platform(target, …)`，已对源码定案），mac 构建不合并
+   windows conf。处置：base conf 只留 bge map，windows conf 自足列出全部五项资源。
+2. **onnx dll 来源改 NuGet**（方案原稿误记「ort-sys copy-dylibs 落 dll」）。事实：Windows 目标
+   ort 是 load-dynamic（`Cargo.toml` 尾部按 target 配置），构建期不需要 dll；dll 来源与绿色包手册
+   §3 同款（NuGet microsoft.ml.onnxruntime，1.28.0 ↔ ort 2.0.0-rc.13）。处置：暂存脚本从 NuGet
+   拉取并解压两个 dll；§二/§4.3/§五 已同步改写。另：`tauri-build` 编译期就校验资源存在性
+   （比方案预期的 bundler 期更早），staging 缺件时交叉构建 `cargo build` 直接失败——fail-closed
+   提前生效（本次交叉构建实证）。
+3. **fallback WARN 收口改条件**（方案未涉及，B2 连带修复）。便携分支退役后「exe 目录 ≠ 数据目录」
+   是安装版常态，原「exe 目录 ≠ 数据目录即 WARN」会在每次启动误报；改为只在 app_data_dir 解析失败
+   退 temp 这条真正的异常路径记。`is_under_system_temp` / `is_macos_app_bundle_dir` 两个孤儿判定
+   随本次改动删除。
+
+落地记录：B1 `facdcf11` / B2 `cd0d84e3` / B3 `bfea56de` / B4 `accbcd70` / B6 `1c2f05b3`；
+B5（Windows 实机 §六 B/C）待做。
