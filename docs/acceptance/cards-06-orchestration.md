@@ -348,6 +348,7 @@
   3. 同会话再派新活 → 仍是同一行（objective 刷新、failed 行被唤醒回 working）。
   4. 杀进程重启 → 上一世 working 行变 `failed`（error 带「进程重启」）。
   5. 同一会话快速连发两条消息（前一条未收尾）→ 仍一行、无唯一索引冲突报错。
+  6. 让 bot 做「生成一份 报告.md 到 AI_Gen_Files」类任务（触发 Planner 且输出带 acceptance）→ 轮收尾后查该行 result 列含 machineCheck，bot.log 有 `work_item.machine_check`。
 - **判据**：
   1. 【可核对】步骤 1-3 每步的查询输出与所述一致；`session_id` 唯一索引存在（`grep -n "idx_work_items_session" src-tauri/src/db/work_items.rs`）。
   2. 【可观测】步骤 4：`stage=failed` 且 error 文案含「进程重启」；调度 tick 的陈旧清扫不误伤 `awaiting_answer` 行（`grep -n "sweep_stale_working" src-tauri/src/bot_scheduler.rs` 命中 30s tick 接线）。

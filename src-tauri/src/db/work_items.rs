@@ -303,6 +303,79 @@ pub fn load_by_session(
     .map_err(|e| e.to_string())
 }
 
+/// 轮收尾 + 机器判据管线：行上有验收标准（JSON 数组，`file_exists:` /
+/// `file_nonempty:` 语法，相对 AI_Gen_Files）就逐条跑服务端判定——fail-closed，
+/// 结论进 result JSON 并留审计；阶段语义不变（判据只记录、不改判，改判推翻
+/// 语义仍归子 agent 的收尾契约）。无验收标准的行走普通 finish。
+pub(crate) async fn finish_with_machine_check<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: &str,
+    ok: bool,
+    error: Option<&str>,
+) {
+    let app2 = app.clone();
+    let sid2 = session_id.to_string();
+    let checked =
+        tauri::async_runtime::spawn_blocking(move || -> Result<Option<String>, String> {
+            let conn = crate::db::open_db(&app2)?;
+            let Some(row) = load_by_session(&conn, &sid2)? else {
+                return Ok(None);
+            };
+            let Some(acc) = row.acceptance.as_deref() else {
+                return Ok(None);
+            };
+            let Ok(criteria) = serde_json::from_str::<Vec<String>>(acc) else {
+                return Ok(None);
+            };
+            if criteria.is_empty() {
+                return Ok(None);
+            }
+            let dir = crate::db::gen_dir(&app2).map_err(|e| e.to_string())?;
+            let verdicts = crate::bot::subagent_digest::eval_machine_criteria(&criteria, &dir);
+            if verdicts.is_empty() {
+                return Ok(None);
+            }
+            let total = verdicts.len();
+            let passed = verdicts.iter().filter(|v| v.met).count();
+            let failed_items: Vec<&str> = verdicts
+                .iter()
+                .filter(|v| !v.met)
+                .map(|v| v.criterion.as_str())
+                .collect();
+            crate::audit_event!(
+                &app2,
+                crate::audit::AuditLevel::Info,
+                "work_item.machine_check",
+                "session" => sid2,
+                "passed" => passed,
+                "total" => total,
+                "failed" => failed_items.join(" | ")
+            );
+            Ok(Some(
+                serde_json::json!({ "machineCheck": { "passed": passed, "total": total } })
+                    .to_string(),
+            ))
+        })
+        .await;
+    let result_json = match checked {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            eprintln!("[work_items] 机器判据失败（跳过，只落阶段）：{e}");
+            None
+        }
+        Err(e) => {
+            eprintln!("[work_items] 机器判据线程失败（跳过，只落阶段）：{e}");
+            None
+        }
+    };
+    let sid3 = session_id.to_string();
+    let err3 = error.map(str::to_string);
+    let _ = crate::db::lock::with_write_conn(app, move |conn| {
+        finish(conn, &sid3, ok, result_json.as_deref(), err3.as_deref())
+    })
+    .await;
+}
+
 // Tauri commands
 
 /// 最近工作项（前端面板/活动页增补数据源）

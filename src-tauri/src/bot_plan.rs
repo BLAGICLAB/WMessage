@@ -136,7 +136,7 @@ async fn call_planner(
     app: &tauri::AppHandle,
     system: &str,
     user: &str,
-) -> CommandResult<Vec<String>> {
+) -> CommandResult<GeneratedPlan> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
     let api_key = crate::bot::read_llm_key(
         cfg.api_provider.as_deref(),
@@ -230,26 +230,58 @@ async fn call_planner(
     let text = text.as_str();
     // 非流式 Planner 响应可能带 <think> 段，先剥再提取 JSON
     let text = crate::bot_chat::strip_think_blocks(text);
-    parse_plan(&text).ok_or_else(|| {
-        format!(
+    let steps = parse_plan(&text).ok_or_else(|| {
+        CommandError::Internal(format!(
             "Planner 输出无法解析为计划：{}",
             crate::bot::truncate_for_log(&text, 200)
-        )
-        .into()
+        ))
+    })?;
+    Ok(GeneratedPlan {
+        acceptance: parse_plan_acceptance(&text),
+        steps,
     })
 }
 
+/// Planner 产出：步骤 + 可选的机器可判定验收标准
+pub struct GeneratedPlan {
+    pub steps: Vec<String>,
+    pub acceptance: Vec<String>,
+}
+
+/// 从 Planner 输出提取验收标准（与 parse_plan 同源的 JSON 提取）：
+/// 只收非空字符串、最多 5 条；缺字段/非数组 → 空表（验收是可选增强，
+/// 不因它缺失而判计划非法）
+fn parse_plan_acceptance(text: &str) -> Vec<String> {
+    let Some(json_str) = extract_json(text) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) else {
+        return Vec::new();
+    };
+    let Some(arr) = v["acceptance"].as_array() else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|s| s.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .take(5)
+        .map(str::to_string)
+        .collect()
+}
+
 /// 生成初始计划。失败/解析不出 → None（调用方降级为自由循环，不阻断聊天）。
-pub async fn generate_plan(app: &tauri::AppHandle, task: &str) -> Option<Vec<String>> {
+pub async fn generate_plan(app: &tauri::AppHandle, task: &str) -> Option<GeneratedPlan> {
     match call_planner(app, PLANNER_PROMPT, task).await {
-        Ok(steps) => {
+        Ok(plan) => {
             crate::audit_event!(
                 app,
                 crate::audit::AuditLevel::Info,
                 "plan.generate",
-                "steps" => steps.len(),
+                "steps" => plan.steps.len(),
+                "acceptance" => plan.acceptance.len(),
             );
-            Some(steps)
+            Some(plan)
         }
         Err(e) => {
             // 降级不阻断：记 Warn 审计，走原自由循环
@@ -302,15 +334,16 @@ pub async fn replan(
         plan.task
     );
     match call_planner(app, REPLANNER_PROMPT, &user).await {
-        Ok(steps) => {
+        Ok(p) => {
             crate::audit_event!(
                 app,
                 crate::audit::AuditLevel::Info,
                 "plan.replan",
-                "steps" => steps.len(),
+                "steps" => p.steps.len(),
                 "used" => plan.replans_used + 1,
             );
-            Some(steps)
+            // 重规划只取步骤：验收标准在初版计划时已落工作行，不随重规划改写
+            Some(p.steps)
         }
         Err(e) => {
             crate::audit_event!(
@@ -371,6 +404,22 @@ mod tests {
         assert!(!needs_plan("现在几点"));
         assert!(!needs_plan("帮我新建一个任务：买牛奶"));
         assert!(!needs_plan("[附件文件] a.docx 润色"));
+    }
+
+    #[test]
+    fn parse_plan_acceptance_extracts_strings_and_tolerates_missing() {
+        let a = parse_plan_acceptance(
+            r#"{"steps":["写报告"],"acceptance":["file_exists:报告.md","file_nonempty:数据.csv"]}"#,
+        );
+        assert_eq!(a, vec!["file_exists:报告.md", "file_nonempty:数据.csv"]);
+        assert!(parse_plan_acceptance(r#"{"steps":["无验收字段"]}"#).is_empty());
+        assert!(parse_plan_acceptance("不是 JSON").is_empty());
+        assert!(
+            parse_plan_acceptance(r#"{"acceptance":["  ",""]}"#).is_empty(),
+            "空串剔除"
+        );
+        let many = parse_plan_acceptance(r#"{"acceptance":["a1","a2","a3","a4","a5","a6","a7"]}"#);
+        assert_eq!(many.len(), 5, "最多 5 条");
     }
 
     #[test]

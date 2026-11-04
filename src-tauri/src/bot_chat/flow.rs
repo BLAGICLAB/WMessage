@@ -507,15 +507,21 @@ pub(super) async fn bot_chat_inner(
         .as_ref()
         .map(|m| m.content.clone())
         .unwrap_or_default();
+    let mut plan_acceptance: Vec<String> = Vec::new();
     let mut plan_state: Option<crate::bot_plan::PlanState> =
         if crate::bot_plan::needs_plan(&last_user_text) {
-            crate::bot_plan::generate_plan(&app, &last_user_text)
-                .await
-                .map(|steps| crate::bot_plan::PlanState {
-                    task: last_user_text.clone(),
-                    steps,
-                    replans_used: 0,
-                })
+            match crate::bot_plan::generate_plan(&app, &last_user_text).await {
+                Some(p) => {
+                    // 验收标准随计划落工作行（机器判据管线在轮收尾消费）
+                    plan_acceptance = p.acceptance;
+                    Some(crate::bot_plan::PlanState {
+                        task: last_user_text.clone(),
+                        steps: p.steps,
+                        replans_used: 0,
+                    })
+                }
+                None => None,
+            }
         } else {
             None
         };
@@ -645,7 +651,9 @@ pub(super) async fn bot_chat_inner(
         let trace_id = crate::trace_sink::begin_trace(&trace_app, sid, None, "chat", title).await;
         chat_trace_id = trace_id;
         // 工作单元开票（机械动作，每会话一行）：objective 取本轮用户输入
-        // 摘要（汇报轮不覆盖既有目标），stage=working；失败不阻断聊天主链
+        // 摘要（汇报轮不覆盖既有目标），stage=working；失败不阻断聊天主链。
+        // 计划声明的验收标准（若有）随开票同库写入
+        let acc_wi = std::mem::take(&mut plan_acceptance);
         {
             let app_wi = trace_app.clone();
             let sid_wi = sid.clone();
@@ -663,7 +671,14 @@ pub(super) async fn bot_chat_inner(
                         "chat",
                         obj_wi.as_deref(),
                         None,
-                    )
+                    )?;
+                    // 计划声明的验收标准随开票落行（机器判据管线轮收尾消费）
+                    if !acc_wi.is_empty() {
+                        if let Ok(acc_json) = serde_json::to_string(&acc_wi) {
+                            crate::db::work_items::set_acceptance(conn, &sid_wi, &acc_json)?;
+                        }
+                    }
+                    Ok(())
                 })
                 .await;
             });
@@ -752,9 +767,12 @@ pub(super) async fn bot_chat_inner(
             let ok = loop_result.is_ok();
             let err_wi = loop_result.as_ref().err().map(|e| e.to_string());
             tauri::async_runtime::spawn(async move {
-                let _ = crate::db::lock::with_write_conn(&app_wi, move |conn| {
-                    crate::db::work_items::finish(conn, &sid_wi, ok, None, err_wi.as_deref())
-                })
+                crate::db::work_items::finish_with_machine_check(
+                    &app_wi,
+                    &sid_wi,
+                    ok,
+                    err_wi.as_deref(),
+                )
                 .await;
             });
         }

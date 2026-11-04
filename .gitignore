@@ -131,3 +131,4 @@ src-tauri/eval-bot-config.json
 # 落地页源码在 landing/，是版本化交付物）
 wmessage-landing.zip
 wm-mail-auth-qr.png
+*.7z.*
