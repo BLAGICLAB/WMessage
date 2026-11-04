@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 323 个文件、约 14.0 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 324 个文件、约 14.0 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -417,6 +417,7 @@ src-tauri/src/
 ├── bot_scheduler/sched_tests.rs        调度主逻辑单测（occurrence / 触发 / 作业执行 / 收尾）
 ├── bot_scheduler/sched_guard_tests.rs   SchedGuard 防重入单测
 ├── bot_scheduler/plan_window_tests.rs   计划窗口单测
+├── bot_scheduler/preview_gate_tests.rs  预演档闸单测（闸只拦到点触发，手动「立即执行」不拦）
 ├── bot_reminders.rs (592) 机器人提醒 schedule_reminder/list_reminders/cancel_reminder：
 │                        到点发系统通知（只说话，不建卡不执行内容）；when 支持绝对时间 /
 │                        今天 HH:MM / 相对 +30m；repeat none/daily/weekly/monthly；
@@ -927,6 +928,7 @@ flowchart TD
 - `bot_reminders.rs`
 - `bot_scheduler.rs`
 - `bot_scheduler/plan_window_tests.rs`
+- `bot_scheduler/preview_gate_tests.rs`
 - `bot_scheduler/sched_guard_tests.rs`
 - `bot_scheduler/sched_tests.rs`
 - `bot_slash.rs`
