@@ -93,7 +93,7 @@ fn linux_app_data_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-/// 降级后端的 key 文件目录：与数据目录同一便携策略——优先复用 probe_log_dir
+/// 降级后端的 key 文件目录：与数据目录同一策略——优先复用 probe_log_dir
 /// 已定版的缓存结果（防每次探测瞬时失败导致 key 文件与数据库分裂两地）；
 /// 未初始化（如启动早期 keyring 迁移先于首次 data_dir 调用）回退原现探逻辑。
 fn plaintext_key_dir() -> std::path::PathBuf {

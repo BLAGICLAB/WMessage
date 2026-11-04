@@ -1,4 +1,4 @@
-//! 数据目录解析与便携模式判定（从 audit.rs 抽出，独立模块）
+//! 数据目录解析（从 audit.rs 抽出，独立模块）
 //!
 //! 抽出的动机：原 audit.rs 同时承担两件事——
 //! 1) **目录解析**（probe_log_dir / cached_probe_dir / probe_dir / 辅助函数 + 缓存）；
@@ -8,10 +8,10 @@
 //!
 //! 拆出 paths 后：
 //! - paths 只负责「目录怎么定」，调用方拿 `PathBuf`；
-//! - audit 只负责「目录定了之后日志怎么写」，不需要知道便携策略；
-//! - 未来加第二条便携策略（如 per-user config）只动 paths。
+//! - audit 只负责「目录定了之后日志怎么写」，不需要知道数据目录策略；
+//! - 未来数据目录策略再变只动 paths。
 //!
-//! 内联 fallback WARN：探测到 exe 目录写探针失败 / 落在系统 temp 时需要在数据
+//! 内联 fallback WARN：app_data_dir 解析失败退系统 temp 时需要在数据
 //! 目录里写一条 WARN 审计。审计模块（audit）写日志依赖 paths 的目录解析——
 //! 抽到 paths 后 audit 不能反向调 paths → 在 paths 内联一份最小化的 WARN 写入，
 //! 格式与 audit 完全一致（同样 `[ts] WARN | event | k=v`），行解析端无感。
@@ -28,9 +28,8 @@ use tauri::Manager;
 ///    直接返回会把测试库写进用户数据目录旁，已实证泄漏）；
 ///    target/debug|release **本体**（cargo run / tauri dev / 手动运行）不隔离，
 ///    数据目录 = 用户真实 app_data——dev 的数据就是用户数据，不得被劫走；
-/// 1. exe 目录可写 + 无数据痕迹 → 便携模式（数据随 exe 走，U盘/绿色包）；
-/// 2. exe 目录不可写（如 Program Files） → 退 app_data_dir（系统应用数据目录）；
-/// 3. 全不可用 → 退 `std::env::temp_dir()`。
+/// 1. 其余情况数据目录恒为 `app_data_dir()`（安装版落点，程序目录与数据目录
+///    彻底分离）；app_data 不可用时退 `std::env::temp_dir()`。
 ///
 /// 测试进程的隔离数据目录：**每个进程一个**。
 ///
@@ -68,16 +67,14 @@ fn test_data_dir() -> std::path::PathBuf {
     dir
 }
 
-/// 前置规则：
-/// 1. exe 旁已有 `wmessage.db` / `AI_Gen_Files` → 强制便携锚定 exe 目录；
-///    写探针瞬时失败（杀软锁定/UAC 抖动）不得翻转已有数据目录。
-/// 2. exe 落在系统临时目录（压缩包内直接双击运行）→ 不在 temp 建数据目录，
-///    跳过便携分支退化 app_data。
-/// 3. macOS `.app` 包内目录（`*.app/Contents/MacOS`）即使可写也不算便携目录——
-///    拖到 `~/Applications` 后该目录可写，DB / 日志 / AI_Gen_Files 全写进 app 包
-///    会破坏签名、删 app = 删全部用户数据。
+/// 数据目录恒为 `app_data_dir()`（安装版落点）；exe 目录是否可写、exe 旁有无
+/// 历史数据痕迹（wmessage.db / AI_Gen_Files）均不影响判定——数据目录与程序
+/// 目录彻底分离，程序目录的卸载/升级不再牵连数据。仅两分支：
+/// ① exe 在 cargo target 下：deps = 测试进程 → temp 每进程隔离；debug|release
+///    本体 = cargo run / tauri dev → 真实 app_data（dev 的数据就是用户数据）。
+/// ② 其余情况 → app_data_dir()，不可用时退系统 temp。
 ///
-/// `pub(crate)`：bot.rs 降级 key 路径（无 AppHandle）复用同一便携策略。
+/// `pub(crate)`：bot 降级 key 路径（无 AppHandle）复用同一数据目录策略。
 pub(crate) fn probe_dir(
     exe_dir: Option<&std::path::Path>,
     app_data: Option<std::path::PathBuf>,
@@ -101,26 +98,12 @@ pub(crate) fn probe_dir(
             return app_data.unwrap_or_else(std::env::temp_dir);
         }
     }
-    if let Some(dir) = exe_dir {
-        if !is_macos_app_bundle_dir(dir) {
-            if dir.join("wmessage.db").exists() || dir.join("AI_Gen_Files").exists() {
-                return dir.to_path_buf();
-            }
-            if !is_under_system_temp(dir) {
-                let probe = dir.join(".wm-write-probe");
-                if std::fs::File::create(&probe).is_ok() {
-                    let _ = std::fs::remove_file(&probe);
-                    return dir.to_path_buf();
-                }
-            }
-        }
-    }
     app_data.unwrap_or_else(std::env::temp_dir)
 }
 
 /// 进程级定版入口：首次 `probe_log_dir` 调用把结果钉在 `PROBE_CACHE`，后续
 /// 即使探测条件变化也不再翻转——杀软瞬时锁定/UAC 抖动不得让数据目录分裂。
-/// 兜底分支记 WARN 审计（写清翻到哪、为什么）。
+/// app_data_dir 解析失败（数据目录退系统 temp）时记 WARN 审计。
 ///
 /// 测试期已知共享面：nextest 每测试一进程，测试构建下数据目录解析到
 /// `target/debug/deps/`，同 pid 的进程内并行测试会共享 bot.log/DB 等——
@@ -138,31 +121,25 @@ pub(crate) fn probe_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std
     let first_probe = PROBE_CACHE.get().is_none();
     #[cfg(test)]
     let first_probe = false;
+    // app_data 可用性快照：下一行会把 app_data 移入 probe_dir_cached
+    let app_data_ok = app_data.is_some();
     let resolved = probe_dir_cached(exe_dir.as_deref(), app_data);
-    // 兜底判定：exe 目录存在但结果不是它 → 发生了翻转，记 WARN（只在首次探测记一次）。
+    // 兜底判定：app_data_dir 解析失败（数据目录退系统 temp，易失）→ 记 WARN（只在首次探测记一次）。
     // 写日志挪到独立线程：调用方可能正持有 BOT_LOG_LOCK（audit_log → data_dir → here），
     // std Mutex 不可重入，直接写会死锁。
-    if first_probe && exe_dir.as_deref().is_some_and(|d| d != resolved.as_path()) {
-        let exe_dir_s = exe_dir
-            .as_deref()
-            .map(|d| d.to_string_lossy().to_string())
-            .unwrap_or_default();
+    if first_probe && !app_data_ok {
         let resolved_s = resolved.to_string_lossy().to_string();
-        // zip 直跑（exe 在系统 temp 下）与写探针失败给不同 WARN 原因，便于诊断
-        let reason = if exe_dir.as_deref().is_some_and(is_under_system_temp) {
-            "exe 位于系统临时目录（疑似压缩包内直接双击运行），不在 temp 建数据目录，已退化 app_data——请解压后再运行"
-        } else {
-            "exe 目录写探针失败（杀软锁定/权限不足/压缩包内运行），数据目录按便携策略兜底"
-        };
         let dir = resolved.clone();
         std::thread::spawn(move || {
             write_fallback_warn(
                 &dir,
                 "data_dir_fallback",
                 &[
-                    ("exe_dir", exe_dir_s.as_str()),
                     ("resolved", resolved_s.as_str()),
-                    ("reason", reason),
+                    (
+                        "reason",
+                        "app_data_dir 解析失败，数据目录退系统临时目录（易失，重启即丢）",
+                    ),
                 ],
             );
         });
@@ -282,34 +259,11 @@ fn probe_dir_cached_in(
 
 // 内部：判定辅助
 
-/// exe 目录是否在系统临时目录下（zip 直跑场景）：canonicalize 后比较，
-/// macOS /var ↔ /private/var 软链由 canonicalize 归一。
-/// 任一侧 canonicalize 失败时退回**双侧原始路径**前缀比对——只归一一边会出现
-/// 「/var/… 不在 /private/var/… 下」的错配，把 temp 里的 exe 误判成非 temp，
-/// 数据目录会错误落进易失的 temp。兜底比对宁可多判「在 temp」（走 app_data，安全侧）。
-fn is_under_system_temp(dir: &std::path::Path) -> bool {
-    let tmp = std::env::temp_dir();
-    let tmp_canon = std::fs::canonicalize(&tmp).unwrap_or_else(|_| tmp.clone());
-    let dir_canon = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    dir_canon.starts_with(&tmp_canon) || dir.starts_with(&tmp)
-}
-
-/// macOS .app 包内 MacOS 目录判定：…/Xxx.app/Contents/MacOS
-fn is_macos_app_bundle_dir(dir: &std::path::Path) -> bool {
-    let mut comps = dir.components().rev();
-    matches!(comps.next(), Some(c) if c.as_os_str() == "MacOS")
-        && matches!(comps.next(), Some(c) if c.as_os_str() == "Contents")
-        && comps
-            .next()
-            .is_some_and(|c| c.as_os_str().to_string_lossy().ends_with(".app"))
-}
-
 /// Cargo 构建/测试环境判定：路径含 `target/<...>` 且末段是 deps/debug/release。
 /// 命中此分支说明进程是 `cargo test` / `cargo run` / `tauri build` 后的可执行——
-/// 「可写」是构建副产物，不是用户真数据目录。probe_log_dir 必须旁路便携分支，
-/// 否则 cargo test 写的 wmessage.db 残留在 target/，下次 `tauri build` 把整个
-/// release 目录 cp 进绿色包就「带数据」（docs/PACKAGING-WINDOWS-PORTABLE.md
-/// 「坑位速查」新增一条：曾有用户解压新版本看到旧任务卡）。
+/// 「可写」是构建副产物，不是用户真数据目录。必须旁路（否则 cargo test 写的
+/// wmessage.db 残留在 target/，打包工作流把 release 目录装箱就「带数据」：
+/// 曾有用户解压新版本看到旧任务卡）。
 fn is_cargo_target_dir(dir: &std::path::Path) -> bool {
     let s = dir.to_string_lossy();
     if !s.contains("target/") && !s.contains("target\\") {
@@ -323,7 +277,7 @@ fn is_cargo_target_dir(dir: &std::path::Path) -> bool {
 
 // 内部：fallback WARN 内联
 
-/// 探测翻转时内联写一条 WARN 审计（行格式与 audit 模块的 write_at 完全一致）。
+/// app_data_dir 解析失败时内联写一条 WARN 审计（行格式与 audit 模块的 write_at 完全一致）。
 ///
 /// 必须内联在 paths 里：audit 写日志依赖 paths 的目录解析，paths 反向调 audit
 /// 会构成 `audit → paths → audit` 的循环依赖。重复拼装格式代价 10 行，
@@ -395,46 +349,14 @@ mod tests {
         assert_eq!(first, second, "定版后探测条件变化不得改变数据目录");
     }
 
-    /// mock exe 目录：系统 temp 下的目录会被 probe_dir 当「压缩包直跑」跳过便携分支，
-    /// 测试用 exe 目录一律建在 current_exe 父目录（target/debug/deps，可写且非 temp）
-    fn mock_dir_outside_temp(name: &str) -> std::path::PathBuf {
-        let base = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join(format!(
-                "wm-probe-test-{}-{}",
-                name,
-                uuid::Uuid::new_v4().simple()
-            ));
-        std::fs::create_dir_all(&base).unwrap();
-        base
-    }
-
     #[test]
-    fn probe_dir_writable_exe_dir_wins() {
-        // 分支 1：exe 目录可写 → 用它（便携模式）
-        let exe_dir = mock_dir_outside_temp("writable");
+    fn probe_dir_returns_app_data_when_exe_dir_writable() {
+        // 安装版口径：exe 目录可写也不锚定 exe 目录——数据目录恒 app_data，
+        // 程序目录只放程序（卸载/升级/重装不牵连数据）。
+        let exe_dir = tempfile::tempdir().unwrap();
         let app_data = tempfile::tempdir().unwrap();
-        let got = probe_dir(Some(&exe_dir), Some(app_data.path().to_path_buf()));
-        assert_eq!(got, exe_dir);
-        // 探针文件不得残留
-        assert!(!exe_dir.join(".wm-write-probe").exists());
-        let _ = std::fs::remove_dir_all(&exe_dir);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn probe_dir_readonly_exe_dir_falls_back_to_app_data() {
-        // 分支 2：exe 目录不可写（如 Program Files）→ 退 app_data_dir
-        use std::os::unix::fs::PermissionsExt;
-        let ro = mock_dir_outside_temp("readonly");
-        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let app_data = tempfile::tempdir().unwrap();
-        let got = probe_dir(Some(&ro), Some(app_data.path().to_path_buf()));
+        let got = probe_dir(Some(exe_dir.path()), Some(app_data.path().to_path_buf()));
         assert_eq!(got, app_data.path());
-        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let _ = std::fs::remove_dir_all(&ro);
     }
 
     #[test]
@@ -447,58 +369,16 @@ mod tests {
         assert!(!exe_dir.path().join(".wm-write-probe").exists());
     }
 
-    #[cfg(unix)]
     #[test]
-    fn probe_dir_existing_data_traces_force_portable() {
-        // exe 旁已有 wmessage.db → 强制便携锚定，目录即使不可写也不翻转
-        use std::os::unix::fs::PermissionsExt;
+    fn probe_dir_ignores_legacy_data_traces_beside_exe() {
+        // exe 旁有老现场的数据痕迹（wmessage.db / AI_Gen_Files）也不再锚定 exe 目录——
+        // 数据目录恒 app_data，程序目录与数据目录彻底分离。
         let exe_dir = tempfile::tempdir().unwrap();
         std::fs::write(exe_dir.path().join("wmessage.db"), b"").unwrap();
-        std::fs::set_permissions(exe_dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-        let app_data = tempfile::tempdir().unwrap();
-        let got = probe_dir(Some(exe_dir.path()), Some(app_data.path().to_path_buf()));
-        assert_eq!(got, exe_dir.path());
-        std::fs::set_permissions(exe_dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    #[test]
-    fn probe_dir_gen_dir_trace_forces_portable_under_temp() {
-        // exe 在 temp 但旁边已有 AI_Gen_Files → 数据痕迹优先于 temp 规避，锚定 exe 目录
-        let exe_dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(exe_dir.path().join("AI_Gen_Files")).unwrap();
         let app_data = tempfile::tempdir().unwrap();
         let got = probe_dir(Some(exe_dir.path()), Some(app_data.path().to_path_buf()));
-        assert_eq!(got, exe_dir.path());
-    }
-
-    /// macOS .app 包内目录（即使可写）不得当便携数据目录——
-    /// 否则数据库/日志/AI_Gen_Files 全写进 app 包内（删 app = 删全部数据）
-    #[test]
-    fn probe_dir_skips_macos_app_bundle_dir() {
-        let tmp = std::env::temp_dir().join(format!("wm-test-{}", uuid::Uuid::new_v4().simple()));
-        let macos_dir = tmp.join("wmessage.app").join("Contents").join("MacOS");
-        std::fs::create_dir_all(&macos_dir).unwrap();
-        let app_data = tmp.join("appdata");
-        let got = probe_dir(Some(&macos_dir), Some(app_data.clone()));
-        assert_eq!(got, app_data, ".app 包内目录必须跳过便携分支直落 app_data");
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn is_macos_app_bundle_dir_detection() {
-        assert!(is_macos_app_bundle_dir(Path::new(
-            "/Applications/wmessage.app/Contents/MacOS"
-        )));
-        assert!(is_macos_app_bundle_dir(Path::new(
-            "/Users/x/Applications/wmessage.app/Contents/MacOS/"
-        )));
-        assert!(!is_macos_app_bundle_dir(Path::new(
-            "/Applications/wmessage.app/Contents"
-        )));
-        assert!(!is_macos_app_bundle_dir(Path::new("/opt/wmessage")));
-        assert!(!is_macos_app_bundle_dir(Path::new(
-            "/Users/x/wmessage.app/Contents/MacOSub"
-        )));
+        assert_eq!(got, app_data.path(), "历史数据痕迹不再锚定数据目录");
     }
 
     #[test]
@@ -638,7 +518,7 @@ mod tests {
         );
         assert!(
             flags.starts_with(crate::db::data_dir(app.handle())),
-            "flags 目录必须仍在数据目录内（便携模式随 exe 走），got {}",
+            "flags 目录必须仍在数据目录内，got {}",
             flags.display()
         );
     }

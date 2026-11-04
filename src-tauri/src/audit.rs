@@ -382,10 +382,9 @@ fn append_line(path: &std::path::Path, line: &str) -> bool {
     }
     true
 }
-// 数据目录便携探针 + 探测结果缓存 + 辅助判定函数已全部搬到 paths.rs：
+// 数据目录探针 + 探测结果缓存 + 辅助判定函数已全部搬到 paths.rs：
 //   - probe_log_dir / cached_probe_dir
 //   - probe_dir / probe_dir_cached / probe_dir_cached_in
-//   - is_under_system_temp / is_macos_app_bundle_dir
 //   - PROBE_CACHE
 // audit 模块只负责「目录定了之后日志怎么写」。
 
