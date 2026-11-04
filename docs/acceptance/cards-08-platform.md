@@ -2,7 +2,7 @@
 
 > 覆盖 `SPEC.md`「6. 数据、集成与平台」9 条功能（6-106 ~ 6-114），对应矩阵 `docs/acceptance/matrix.csv` 的 D6 域。
 > 判据写法与证据规范见 `docs/ACCEPTANCE-PLAN-2026-10-30.md`；审计事件名取自 `docs/acceptance/event-names.md` 白名单。
-> 数据目录（macOS）：`~/Library/Application Support/com.renshi.wmessage/`（便携模式随 exe 走，见 ACC-P-03）。下文的 `<data_dir>` 指该目录。
+> 数据目录（macOS）：`~/Library/Application Support/com.renshi.wmessage/`（恒定落点，不随 exe 走，机制见 ACC-P-03）。下文的 `<data_dir>` 指该目录。
 > 日志检索统一写法：`grep -F "<事件名>" "<data_dir>/bot.log" | tail -20`。
 
 ### ACC-P-01 · SQLite：WAL + busy_timeout 2s + 单写者行级增量
@@ -57,27 +57,24 @@
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（`api.handler_panic` / `api.recv_error` grep 不到 = 卡片过期）
 - **缺口补验**：只验了端口采集金丝雀：端点面、token 鉴权、多用户信封、SSE 未专卡
 
-### ACC-P-03 · 便携模式：数据库随 exe 走
+### ACC-P-03 · 数据目录落点：恒 app_data，程序目录与数据目录分离
 
 - **SPEC**：6-108
 - **层级**：L1+L2（L1 自动化 + L2 实机）
 - **历史卡**：W01（`docs/realmachine-mutation-test-2026-10-23.md`）、W10、S31（`docs/realmachine-smoke-test-2026-10-25.md`）
-- **前置**：已有一个能跑的构建产物（exe / .app）；有一个可写的空目录用来放它
+- **前置**：已有一个能跑的构建产物（exe / .app）
 - **步骤**：
-  1. 把应用拷进一个空的可写目录，双击启动，等它起来。
-  2. 看这个目录里出现了什么；再看原来的 app_data 目录，库文件的修改时间有没有变。
-  3. 在应用里跑一轮对话，确认数据（库、日志、产物）都写在 exe 旁边。
-  4. 把应用挪进一个**不可写**的目录（macOS：`/Applications` 下或 `chmod a-w` 的目录）再启动，看它把数据落在哪、日志里有没有兜底说明。
-  5. 把应用从 zip 里直接双击运行（exe 落系统 temp），看数据目录落点。
+  1. 把应用放进任意可写目录（或走安装版）启动，跑一轮对话。
+  2. 看数据落点：库 / 日志 / `AI_Gen_Files` 必须在 app_data 目录，exe 目录旁不出现。
+  3. 在 exe 目录预放 `wmessage.db` 与 `AI_Gen_Files/` 再启动——历史数据痕迹不再锚定数据目录，数据仍落 app_data。
+  4. （Windows 安装版）卸载勾选「删除应用数据」→ `%APPDATA%\com.renshi.wmessage` 消失；不勾选 → 保留。
 - **判据**：
-  1. 【可观测】步骤 1：应用在 exe 同目录建数据——同目录出现 `<data_dir>/wmessage.db` 与 `AI_Gen_Files/`；原 app_data 目录里的库文件修改时间不变。
-  2. 【可观测】步骤 3：一轮对话后，`<data_dir>/wmessage.db`、`<data_dir>/bot.log` 与 `AI_Gen_Files/` 都落在 exe 同目录，app_data 目录里没有新增本轮数据。
-  3. 【可观测】步骤 4：exe 目录不可写时，数据回落到 app_data 目录（`~/Library/Application Support/com.renshi.wmessage/`），启动日志里有一条说明兜底原因的 WARN。
-  4. 【可观测】步骤 5：zip 内直接双击运行时不在系统 temp 下建数据目录，退化到 app_data 目录，且日志里记一条 WARN 说明「疑似压缩包内直接双击运行，请解压后再运行」。
-  5. 【可核对】exe 旁已有 `<data_dir>/wmessage.db` 或 `AI_Gen_Files` 时强制便携锚定（写探针失败也不翻转）；`grep -n "fn probe_dir_cached_in\|fn probe_dir\b" src-tauri/src/paths.rs` 命中——数据目录判定只有一处，首次探测结果钉死、后续条件变化也不翻转。
-  6. 【可核对】`grep -n "RUNTIME_SUBDIR" src-tauri/src/paths.rs` 命中且值为 runtime——便携模式下 runtime/ 子目录（API token 等）同样随 exe 走。
-- **证据**：截图（exe 目录文件清单 + app_data 目录文件清单）+ 启动日志片段
-- **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（本卡无专属审计事件，改查 `grep -n "fn probe_dir" src-tauri/src/paths.rs`：判定逻辑不在 = 卡片过期；逻辑在但落点不对 = 应用侧回归）
+  1. 【可观测】步骤 2：`<data_dir>/wmessage.db`、`<data_dir>/bot.log` 与 `AI_Gen_Files/` 全部在 app_data 目录；exe 目录旁无新增数据文件。
+  2. 【可观测】步骤 3：exe 旁预放的数据痕迹不被锚定，数据仍落 app_data 目录。
+  3. 【可核对】`grep -n "fn probe_dir_cached_in\|fn probe_dir\b" src-tauri/src/paths.rs` 命中且 `probe_dir` 函数体内无写探针、无数据痕迹锚定——数据目录判定只有一处，首次探测结果钉死、后续条件变化也不翻转。
+  4. 【可核对】`grep -n "RUNTIME_SUBDIR" src-tauri/src/paths.rs` 命中且值为 runtime——runtime/ 子目录（API token 等）仍在数据目录内。
+- **证据**：截图（app_data 与 exe 目录文件清单）+ 启动日志片段
+- **失败处置**：先分清「应用坏了」还是「卡片过期」——`grep -n "fn probe_dir" src-tauri/src/paths.rs`：判定逻辑不在 = 卡片过期；逻辑在但落点不对 = 应用侧回归
 - **缺口补验**：—
 
 ### ACC-P-04 · 交付给用户的产物不带「来自互联网」标记

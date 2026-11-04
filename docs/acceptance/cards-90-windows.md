@@ -32,23 +32,23 @@ powershell -ExecutionPolicy Bypass -File D:\wmessage-probe\regression-probe.ps1 
 
 ---
 
-### ACC-W-01 · 便携模式与数据目录落点
+### ACC-W-01 · 安装版安装目录与数据目录落点
 
-- **SPEC**：6-108（便携模式）
+- **SPEC**：6-108（数据目录落点）
 - **层级**：L3 发布层
 - **历史卡**：W01,W10,S31（全）
-- **前置**：绿色 zip 解压到可写目录（如 `D:\wmessage-portable-2026-10-30`）；另备一份放在 `D:\Program Files\` 下的副本用于测回退
+- **前置**：Windows 实机 + 安装包（`wmessage_<版本>_x64-setup.exe`，出包流程见 `docs/WINDOWS-INSTALLER-DESIGN-2026-11-05.md`）
 - **步骤**：
-  1. 启动可写目录里的 exe，创建一张任务卡，退出。
-  2. 确认数据文件位置：`wmessage.db`、`bot.log` 是否在 exe 同目录。
-  3. 换到 `D:\Program Files\` 下的副本启动，确认数据目录回退到 `%APPDATA%\com.renshi.wmessage`。
+  1. 运行安装包，确认装到 `%LOCALAPPDATA%\wmessage`，目录结构与方案 §三 一致（逐项 `Test-Path`：`wmessage.exe`、`bge-small-zh-v1.5\`、`pp-ocr-v6\`、`dotnet\`、`onnxruntime.dll`）。
+  2. 启动应用跑一轮对话，确认数据文件位置：`%APPDATA%\com.renshi.wmessage` 下出现 `wmessage.db` / `bot.log` / `AI_Gen_Files`；exe 目录旁无 `wmessage.db`。
+  3. exe 目录旁预放一个 `wmessage.db` 再启动——数据仍落 `%APPDATA%`，痕迹不被锚定。
 - **判据**：
-  1. 【可观测】可写目录下 `wmessage.db` 与 `bot.log` 出现在 exe 同目录。
-  2. 【可观测】不可写目录下二者出现在 `%APPDATA%\com.renshi.wmessage`。
-  3. 【可审计】`bot.log` 中出现 `data_dir_fallback`（回退那次）。
+  1. 【可观测】安装目录结构与预期一致，且 **exe 旁无 `_up_` 目录**。
+  2. 【可观测】数据文件在 `%APPDATA%\com.renshi.wmessage`，exe 目录旁无。
+  3. 【可审计】`bot.log` 有数据目录定版留痕（数据目录 = app_data）。
 - **证据**：两处目录树截图 + `bot.log` 片段。
-- **失败处置**：先确认 exe 是否真落在不可写目录（`Program Files` 默认不可写），再查 `src-tauri/src/paths.rs` 的判定顺序。
-- **缺口补验**：回退路径在近几轮提交里未复跑过。
+- **失败处置**：先查安装目录实际结构（是否缺资源 / 有 `_up_`），再查 `src-tauri/src/paths.rs` 的判定。
+- **缺口补验**：升级语义（用户自放文件保留）与卸载勾选删数据的实机复跑。
 
 ---
 
@@ -214,22 +214,22 @@ powershell -ExecutionPolicy Bypass -File D:\wmessage-probe\regression-probe.ps1 
 
 ---
 
-### ACC-W-10 · 绿色 zip 出包与目录结构
+### ACC-W-10 · 安装版出包与目录结构
 
-- **SPEC**：6-108（便携模式）
+- **SPEC**：6-108（数据目录落点）
 - **层级**：L3 发布层
 - **历史卡**：W01,W10
-- **前置**：完成一次打包（见 `docs/PACKAGING-WINDOWS-PORTABLE.md`）
+- **前置**：完成一次打包（见 `docs/WINDOWS-INSTALLER-DESIGN-2026-11-05.md`：暂存脚本 → 交叉构建）
 - **步骤**：
-  1. 解压绿色 zip 到任意目录。
-  2. 启动，确认不需安装即可运行。
-  3. 检查目录里是否有不该有的开发产物。
+  1. 暂存 + 交叉构建，产出 `bundle/nsis/*.exe` 安装器。
+  2. 本地核对：`strings` 安装器能查到 `pp-ocr-v6/det.onnx`、`bge-small-zh-v1.5/onnx/model_quantized.onnx`、`dotnet/wm-docx-revisions.exe` 三个**目标路径**，且**查不到 `_up_` 字样**。
+  3. 实机安装后核对目录结构（配合 ACC-W-01）。
 - **判据**：
-  1. 【可观测】解压即用，无安装步骤、无注册表写入。
-  2. 【可核对】目录内不含 `target/`、`.cargo`、源码等开发产物。
-  3. 【可核对】exe 的 SHA256 与发版记录一致。
-- **证据**：目录树截图 + `Get-FileHash` 输出。
-- **失败处置**：出包口径见 `docs/PACKAGING-WINDOWS-PORTABLE.md`；**换 exe 必须重记 SHA256 与路径两处**。
+  1. 【可观测】构建成功产出安装器，体积 ~100–120MB。
+  2. 【可核对】`strings` 断言三个目标路径命中、无 `_up_`。
+  3. 【可核对】安装器的 SHA256 与发版记录一致。
+- **证据**：构建日志 + `strings` 命中输出 + SHA256。
+- **失败处置**：资源落位不对先查 `tauri.windows.conf.json` 的 resources 映射与暂存目录；**换包必须重记 SHA256 与路径两处**。
 
 ---
 

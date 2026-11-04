@@ -1,5 +1,9 @@
 # WMessage Windows 绿色版打包手册（供 openclaw / 打包代理执行）
 
+> **（已归档）** 2026-11-05 起 Windows 分发改 NSIS 安装版、绿色 zip 停发，
+> 现行流程见 `docs/WINDOWS-INSTALLER-DESIGN-2026-11-05.md`；本文仅供最后一版
+> 绿色包维护与口径溯源备查。
+
 > 目标产物：`wmessage-portable-<日期>.zip`，解压即用、数据随目录走的 Windows x64 便携包。
 > 全程在 macOS 构建机上完成（mingw 交叉编译），不需要 Windows 机器参与构建。
 > 本文是**执行手册**：按顺序照做即可。历史决策见 DEVLOG.md 2026-09-10 条目。
