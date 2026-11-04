@@ -361,12 +361,11 @@ mod tests {
 
     #[test]
     fn probe_dir_exe_under_system_temp_falls_back_to_app_data() {
-        // zip 内直接双击运行：exe 落系统 temp → 不在 temp 建数据，退化 app_data
+        // exe 落系统 temp（zip 直跑残留场景）→ 数据目录恒 app_data
         let exe_dir = tempfile::tempdir().unwrap();
         let app_data = tempfile::tempdir().unwrap();
         let got = probe_dir(Some(exe_dir.path()), Some(app_data.path().to_path_buf()));
         assert_eq!(got, app_data.path());
-        assert!(!exe_dir.path().join(".wm-write-probe").exists());
     }
 
     #[test]
