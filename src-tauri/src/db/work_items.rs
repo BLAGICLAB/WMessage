@@ -378,6 +378,79 @@ pub(crate) async fn finish_with_machine_check<R: tauri::Runtime>(
 
 // Tauri commands
 
+/// 「需要人处理」聚合项（查询时聚合，不新增 notifications kind）：
+/// 三源合并——工作项 person 族 / 失败的子 agent / 失败且启用的定时作业
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct NeedsAttentionItem {
+    /// work_item | subagent | scheduled_job
+    pub source: String,
+    pub id: String,
+    pub title: String,
+    pub detail: Option<String>,
+    pub at: i64,
+}
+
+/// 查询时聚合：一处看全需要人的事（不改 notifications 表）
+#[tauri::command]
+pub async fn needs_attention_list(
+    app: tauri::AppHandle,
+    limit: Option<usize>,
+) -> Result<Vec<NeedsAttentionItem>, crate::error::CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let limit = limit.unwrap_or(50).min(200);
+        let conn = super::open_db(&app).map_err(crate::error::CommandError::DbError)?;
+        let mut out: Vec<NeedsAttentionItem> = Vec::new();
+        // ① 工作项 person 族
+        for r in list_needing_human(&conn, limit)? {
+            let fallback = r
+                .objective
+                .clone()
+                .or_else(|| r.session_id.clone())
+                .unwrap_or_else(|| r.id.clone());
+            out.push(NeedsAttentionItem {
+                source: "work_item".into(),
+                id: r.id,
+                title: fallback,
+                detail: r.error,
+                at: r.updated_at,
+            });
+        }
+        // ② 失败/超预算的子 agent
+        for st in [
+            crate::db::subagents::SubagentStatus::Failed,
+            crate::db::subagents::SubagentStatus::BudgetExceeded,
+        ] {
+            for r in crate::db::subagents::load_subagents_by_status(&conn, st)? {
+                out.push(NeedsAttentionItem {
+                    source: "subagent".into(),
+                    id: r.id,
+                    title: crate::bot::truncate_for_log(r.objective.trim(), 40),
+                    detail: r.error,
+                    at: r.finished_at.unwrap_or(r.created_at),
+                });
+            }
+        }
+        // ③ 失败且启用的定时作业
+        for j in crate::db::load_scheduled_jobs(&conn)? {
+            if j.sched_enabled() && j.last_status.as_deref() == Some("fail") {
+                out.push(NeedsAttentionItem {
+                    source: "scheduled_job".into(),
+                    id: j.id,
+                    title: crate::bot::truncate_for_log(j.content.trim(), 40),
+                    detail: j.last_error,
+                    at: j.updated_at.unwrap_or(0),
+                });
+            }
+        }
+        out.sort_by_key(|item| std::cmp::Reverse(item.at));
+        out.truncate(limit);
+        Ok(out)
+    })
+    .await
+    .map_err(|e| crate::error::CommandError::Internal(format!("聚合读取线程 join 失败：{e}")))?
+}
+
 /// 最近工作项（前端面板/活动页增补数据源）
 #[tauri::command]
 pub async fn work_items_list(

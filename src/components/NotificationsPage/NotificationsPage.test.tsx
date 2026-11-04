@@ -35,7 +35,9 @@ beforeEach(() => {
   // 默认：列表空（notifications_list）；其余命令返回成功
   invokeMock.mockImplementation(async (cmd: string) => {
     if (cmd === "notifications_list") return [];
+    if (cmd === "needs_attention_list") return [];
     if (cmd === "notifications_pending_count") return 0;
+    if (cmd === "needs_attention_list") return [];
     return null;
   });
 });

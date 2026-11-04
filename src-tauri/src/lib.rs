@@ -776,6 +776,7 @@ pub fn run() {
             crate::bot::plan_state::bot_plan_state,
             crate::db::schedule_jobs::scheduled_job_create,
             crate::db::work_items::work_items_list,
+            crate::db::work_items::needs_attention_list,
             crate::db::work_items::work_items_needing_human,
             crate::db::trace::trace_list,
             crate::db::trace::trace_detail,

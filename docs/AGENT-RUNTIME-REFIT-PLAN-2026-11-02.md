@@ -19,7 +19,7 @@
 > 5. Effects 内核补规格（对拍 `effects.ts` 实源）：成功=删行（CAS 四元组）、per-kind 并发槽 `limit()`（G7 随批 3 收编）、max_attempts 限次、派发器 at-least-once + 消费方幂等要求。
 > 6. `with_tx` 补红线：闭包内禁调会再取锁的路径（`DB_WRITE_LOCK` 是 std Mutex 非重入，嵌套即死锁）；拿锁必须走 `lock_db_write()`。
 > 7. 新增快赢批 4：主聊天 `begin_trace` 传 title（活动页先不显示裸会话 id，不等 work_items）。
-> 8. **批 5–8 拍板（2026-11-03，四项全按推荐）**：开票粒度 = **每会话一行**（session_id upsert，等真出现「独立授权工作项」再迁粒度）；阶段重估 = **挂现有 30s tick**（不新增后台任务）；mandate 列 = **不建**（YAGNI，有授权语义再加）；批 7 聚合 = **查询时聚合**（不新增 notifications kind）；批 8 干跑档命名 = **preview/shadow**（避撞 `bot/services/observe.rs`）。批 1–4+审计修复先行实机验收，过了再推批 5–8。
+> 8. **批 5–8 拍板（2026-11-03，四项全按推荐）**：开票粒度 = **每会话一行**（session_id upsert，等真出现「独立授权工作项」再迁粒度）；阶段重估 = **挂现有 30s tick**（不新增后台任务）；mandate 列 = **不建**（YAGNI，有授权语义再加）；批 7 聚合 = **查询时聚合**（不新增 notifications kind）；批 8 干跑档命名 = **preview/shadow**（避撞 `bot/services/observe.rs`）。批 1–4+审计修复先行实机验收，过了再推批 5–8。 批 5–8 落地偏离（2026-11-04）：批 7 的**活动页状态筛选延后**（trace_list 需加 status 参数，与 50 条截断口径联动，单独小批再做），聚合命令 + 通知中心「后台待办」区块已落地。
 
 ---
 

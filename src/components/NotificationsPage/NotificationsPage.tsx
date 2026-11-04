@@ -11,6 +11,11 @@ import { EmptyState } from "../EmptyState";
 import { formatMonthDayTime } from "../../format";
 import { handleCommandError } from "../../lib/errorHandler";
 import {
+  needsAttentionList,
+  sourceLabel,
+  type NeedsAttentionItem,
+} from "../../lib/workItems";
+import {
   respondTaskQuestion,
   type TaskQuestionPayload,
 } from "../../lib/taskAsk";
@@ -366,6 +371,8 @@ export function NotificationsPage() {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [tab, setTab] = useState<"pending" | "all">("pending");
   const [loadError, setLoadError] = useState("");
+  /** 后台待办（查询时聚合三源）：工作项 person 族 / 失败子 agent / 失败作业 */
+  const [attention, setAttention] = useState<NeedsAttentionItem[]>([]);
 
   // 竞态令牌：挂载 + 事件风暴并发 reload 时，慢的旧响应不得覆盖新响应
   const race = useRaceSeq();
@@ -381,6 +388,17 @@ export function NotificationsPage() {
         if (!race.isCurrent(seq)) return;
         setLoadError(String(e));
         console.error("[notifications] 列表加载失败:", e);
+      });
+    // 后台待办是补充面：加载失败降级为空（主列表不受影响），留 console 可查
+    needsAttentionList(30)
+      .then((list) => {
+        if (!race.isCurrent(seq)) return;
+        setAttention(list);
+      })
+      .catch((e) => {
+        if (!race.isCurrent(seq)) return;
+        setAttention([]);
+        console.error("[notifications] 后台待办加载失败:", e);
       });
   }, [race]);
   useEffect(() => {
@@ -444,6 +462,42 @@ export function NotificationsPage() {
 
       {loadError && (
         <p className="mt-4 text-sm text-red-400">通知加载失败：{loadError}</p>
+      )}
+
+      {tab === "pending" && attention.length > 0 && (
+        <section className="mt-4 space-y-2" aria-label="后台待办">
+          <p className="text-xs text-[var(--t5)]">
+            后台待办（工作项 / 子 Agent / 定时作业的失败与等待，查询时聚合）
+          </p>
+          {attention.map((a) => (
+            <article
+              key={`${a.source}:${a.id}`}
+              className="nm-card p-3"
+              aria-label={`${sourceLabel(a.source)}：${a.title}`}
+            >
+              <header className="flex items-center gap-2 text-xs">
+                <span className="text-[11px] text-[var(--t5)]">
+                  {sourceLabel(a.source)}
+                </span>
+                <span className="text-[11px] text-[var(--t5)]">
+                  · {formatMonthDayTime(a.at)}
+                </span>
+                <span className="flex-1" />
+                <AlertTriangle
+                  size={12}
+                  className="text-[var(--danger)]"
+                  aria-hidden
+                />
+              </header>
+              <p className="mt-1 truncate text-sm text-[var(--t1)]">{a.title}</p>
+              {a.detail && (
+                <p className="mt-0.5 truncate text-xs text-[var(--t3)]">
+                  {a.detail}
+                </p>
+              )}
+            </article>
+          ))}
+        </section>
       )}
 
       <div className="mt-4 space-y-3">

@@ -22,7 +22,8 @@
       "scripts/sync-lobe-icons.mjs"
     ],
     "ignore": [
-      "gui-test-screenshots/**"
+      "gui-test-screenshots/**",
+      "landing/**"
     ],
     "ignoreDependencies": [
       "@lobehub/icons-static-svg"
