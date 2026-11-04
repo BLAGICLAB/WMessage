@@ -85,6 +85,9 @@ const COLS: &str = "SELECT id, kind, origin_ref, session_id, objective, acceptan
 
 /// 按会话开票/更新（机械动作，每轮模型循环调）：有行则更新 objective（给了
 /// 非空值才覆盖）与 updated_at，没有则建行（stage=working）。
+/// acceptance 每轮重写：开票先清空（acceptance 是「本轮计划声明」的随行判据，
+/// 无计划轮不留旧账——机器判定不得拿上一轮的过期判据下结论），计划轮由
+/// set_acceptance 紧随其后写入。
 pub fn upsert_for_session(
     conn: &rusqlite::Connection,
     session_id: &str,
@@ -107,6 +110,7 @@ pub fn upsert_for_session(
             "UPDATE work_items SET \
                objective = CASE WHEN ?2 THEN ?3 ELSE objective END, \
                stage = CASE WHEN stage = 'failed' THEN ?4 ELSE stage END, \
+               acceptance = NULL, \
                updated_at = ?5 \
              WHERE session_id = ?1",
             rusqlite::params![
@@ -121,6 +125,7 @@ pub fn upsert_for_session(
         if has_objective {
             row.objective = objective.map(str::to_string);
         }
+        row.acceptance = None;
         // 失败行被新一轮唤醒 → 回到 working（重试语义）
         if row.stage == STAGE_FAILED {
             row.stage = STAGE_WORKING.to_string();
@@ -215,13 +220,15 @@ pub fn set_acceptance(
     Ok(())
 }
 
-/// 启动清扫：working 行的执行现场随进程消失——重启后一律 failed。
+/// 启动清扫：working / awaiting_answer 行的执行现场随进程消失——重启后一律 failed。
+/// 待答行一并收：ask 等待器在内存里，重启后那个等待已无意义，留着会永远挂在
+/// 「后台待办」。清扫只在启动时跑（tick 不收待答——提问等待可达 24h 属合法长挂）。
 /// 与僵尸子 agent 清扫同口径（只认事实）。
 pub fn sweep_all_working(conn: &rusqlite::Connection) -> Result<usize, String> {
     conn.execute(
         "UPDATE work_items SET stage = ?2, \
            error = COALESCE(error, '进程重启，执行现场已不存在'), updated_at = ?3 \
-         WHERE stage = ?1",
+         WHERE stage = ?1 OR stage = 'awaiting_answer'",
         rusqlite::params![STAGE_WORKING, STAGE_FAILED, super::now_ms()],
     )
     .map_err(|e| e.to_string())
@@ -588,5 +595,47 @@ mod tests {
             .unwrap()
             .iter()
             .all(|r| is_person_stage(&r.stage)));
+    }
+
+    #[test]
+    fn startup_sweep_collects_awaiting_answer_too() {
+        let conn = mem_conn();
+        let _g = crate::db::lock_db_write();
+        upsert_for_session(&conn, "s1", "chat", Some("长轮"), None).unwrap();
+        upsert_for_session(&conn, "s2", "chat", Some("提问"), None).unwrap();
+        upsert_for_session(&conn, "s3", "chat", Some("已完成"), None).unwrap();
+        set_stage(&conn, "s2", STAGE_AWAITING_ANSWER, None).unwrap();
+        finish(&conn, "s3", true, None, None).unwrap();
+        // 待答行一并收：ask 等待器在内存里，重启后等待已无意义
+        assert_eq!(sweep_all_working(&conn).unwrap(), 2);
+        assert_eq!(row(&conn, "s1").stage, STAGE_FAILED);
+        assert_eq!(row(&conn, "s2").stage, STAGE_FAILED);
+        assert!(
+            row(&conn, "s2")
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("进程重启"),
+            "待答行带进程重启类 error"
+        );
+        assert_eq!(row(&conn, "s3").stage, STAGE_IDLE, "idle 不被误伤");
+    }
+
+    #[test]
+    fn upsert_clears_acceptance_for_the_new_turn() {
+        let conn = mem_conn();
+        let _g = crate::db::lock_db_write();
+        upsert_for_session(&conn, "s1", "chat", Some("有计划的轮"), None).unwrap();
+        set_acceptance(&conn, "s1", r#"["file_exists:a.txt"]"#).unwrap();
+        assert!(row(&conn, "s1").acceptance.is_some(), "计划轮判据在行");
+        // 下一轮无计划：开票即清——机器判定不得拿上一轮的过期判据下结论
+        upsert_for_session(&conn, "s1", "chat", Some("无计划的轮"), None).unwrap();
+        assert!(row(&conn, "s1").acceptance.is_none(), "上一轮判据必须被清");
+        // 计划轮：开票清空后由 set_acceptance 紧随写入，不受清空影响
+        set_acceptance(&conn, "s1", r#"["file_exists:b.txt"]"#).unwrap();
+        assert_eq!(
+            row(&conn, "s1").acceptance.as_deref(),
+            Some(r#"["file_exists:b.txt"]"#)
+        );
     }
 }
