@@ -616,10 +616,23 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob, manual:
         }),
     );
     notify_scheduled_done(&app, &job.id, &title, &result).await;
-    crate::bot::audit_log(
-        &app,
-        &format!("sched_job_done | id: {} | card: {}", job.id, card.id),
-    );
+    // done 只在真跑成功时发，失败走 err——两条路径的收尾裁决（重试/自动暂停）
+    // 不受此事件影响，仅审计语义对齐事件名表
+    match &result {
+        Ok(_) => crate::bot::audit_log(
+            &app,
+            &format!("sched_job_done | id: {} | card: {}", job.id, card.id),
+        ),
+        Err(e) => crate::bot::audit_log(
+            &app,
+            &format!(
+                "sched_job_err | id: {} | card: {} | {}",
+                job.id,
+                card.id,
+                crate::bot::truncate_for_log(&e.message(), 160)
+            ),
+        ),
+    }
 
     // 收尾（借鉴 XXL-JOB 调度日志 + Temporal pauseOnFailure）：
     // 落历史 → 更新状态徽标 → 失败按 retry_max 排重试 → 重试用尽且开了自动暂停 → 暂停+通知
