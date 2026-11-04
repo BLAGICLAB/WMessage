@@ -44,10 +44,10 @@
 - pristine 下极短/正常轮均收尾 idle，无 working 残行（M137/M138/M143/M144 多轮旁证）。
 - **V156 变异态**：开票前插 sleep 10s → 极短回合的收尾 no-op 被吃 → 行停 `working`（t+15s 落地后 60s+ 不收），pristine 同场景 idle。窄缝存在性实证。
 
-**M142 崩溃后待答行 — FAIL（缺陷卡，现状预期）→ 发现 D-4 见 §四说明**
+**M142 崩溃后待答行 — FAIL（缺陷卡，现状预期）→ 已修**
 - pristine：ask 挂起中杀进程 → 重启后该行永停 `awaiting_answer`（无 error），person 族持续报警（对应方案 R-8 预判）。
 - **V157 修复型变异**（清扫扩 `IN ('working','awaiting_answer')`）：重启后该行转 `failed`+「进程重启，执行现场已不存在」，awaiting_answer 归零 → 判据转 PASS，判据有牙齿。
-- 修复方向已在卡面定稿；清扫只在启动时做，不进 tick（未伤及活着的待答行——M143 静置 32s 佐证）。
+- **已修（e43e949d）**：`sweep_all_working` 收编 awaiting_answer（清扫只在启动时跑，tick 不收待答——不伤及合法长挂）；db 测试 `startup_sweep_collects_awaiting_answer_too` 锁语义。
 
 **M143 ask_user 挂起 — PASS**
 - 提问后 t+12s `awaiting_answer`；静置 32s 不被误收；点卡作答后 t+20s `idle`；挂起期间 person 族在列（Q3）。
@@ -84,8 +84,9 @@
 **M150 非法语法/空数组静默跳过 — PASS**
 - `["这不是判据语法"]` 与 `[]` 两轮：result 无 machineCheck、machine_check 审计条数 4→4 无新增、阶段照常 idle。
 
-**M151 旧 acceptance 跨轮沿用 — 设计缺口确认（按卡面口径登记，不算 FAIL）→ D-5**
+**M151 旧 acceptance 跨轮沿用 — 设计缺口确认（按卡面口径登记，不算 FAIL）→ 已修**
 - M148 会话再发无 Planner 轮（「现在几点」）：收尾仍产生 machine_check（00:28:05，沿用旧判据且对旧文件名下结论）；acceptance 列未清空。与方案 R-2 读码预判一致。
+- **已修（e43e949d）**：`upsert_for_session` 开票即清 acceptance（列清空 + 返回行同步置 None）；计划轮由 set_acceptance 紧随写入。db 测试 `upsert_clears_acceptance_for_the_new_turn` 锁语义；M148 直写场景不受影响（开票清 → 轮中写 → 收尾判）。
 
 ### §三「需要人处理」聚合面（批 7）
 
@@ -115,11 +116,12 @@
   - 「定时任务预演」系统横幅弹出（截图 sysnotify2.png 右上）✓
   - 作业行 last_status 不变（M160 共证）✓
 
-**M157 手动「立即执行」— FAIL → 发现 D-4（R-1 证实）**
+**M157 手动「立即执行」— FAIL → 发现 D-4（R-1 证实）→ 已修**
 - 01:05:36 点「立即执行」→ 又记一条 preview 历史 + 又建一张提案卡（eb7514…），无会话、无模型调用——**手动触发被同一道预演闸拦下**。
 - 与 SPEC 6-119 / ACC-P-14 判据 2（「预演档不拦手动触发」）及提交说明矛盾；副作用是重复提案卡污染看板。
 - `bot_scheduler.rs` 手动入口 `scheduled_job_fire` :1066 直调 `run_scheduled_job`，预演闸在 :542 入口处 return——与 R-1 读码预判一致。
-- **V152 修复型变异**（手动路径绕闸）待变异链补跑，证明判据可转 PASS。
+- **V152 修复型变异**（手动路径绕闸）证明判据可转 PASS。
+- **已修（0309e16f）**：`run_scheduled_job` 加 `manual` 参数，预演闸提取为 `preview_gate_hits(mode, manual)`——闸只认到点触发；`scheduled_job_fire` 传 `manual=true`。单测 `gate_hits_scheduled_preview_only` 锁口径。
 
 **M158 存量/NULL 作业照常执行 — PASS（兼作 M162）**
 - `at:2026-11-05T01:06`（mode=NULL）→ 01:06:25 `sched_job_run` → 01:06:34 `sched_job_done`（9 秒真跑，模型调用+写卡+「定时任务完成」系统横幅，截图 m159-banner.png 右上）；无 preview 历史/通知；作业用完即删（一次性语义）。
@@ -151,12 +153,12 @@
 
 | # | 级别 | 内容 | 证据 | 建议 |
 |---|---|---|---|---|
-| D-4 | P1 | **手动「立即执行」被预演闸拦下**（=方案 R-1 证实）：`scheduled_job_fire` :1066 直调 `run_scheduled_job`，预演闸 :542 拦下即 return。手动触发只再记一条 preview 历史 + 再建一张提案卡，不真跑 | 01:05:36 审计对（sched_job_run→sched_job_preview）、runs 表两条 preview、0 新会话 | 手动路径绕过预演闸（V152 已证修复后判据可转 PASS）；注意避免重复建卡 |
-| D-5 | P2 | **旧 acceptance 跨轮沿用**（=R-2 证实）：`upsert_for_session` 不清 acceptance 列，`set_acceptance` 只在计划轮写 → 无计划轮对着过期判据下机器结论 | M151（00:28:05 machine_check 沿用旧判据） | upsert 时清列，或机器判定前比对本轮计划 |
+| D-4 | P1 | **手动「立即执行」被预演闸拦下**（=方案 R-1 证实）：`scheduled_job_fire` :1066 直调 `run_scheduled_job`，预演闸 :542 提取为 `preview_gate_hits(mode, manual)`——**已修（0309e16f，手动路径 manual=true 直通闸门）** | 01:05:36 审计对（sched_job_run→sched_job_preview）、runs 表两条 preview、0 新会话 | 已修；实机复验待重建后跑 M157 场景 |
+| D-5 | P2 | **旧 acceptance 跨轮沿用**（=R-2 证实）：`upsert_for_session` 开票即清 acceptance（acceptance 是本轮计划声明的随行判据）——**已修（e43e949d）** | M151（00:28:05 machine_check 沿用旧判据） | 已修；M148 直写场景不受影响（开票清→轮中写→收尾判） |
 | F-1 | 待定性 | **小 pill 按钮对合成点击不响应**：ask 卡「A 要」选项（三次直击视觉命中无效）、定时表单频率 chip 不响应；同卡自由输入、「回答并继续」、行内大按钮、日历格均正常 | m143 系列截图 + 定时表单截图序列 | 先人工真机复核（排除 cliclick 驱动差异）；若真机同样失灵按 P1 前端缺陷处理（hit-area/事件绑定） |
 | F-2 | 观察 | **测试残留污染真实任务面**：M147 轮读「今天日程」时把任务列表里的历史冒烟任务卡（M142 演练等）当成待办真任务，发起「怎么执行 M142 演练」的提问 | m147-ask.png / m152-all.png 的提问卡 | 实机测试后清 tasks 表测试卡（台账已列）；长期看任务卡工具域判据可加「测试标记」过滤 |
-| F-3 | P3 | **重试路径的完成事件语义不一致**：到点首跑失败只发 `sched_job_retry`（无 done/err）；重试失败却发 `sched_job_done`（相邻 trace.complete 为 failed/turns=0）——与事件名速查表（done=成功/err=失败）对不上 | 01:21:38.553/.556、01:27:08.556/.564 的 done+retry/autopause 相邻对 | 统一重试路径的 done/err 口径（对齐 audit 文档对拍门禁） |
-| F-4 | 观察 | **一次性作业清理级联删除执行历史**：sj_M156 被 V151 变异真跑后按一次性语义删除，其全部 `scheduled_job_runs` 行（含两条 preview 历史）随之消失 | V151 后 runs 表查 sj_M156 为空（先前已两度取证在案） | 若历史需保留（审计面），一次性清理不应级联删 runs；至少在文档写明 |
+| F-3 | P3 | **重试路径的完成事件语义不一致**：`run_scheduled_job` 对结果无条件发 `sched_job_done`（失败轮也挂 done），`sched_job_err` 只在建卡失败时出现——**已修（89ab582f，done=成功 / err=失败，对齐事件名表）** | 01:21:38.553/.556、01:27:08.556/.564 的 done+retry/autopause 相邻对 | 已修 |
+| F-4 | 观察 | **一次性作业清理级联删除执行历史**：`delete_scheduled_job` 显式先删 `scheduled_job_runs` 再删作业（:337），一次性消费复用它 → 历史随之消失 | V151 后 runs 表查 sj_M156 为空（先前已两度取证在案） | **待拍板**：保留历史（审计面/取证需要，本轮冒烟证据即靠它）还是维持连带删除；保留则 delete_scheduled_job 拆两段，一次性消费不删 runs |
 
 另：R-3（工作项仅 chat kind）、R-4（两个 work_items 命令无消费方，门禁持续报警）维持方案内已登记状态，本轮未变化。
 
@@ -233,5 +235,18 @@
 
 - M161 重试链（死代理窗口 01:12–01:28）：首轮 01:16:05 fail → retry 1 @01:21:38 fail → retry 2 @01:27:08 fail → autopause。三次均为 trace.complete status=failed turns=0（代理拒连 ~3.1s）。
 - 变异链顺序：V149(01:33) → V150(01:36) → V151(01:39) → V152(01:41) → V155(01:45) → V153(01:48) → 降级(01:49)，全部单编辑单重建，源码逐个 git checkout 还原。
-- 01:39 V151 变异真跑后 sj_M156 连同其 runs 历史被一次性清理级联删除（F-4）。
+- 01:39 V151 变异真跑后 sj_M156 连同其 runs 厲史被一次性清理级联删除（F-4）。
 - 01:50 源码全还原 + pristine 重建，env 文件删除，应用回到钥匙串路径（重建后首次读 key 出现钥匙串授权框，属预期——正是本轮 env 模式规避的重建成本）。
+
+## 十、修复批次（2026-11-05，全部实机变异先行证明形状）
+
+| 发现 | 修复 | 提交 | 测试 |
+|---|---|---|---|
+| D-4 手动「立即执行」被预演闸拦 | `run_scheduled_job` 加 `manual` 参数；预演闸提取 `preview_gate_hits(mode, manual)` 只认到点触发 | 0309e16f | `gate_hits_scheduled_preview_only` |
+| M142 崩溃后待答行永久报警 | `sweep_all_working` 收编 awaiting_answer（仅启动清扫，tick 不收） | e43e949d | `startup_sweep_collects_awaiting_answer_too` |
+| D-5 旧 acceptance 跨轮沿用 | `upsert_for_session` 开票即清 acceptance（列 + 返回行），计划轮 set_acceptance 紧随写入 | e43e949d | `upsert_clears_acceptance_for_the_new_turn` |
+| F-3 失败轮挂 done | `run_scheduled_job` 收尾按结果分流：成功 done / 失败 err | 89ab582f | 全量 lib 回归（2262 绿） |
+
+**未修（有意）**：F-1 待人工真机复核；F-2 流程卫生（测试后清卡）；F-4 待拍板（`delete_scheduled_job` 显式连带删 runs，保留历史与否是产品口径——建议保留）。
+
+实机复验提示：重建后首次读 key 会再弹一次钥匙串授权（新二进制签名），点「始终允许」即可；M157 场景可用任意 preview 档作业点「立即执行」验证真跑。
