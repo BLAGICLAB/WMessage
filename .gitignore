@@ -132,3 +132,6 @@ src-tauri/eval-bot-config.json
 wmessage-landing.zip
 wm-mail-auth-qr.png
 *.7z.*
+
+# 安装版打包暂存目录（构建时由 scripts/stage-windows-bundle.sh 铺装，勿入库）
+src-tauri/bundle-staging/

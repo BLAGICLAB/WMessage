@@ -42,8 +42,8 @@
 | macOS 上交叉构建 NSIS 可行，需系统装 `makensis` | tauri 官方文档「Build Windows apps on Linux and macOS」；`nsis/mod.rs:222-243`（macOS 分支 `which::which("makensis")`） |
 | 本机已装 makensis | `/opt/homebrew/bin/makensis`（`which makensis` 命中） |
 | `WebView2Loader.dll` 由 bundler 自动收进包（gnu target） | `nsis/mod.rs:808-822` |
-| `onnxruntime*.dll` 由 ort-sys 的 `copy-dylibs` 放到**产物目录**（exe 旁） | ort-sys 2.0.0-rc.13 `build/dynamic_link.rs:14-34`（`out_dir.ancestors().nth(3)` = target/<triple>/<profile>） |
-| ONNX Runtime 发行包缓存在 `~/Library/Caches/ort.pyke.io/dfbin/<target>/<hash>/` | ort-sys `build/main.rs:120-124` |
+| Windows 目标 ort 是 **load-dynamic**：构建期不需要 onnxruntime 文件，运行期缺 dll 会 panic 不降级 | `src-tauri/Cargo.toml` 尾部 `[target.'cfg(target_os = "windows")'.dependencies]` |
+| onnx dll 来源 = NuGet `microsoft.ml.onnxruntime`（1.28.0 ↔ ort 2.0.0-rc.13 配对；取 nupkg 内 `runtimes/win-x64/native/` 两个 dll） | 绿色包手册 §3 同款口径（`docs/PACKAGING-WINDOWS-PORTABLE.md`） |
 
 ### 三个关键发现
 
@@ -172,10 +172,10 @@ WebView2 运行时**不随包**：`webviewInstallMode` 用 `embedBootstrapper`
 
 1. `.NET`：`bash scripts/publish-docx-dotnet.sh` 出 self-contained publish 产物 →
    归位到 `src-tauri/bundle-staging/dotnet/`（**扁平**，剔除 `.pdb`，与现脚本口径一致）。
-2. `ONNX Runtime`：从 `src-tauri/target/x86_64-pc-windows-gnu/release/` 取
-   `onnxruntime.dll` / `onnxruntime_providers_shared.dll`（ort-sys 的 `copy-dylibs`
-   已放在 exe 旁）→ 归位到 `src-tauri/bundle-staging/`。
-   兜底：`~/Library/Caches/ort.pyke.io/dfbin/x86_64-pc-windows-gnu/*/` 里找。
+2. `ONNX Runtime`：从 NuGet 拉 `microsoft.ml.onnxruntime`（ORT_VER=1.28.0，与 ort
+   2.0.0-rc.13 配对），解出 `runtimes/win-x64/native/` 两个 dll → 归位到
+   `src-tauri/bundle-staging/`。Windows 目标 ort 是 load-dynamic，构建期不需要 dll；
+   `tauri-build` 在编译期就校验资源存在性——staging 缺件时交叉构建直接失败（fail-closed）。
 3. **缺一即 fail-closed**：任一项缺失 → 退出码非 0 + 明确报错（不许产出缺功能的包）。
 
 ### 4.4 不改的地方（明确划界）
@@ -190,7 +190,7 @@ WebView2 运行时**不随包**：`webviewInstallMode` 用 `embedBootstrapper`
 ```bash
 # 0 前置（一次性）
 brew install nsis                                  # 本机已有 makensis ✓
-# 1 暂存（模型与 dotnet 在仓库里，onnx dll 从上一次产物取）
+# 1 暂存（模型与 dotnet 在仓库里，onnx dll 从 NuGet 拉）
 bash scripts/stage-windows-bundle.sh
 # 2 构建（前端 + Rust + 打包）
 npm run tauri build -- --target x86_64-pc-windows-gnu --bundles nsis
@@ -206,8 +206,7 @@ src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/wmessage_<版本>_x64
 - **不主动出包**：按 AGENTS.md 的约定，改完先在 macOS 现有环境过一遍，
   出包只在明确要求时做；出包后连带 SHA256 与路径两处记账
   （SHA256 记在 DEVLOG 的出包记录里）。
-- 首次交叉构建会触发 ort-sys 下载 Windows 版 ONNX Runtime（`~/Library/Caches/ort.pyke.io`），
-  需联网；之后走缓存。
+- onnx dll 由暂存脚本从 NuGet 下载（需联网）；首次交叉构建各依赖全量编译，耗时较长。
 
 ## 六、校验清单
 
