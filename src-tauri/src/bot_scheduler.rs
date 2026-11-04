@@ -423,9 +423,17 @@ async fn delete_job_row(app: &AppHandle, id: &str) {
     }
 }
 
-/// 到点执行一个内容型定时作业：新建任务卡 → 交机器人执行（run_task_in_chat
+/// 预演闸只认到点触发：手动「立即执行」是用户看过预演卡后的显式确认，直接真跑
+/// （预演档的语义是「到点先看后跑」，不是「拦下一切执行」）。纯函数便于单测锁口径。
+fn preview_gate_hits(job_mode: Option<&str>, manual: bool) -> bool {
+    !manual && job_mode == Some(crate::db::JOB_MODE_PREVIEW)
+}
+
+/// 到点/手动执行一个内容型定时作业：新建任务卡 → 交机器人执行（run_task_in_chat
 /// 既有链路：新会话流式可见、结果写卡、完成/失败系统通知全继承）。
-async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
+/// `manual`：用户在作业页点「立即执行」（true）或到点/重试自动触发（false）——
+/// 只有后者受预演闸拦截。
+async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob, manual: bool) {
     // 防重入守卫：与任务卡/工作流共用 SchedGuard 表（id 空间不相交）。
     // 拒绝也要留痕：ask_user 等待可达 24h，期间守卫不放，次日到点的同作业
     // 会被这里吞掉——没有审计行，用户只会以为定时坏了。
@@ -539,7 +547,7 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
 
     // 预演档：卡即提案——建卡广播后只记历史与通知，不执行。
     // 「要做什么」显式化，用户确认（行内「立即执行」）后才真跑
-    if job.mode.as_deref() == Some(crate::db::JOB_MODE_PREVIEW) {
+    if preview_gate_hits(job.mode.as_deref(), manual) {
         {
             let job_id = job.id.clone();
             let card_id = card.id.clone();
@@ -801,7 +809,7 @@ fn spawn_job_run(app: &AppHandle, job: crate::db::ScheduledJob) {
         crate::db::lock::lock_or_recover(&DISPATCHED_JOBS, "bot_scheduler::dispatched_jobs")
             .remove(&job_id);
         // per-task panic 可见性（同任务卡/工作流路径）
-        let body = std::panic::AssertUnwindSafe(run_scheduled_job(app2, job));
+        let body = std::panic::AssertUnwindSafe(run_scheduled_job(app2, job, false));
         if let Err(panic) = body.catch_unwind().await {
             let msg = crate::audit::panic_message(panic);
             crate::bot::audit_log(
@@ -1063,7 +1071,8 @@ pub async fn scheduled_job_fire(app: AppHandle, id: String) -> CommandResult<()>
             "作业并发闸已关闭（不该发生），本次未执行".into(),
         ));
     };
-    run_scheduled_job(app, job).await;
+    // 手动触发不受预演闸拦：用户看到预演提案卡后点「立即执行」就是确认真跑
+    run_scheduled_job(app, job, true).await;
     Ok(())
 }
 
@@ -1265,3 +1274,6 @@ mod sched_guard_tests;
 
 #[cfg(test)]
 mod plan_window_tests;
+
+#[cfg(test)]
+mod preview_gate_tests;
