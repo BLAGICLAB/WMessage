@@ -152,6 +152,20 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
     }
   };
 
+  /** 执行档切换：auto ↔ preview（预演 = 到点只建提案卡+通知，确认后「立即执行」真跑） */
+  const toggleMode = async (e: ScheduleEntry) => {
+    const next = e.mode === "preview" ? "auto" : "preview";
+    try {
+      await invoke("scheduled_job_update", { id: e.targetId, mode: next });
+      void reload();
+    } catch (err) {
+      handleCommandError(
+        err,
+        next === "preview" ? "切到预演档" : "切到自动档",
+      );
+    }
+  };
+
   /** 展开/收起执行历史：展开时拉一次（倒序，后端每作业最多 20 条） */
   const toggleHistory = async (jobId: string) => {
     if (historyOpenId === jobId) {
@@ -325,6 +339,23 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
           >
             {e.enabled ? "暂停" : "恢复"}
           </button>
+          {e.kind === "job" && (
+            <button
+              className={`nm-btn px-2 py-0.5 text-[11px] leading-none ${
+                e.mode === "preview"
+                  ? "nm-inset text-[var(--t1)]"
+                  : "text-[var(--t3)]"
+              }`}
+              title={
+                e.mode === "preview"
+                  ? "预演档：到点只建提案卡并通知，不执行；点此切回自动执行"
+                  : "自动档：到点直接执行；点此切到预演（先看后跑）"
+              }
+              onClick={() => void toggleMode(e)}
+            >
+              {e.mode === "preview" ? "预演" : "自动"}
+            </button>
+          )}
           <button
             className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)]"
             onClick={() => setEditKey(editKey === key ? null : key)}

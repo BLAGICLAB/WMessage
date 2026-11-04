@@ -24,7 +24,8 @@ pub const SCHEDULED_JOBS_DDL: &str = "CREATE TABLE IF NOT EXISTS scheduled_jobs 
    pause_on_failure INTEGER,
    retry_max  INTEGER,
    retry_at   INTEGER,
-   retry_count INTEGER
+   retry_count INTEGER,
+   mode       TEXT
  );";
 
 /// 每作业保留的执行历史条数（借鉴 XXL-JOB 调度日志：查得到前几次跑得怎样即可，
@@ -55,6 +56,7 @@ pub fn ensure_scheduled_jobs_columns(conn: &rusqlite::Connection) -> Result<(), 
             ("retry_max", "INTEGER"),
             ("retry_at", "INTEGER"),
             ("retry_count", "INTEGER"),
+            ("mode", "TEXT"),
         ],
     )
 }
@@ -67,6 +69,10 @@ pub const MAX_RETRY: i64 = 5;
 
 /// 失败重试延迟（固定 5 分钟退避：不做指数退避——本地单机场景固定间隔足够可预期）
 pub const RETRY_DELAY_MS: i64 = 5 * 60 * 1000;
+
+/// 执行档（mode 列）：auto = 到点直接执行（默认/存量）；preview = 预演
+pub const JOB_MODE_AUTO: &str = "auto";
+pub const JOB_MODE_PREVIEW: &str = "preview";
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -101,6 +107,9 @@ pub struct ScheduledJob {
     /// 已重试次数（成功清零）
     #[serde(default)]
     pub retry_count: Option<i64>,
+    /// 执行档：None/Some("auto") = 到点直接执行；Some("preview") = 预演（只建提案卡+通知，不执行）
+    #[serde(default)]
+    pub mode: Option<String>,
     #[serde(default, skip_serializing)]
     pub expected_updated_at: Option<i64>,
 }
@@ -131,7 +140,7 @@ pub struct ScheduledJobRun {
 
 const JOB_COLS: &str =
     "SELECT id, content, schedule, sched_last, enabled, created_at, updated_at, \
-     last_status, last_error, pause_on_failure, retry_max, retry_at, retry_count \
+     last_status, last_error, pause_on_failure, retry_max, retry_at, retry_count, mode \
      FROM scheduled_jobs";
 
 fn job_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduledJob> {
@@ -149,6 +158,7 @@ fn job_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduledJob> {
         retry_max: r.get(10)?,
         retry_at: r.get(11)?,
         retry_count: r.get(12)?,
+        mode: r.get(13)?,
         expected_updated_at: None,
     })
 }
@@ -202,13 +212,13 @@ pub fn upsert_scheduled_job(conn: &rusqlite::Connection, j: &ScheduledJob) -> Re
         }
     }
     conn.execute(
-        "INSERT INTO scheduled_jobs (id, content, schedule, sched_last, enabled, created_at, updated_at, pause_on_failure, retry_max)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+        "INSERT INTO scheduled_jobs (id, content, schedule, sched_last, enabled, created_at, updated_at, pause_on_failure, retry_max, mode)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
          ON CONFLICT(id) DO UPDATE SET
            content=excluded.content, schedule=excluded.schedule,
            sched_last=excluded.sched_last, enabled=excluded.enabled,
            pause_on_failure=excluded.pause_on_failure, retry_max=excluded.retry_max,
-           updated_at=excluded.updated_at",
+           mode=excluded.mode, updated_at=excluded.updated_at",
         rusqlite::params![
             j.id,
             j.content,
@@ -219,6 +229,7 @@ pub fn upsert_scheduled_job(conn: &rusqlite::Connection, j: &ScheduledJob) -> Re
             j.updated_at,
             j.pause_on_failure.map(|b| b as i64),
             j.retry_max,
+            j.mode,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -390,6 +401,7 @@ pub async fn scheduled_job_create(
             retry_max,
             retry_at: None,
             retry_count: None,
+            mode: None,
             expected_updated_at: None,
         };
         upsert_scheduled_job(&conn, &job).map_err(CommandError::from)?;
@@ -409,7 +421,7 @@ pub async fn scheduled_job_create(
     Ok(row)
 }
 
-/// 编辑内容型定时作业（内容 / 时间 / 重试与自动暂停；None 参数 = 不改该字段）
+/// 编辑内容型定时作业（内容 / 时间 / 重试 / 自动暂停 / 执行档；None 参数 = 不改该字段）
 #[tauri::command]
 pub async fn scheduled_job_update(
     app: AppHandle,
@@ -418,11 +430,21 @@ pub async fn scheduled_job_update(
     schedule: Option<String>,
     retry_max: Option<i64>,
     pause_on_failure: Option<bool>,
+    mode: Option<String>,
 ) -> CommandResult<ScheduledJob> {
     let new_content = match &content {
         Some(c) => Some(validate_content(c)?),
         None => None,
     };
+    if let Some(m) = &mode {
+        if m != JOB_MODE_AUTO && m != JOB_MODE_PREVIEW {
+            return Err(CommandError::InvalidArgument {
+                field: "mode".into(),
+                value: m.clone(),
+                reason: format!("mode 只接受 {JOB_MODE_AUTO} / {JOB_MODE_PREVIEW}"),
+            });
+        }
+    }
     if let Some(s) = &schedule {
         crate::bot::validate_schedule(s.trim()).map_err(|reason| {
             CommandError::InvalidArgument {
@@ -450,6 +472,9 @@ pub async fn scheduled_job_update(
         }
         if let Some(p) = pause_on_failure {
             job.pause_on_failure = Some(p);
+        }
+        if let Some(m) = mode {
+            job.mode = Some(m);
         }
         // 配置变更 → 重试状态失效（下一周期从零计）
         job.retry_at = None;
@@ -590,6 +615,7 @@ mod tests {
             retry_max: None,
             retry_at: None,
             retry_count: None,
+            mode: None,
             expected_updated_at: None,
         };
         upsert_scheduled_job(&conn, &job).unwrap();
@@ -624,6 +650,7 @@ mod tests {
             retry_max: Some(2),
             retry_at: None,
             retry_count: None,
+            mode: None,
             expected_updated_at: None,
         };
         upsert_scheduled_job(&conn, &job).unwrap();

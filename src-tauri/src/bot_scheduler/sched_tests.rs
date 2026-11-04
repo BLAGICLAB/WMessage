@@ -236,6 +236,7 @@ fn job(schedule: &str) -> crate::db::ScheduledJob {
         retry_max: None,
         retry_at: None,
         retry_count: None,
+        mode: None,
         expected_updated_at: None,
     }
 }

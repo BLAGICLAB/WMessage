@@ -537,6 +537,52 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
     }
     crate::bot::broadcast_after_mutation(&app, vec![card.clone()], vec![]);
 
+    // 预演档：卡即提案——建卡广播后只记历史与通知，不执行。
+    // 「要做什么」显式化，用户确认（行内「立即执行」）后才真跑
+    if job.mode.as_deref() == Some(crate::db::JOB_MODE_PREVIEW) {
+        {
+            let job_id = job.id.clone();
+            let card_id = card.id.clone();
+            let _ = crate::db::lock::with_write_conn(&app, move |conn| {
+                crate::db::record_job_run_in_tx(
+                    conn,
+                    &job_id,
+                    now.timestamp_millis(),
+                    "preview",
+                    None,
+                    Some("预演：已建提案卡，未执行；确认后用「立即执行」真跑"),
+                    Some(&card_id),
+                )
+            })
+            .await;
+        }
+        let key = format!("sched_preview:{}", job.id);
+        if let Err(e) = crate::bot::effects::enqueue_notify(
+            &app,
+            &key,
+            format!(
+                "⏳ 定时任务预演：{}",
+                crate::bot::truncate_for_log(&job.content, 30)
+            ),
+            "本轮未执行（预演档）。到点已建提案卡；确认无误后用「立即执行」真跑一次".to_string(),
+        )
+        .await
+        {
+            crate::bot::audit_log(
+                &app,
+                &format!(
+                    "notify_enqueue_failed | key: {key} | {}",
+                    crate::bot::truncate_for_log(&e, 120)
+                ),
+            );
+        }
+        crate::bot::audit_log(
+            &app,
+            &format!("sched_job_preview | id: {} | card: {}", job.id, card.id),
+        );
+        return;
+    }
+
     // 交机器人执行（TaskExecOrigin::Scheduled：新会话 + ⏰ 前缀 + 结果写卡）
     // 执行状态实时广播（SchedulePage 行内「执行中」；补齐「执行中不可见」缺口）
     let _ = app.emit(
@@ -1094,6 +1140,8 @@ pub struct ScheduleEntry {
     pub retry_max: i64,
     /// 失败后自动暂停
     pub pause_on_failure: bool,
+    /// 执行档：None/"auto" = 到点直接执行；"preview" = 预演（只建提案卡+通知）
+    pub mode: Option<String>,
 }
 
 fn build_schedule_entry(
@@ -1121,6 +1169,7 @@ fn build_schedule_entry(
         last_error: None,
         retry_max: 0,
         pause_on_failure: false,
+        mode: None,
     }
 }
 
@@ -1151,6 +1200,7 @@ pub async fn schedule_overview(app: AppHandle) -> CommandResult<Vec<ScheduleEntr
             e.last_error = j.last_error.clone();
             e.retry_max = j.retry_max_or_zero();
             e.pause_on_failure = j.pause_on_failure == Some(true);
+            e.mode = j.mode.clone();
             out.push(e);
         }
         Ok(out)

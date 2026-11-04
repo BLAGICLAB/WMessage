@@ -9,7 +9,7 @@
 > 为什么不用「只取发射点」：有些事件的落点是 `format!` 拼串或别的 helper（如 `skill_step_fail`），
 > 只认发射点会漏收真事件，而漏收的代价是卡里写了白名单外的名字、门禁当场拦下。
 >
-> 共 259 条。表外的名字有两种合法用法：运行时拼出的（`前缀.{动作}` 形态，源码里能找到 `前缀.{`）、
+> 共 260 条。表外的名字有两种合法用法：运行时拼出的（`前缀.{动作}` 形态，源码里能找到 `前缀.{`）、
 > 以及中文期望文案（按 `format!` 运行时拼出，按既有约定不进对拍闸）。
 
 - `api.handler_panic`
@@ -183,6 +183,7 @@
 - `rules.json.tmp`
 - `runtime_files_migrated`
 - `sched_enabled`
+- `sched_job_preview`
 - `scheduled_job_create`
 - `scheduled_job_delete`
 - `scheduled_job_update`

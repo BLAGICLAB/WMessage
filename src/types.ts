@@ -173,6 +173,8 @@ export interface ScheduleEntry {
   retryMax: number;
   /** 重试用尽仍失败时自动暂停此任务并通知 */
   pauseOnFailure: boolean;
+  /** 执行档：null/"auto" = 到点直接执行；"preview" = 预演（只建提案卡+通知，确认后「立即执行」真跑） */
+  mode?: "auto" | "preview" | null;
 }
 
 /** scheduled_job_history 返回的单次执行记录（倒序，最新在前；与 Rust 侧 camelCase 对齐） */

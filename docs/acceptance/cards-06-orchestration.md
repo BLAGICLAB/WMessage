@@ -356,3 +356,20 @@
   3. 【可核对】`work_items_list` / `work_items_needing_human` 两命令注册（`grep -n "work_items_list" src-tauri/src/lib.rs`）。
 - **证据**：work_items 表查询输出（各步骤）+ 重启前后对比 + grep 终端输出
 - **失败处置**：`grep -n "upsert_for_session" src-tauri/src/bot_chat/flow.rs` 命中 = 接线在；不命中 = 卡片过期
+
+### ACC-P-14 · 定时作业预演档（批 8）
+
+- **SPEC**：6-119
+- **层级**：L1+L2（自动档 `src-tauri/src/bot_scheduler/sched_tests.rs` 24 例 + `src/components/SchedulePage/SchedulePage.test.tsx` 15 例）
+- **前置**：应用已启动；通知授权开启
+- **步骤**：
+  1. 建一个 `at:+2m` 作业，行内点「自动」切到「预演」→ 到点观察：提案卡出现（Todo 列）但**不执行**；收到「⏳ 定时任务预演」通知；执行历史多一条 `preview` 记录。
+  2. 点该作业「立即执行」→ 正常走完整执行链（会话、结果写卡、完成通知）。
+  3. 切回「自动」→ 到点直接执行（无预演通知）。
+  4. 查库 `SELECT mode FROM scheduled_jobs WHERE id='…'` 随切换持久化。
+- **判据**：
+  1. 【可观测】步骤 1：有卡、有通知、有 preview 历史、无 ⏰ 执行会话（`grep -n "sched_job_preview" src-tauri/src/bot_scheduler.rs` 命中预演分支）。
+  2. 【可观测】步骤 2：立即执行照常（预演档不拦手动触发）。
+  3. 【可核对】步骤 4：mode 列值随切换为 preview/auto；非法值后端明确拒绝（`grep -n "mode 只接受" src-tauri/src/db/schedule_jobs.rs`）。
+- **证据**：提案卡截图 + 预演通知 + 执行历史行 + mode 列查询输出
+- **失败处置**：`grep -n "JOB_MODE_PREVIEW" src-tauri/src/db/schedule_jobs.rs` 命中 = 实现在；不命中 = 卡片过期
