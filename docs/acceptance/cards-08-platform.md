@@ -254,3 +254,25 @@
 - **证据**：录屏（切回不丢正文 + 停止秒级生效 + 重载还原倒计时）+ 审计日志截图（`llm.sse_data_batch_truncated` / `model_loop_panic` 如有）
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——`grep -n "CHECK_STOP_SLICE_MS" src-tauri/src/bot_orchestrator.rs`：常量不在 = 卡片过期；常量在但停止仍拖满预算 = 应用侧回归
 - **缺口补验**：无实机卡：回放接回 / 看门狗判死 / 确认还原 / 停止响应均未实机验证
+
+---
+
+### ACC-P-15 · 检查更新（Windows）
+
+- **SPEC**：6-120
+- **层级**：L1+L2（L1 自动化 + L2 实机）
+- **历史卡**：—
+- **前置**：组件面即测即验；实机面需 GitHub Releases 上已发布首个带 latest.json 的版本
+- **步骤**：
+  1. 组件面（L1）：跑 `npx vitest run src/components/SettingsPage/UpdateCard.test.tsx`（五用例：UA 判定 / 非 Windows 不渲染 / 无新版显已最新 / 有新版下载→relaunch / 失败显式报错不冒充最新）。
+  2. 实机（L2）：Windows 装旧版 → GitHub 发布更高版本 release（安装器改固定资产名 + latest.json）→ 设置页「通用设置」点「检查更新」。
+  3. 看下载进度 → passive 安装进度条 → 应用自动重启 → 卡上版本号变新。
+  4. 断网点「检查更新」→ 看错误文案。
+- **判据**：
+  1. 【可核对】组件五用例全绿。
+  2. 【可观测】实机：发现新版本 → 下载装完自动重启 → `getVersion` 变新。
+  3. 【可观测】断网/限流 → 红字错误文案，**不显示「已是最新」**。
+  4. 【可核对】`grep -n "pubkey" src-tauri/tauri.conf.json` 命中（验签公钥内置）；`grep -n "createUpdaterArtifacts" src-tauri/tauri.windows.conf.json` 命中（签名产物开关只在 Windows 侧，mac 构建不需签名密钥）。
+- **证据**：vitest 输出 + 实机录屏 + GitHub release 页截图
+- **失败处置**：先查 latest.json 的 `signature` 字段是否为 .sig 原文（多行内容 JSON 转义）与 asset 是否用固定资产名；再查构建时是否导出了 `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)`。
+- **缺口补验**：实机更新链路未跑（需首个 release）；验签失败路径（篡改安装器）未制造。
