@@ -606,7 +606,7 @@ pub(crate) fn write_error_audit<R: tauri::Runtime>(
 }
 
 /// 无 AppHandle 场景的 WARN 审计（keyring 降级明文存储路径用）。
-/// 目录由调用方解析（与降级 key 文件同目录，保证同一便携位置）。
+/// 目录由调用方解析（与降级 key 文件同目录 = 数据目录，保证同一位置）。
 pub(crate) fn write_warn_audit_to(dir: &std::path::Path, event: &str, kv: &[(&str, &str)]) {
     let p = dir.join("bot.log");
     write_at(&p, AuditLevel::Warn, event, kv);

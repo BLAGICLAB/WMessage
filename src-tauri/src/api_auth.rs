@@ -6,7 +6,7 @@
 //! - `api_handlers` : endpoint handlers + tauri commands
 //! - `api`          : 数据层 `TaskStore` + `MemStore` + `TauriStore`
 //!
-//! 持久化文件（统一收口在数据目录 `runtime/flags/`，便携模式随 exe 走）：
+//! 持久化文件（统一收口在数据目录 `runtime/flags/`）：
 //! - `api-token.txt`     — Bearer token（`load_or_create_token` 读写）
 //! - `api-enabled.flag`  — 开关标志（`write_enabled_flag` / `clear_enabled_flag`）
 //! - 启动时 `should_autostart` 检 flag 决定是否自动恢复 API
@@ -22,7 +22,7 @@ use tiny_http::Request;
 const TOKEN_FILE: &str = "api-token.txt";
 const ENABLED_FLAG_FILE: &str = "api-enabled.flag";
 
-/// 读取或生成 Bearer token（存在 `runtime/flags/api-token.txt`，随便携库走）。
+/// 读取或生成 Bearer token（存在 `runtime/flags/api-token.txt`，随数据目录走）。
 /// 已存在且非空就直接返回；否则生成 UUID 写回。
 pub fn load_or_create_token(app: &AppHandle) -> Result<String, String> {
     let dir = crate::paths::flags_dir(app);

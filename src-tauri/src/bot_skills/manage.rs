@@ -45,9 +45,10 @@ pub struct SkillInfo {
 ///
 /// 改走 `app.path().app_data_dir()` 拿到稳定的系统应用数据目录（如 macOS 上的
 /// `~/Library/Application Support/com.renshi.wmessage`）。这个目录与日志 / db
-/// 所在的 `data_dir()` 解耦：skill 走稳定的应用数据目录，日志 / db 仍按便携策略
-/// 跟随 exe。release build 下 `app_data_dir()` 与 probe 后的 `data_dir()` 也可能不同，
-/// 但用户安装的 skill 不再被便携策略劫持到 exe 同目录。
+/// 所在的 `data_dir()` 同源（安装版数据目录恒 `app_data_dir()`，两者一致；
+/// `app_data_dir()` 解析失败时 data_dir 退 temp，此时 skills 跟随 data_dir）。
+/// release build 下 `app_data_dir()` 与 probe 后的 `data_dir()` 也可能不同，
+/// 但用户安装的 skill 不再被劫持到 exe 同目录。
 ///
 /// 失败（罕见，仅限 sandbox 完全拒绝对系统应用数据目录的访问）回退 `data_dir()`，
 /// 保证 skills_import / skills_open_dir / load_skill_meta 永不报「路径不存在」。

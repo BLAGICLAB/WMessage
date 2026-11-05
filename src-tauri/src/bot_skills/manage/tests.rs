@@ -418,7 +418,7 @@ fn llm_advertisable_excludes_disabled_and_session_scoped() {
 
 /// 正常模式（`app_data_dir()` 可得）：`skills_dir` 必须返回 `app_data_dir()/skills`。
 /// 这正是 `SkillsPanel` 的 `openPath` 目标，也是 opener scope `$APPDATA/**` 覆盖的路径。
-/// 锁此契约：若哪天误改成总是 fallback（便携 `data_dir()`），正常模式下 SkillsPanel
+/// 锁此契约：若哪天误改成总是 fallback（`data_dir()`），正常模式下 SkillsPanel
 /// 的 openPath 会被 scope 拒绝（C2a 登记的 fallback 边缘 case 被扩大到常态）。
 /// 不依赖 mock app 语义（纯函数内核）。
 #[test]
@@ -434,7 +434,7 @@ fn skills_dir_normal_mode_uses_app_data_dir() {
     );
 }
 
-/// 失败回退：`app_data_dir()` 失败 → `data_dir()/skills`（便携场景可能不在 `$APPDATA` 下）。
+/// 失败回退：`app_data_dir()` 失败 → `data_dir()/skills`（app_data 不可用时退数据目录兜底）。
 /// 仅锁「回退目标 = data_dir/skills」这一事实；是否该扩大 scope 是 Phase 6 的产品决策。
 #[test]
 fn skills_dir_fallback_mode_uses_data_dir() {
