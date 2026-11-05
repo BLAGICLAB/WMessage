@@ -2,6 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "resources": {
       "../bge-small-zh-v1.5": "bge-small-zh-v1.5",
       "../pp-ocr-v6": "pp-ocr-v6",

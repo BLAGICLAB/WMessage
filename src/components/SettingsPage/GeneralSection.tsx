@@ -5,6 +5,7 @@
  */
 import type { ThemeSetting } from "../../theme";
 import { BubbleStyleCard } from "./BubbleStyleCard";
+import { UpdateCard } from "./UpdateCard";
 import { ProfileRow } from "./ProfileRow";
 import { UI_FONT_SIZE_OPTIONS } from "./constants";
 import { LucideIcon, Monitor, Moon, Sun } from "lucide-react";
@@ -158,6 +159,9 @@ export function GeneralSection({
 
       {/* 聊天气泡外观：用户气泡颜色 + 机器人气泡材质（纯前端偏好，即点即生效） */}
       <BubbleStyleCard />
+
+      {/* 检查更新（仅 Windows 渲染）：官方 updater 插件，手动触发，失败显式报错 */}
+      <UpdateCard />
     </>
   );
 }

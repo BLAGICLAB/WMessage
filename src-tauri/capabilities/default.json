@@ -10,6 +10,8 @@
     "autostart:default",
     "opener:default",
     "dialog:default",
-    "notification:default"
+    "notification:default",
+    "updater:default",
+    "process:allow-restart"
   ]
 }

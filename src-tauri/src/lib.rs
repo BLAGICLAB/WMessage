@@ -370,6 +370,10 @@ pub fn run() {
         ))
         // 系统通知：任务卡截止提醒（due_notify）；macOS 需用户授权（前端启动时请求）
         .plugin(tauri_plugin_notification::init())
+        // 检查更新：设置页按钮手动触发（不做启动自动检查/静默更新），
+        // 源 = GitHub Releases latest.json；下载与验签由插件完成，签名公钥在 tauri.conf.json
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
