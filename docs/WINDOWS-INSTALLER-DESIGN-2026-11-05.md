@@ -15,6 +15,7 @@
 | D-2 | OCR 模型 + 向量模型 **随安装包一起装**（不做按需下载） | 同上 | 安装包未压缩 ~190MB；语义记忆 / OCR 装完即用，离线可用 |
 | D-3 | 数据目录 **统一到 app_data**，便携模式（数据随 exe 走）退役 | 同上 | SPEC 6-108 改写；验收卡 ACC-P-03 / ACC-W-01 改写 |
 | D-4 | **不做老数据迁移**（现存数据均为测试数据，空数据启动） | 2026-11-05 用户拍板 | §4.2 只剩便携分支退役；B2 无迁移逻辑；SPEC/验收卡不出现迁移口径 |
+| D-5 | playwright-mcp **维持手动**（不随安装包分发） | 2026-11-05 用户拍板 | 包仍由用户拷到安装目录 `%LOCALAPPDATA%\wmessage\playwright-mcp\`；缺失时内置卡片显示「连不上」引导；升级不在卸载清单、不丢 |
 
 **待拍板**（本文给默认值，不阻塞落地；真要改只影响 §七 的某一批）：
 
@@ -184,6 +185,9 @@ WebView2 运行时**不随包**：`webviewInstallMode` 用 `embedBootstrapper`
 - `py/env.rs` 的 dotnet 侧车找的是 `exe 同目录/dotnet/wm-docx-revisions.exe`
   → 安装后落在 `$INSTDIR\dotnet\` ✓ 命中。
 - keyring 条目（`wmessage.bot.v1`）、技能物化副本、DB schema 迁移逻辑都不动。
+- playwright-mcp 不进安装包（D-5）：解析口径本就是 exe 同目录（`bot/mcp/builtin.rs`
+  pick_package_dir），安装后放 `$INSTDIR\playwright-mcp\` 即命中；随包分发被否
+  （Chromium 双内核 +300MB，仅少数人用）。
 
 ## 五、打包流程（macOS 交叉构建 → Windows 安装包）
 
