@@ -25,19 +25,26 @@
 - 端点返回 latest.json（version / notes / pub_date / platforms.windows-x86_64
   {signature, url}）；signature = .sig 文件原文（多行内容 JSON 转义）。
 
-## 三、发版纪律（每次出包三步）
+## 三、发版纪律（每次出包四步）
 
+0. **bump 版本号**：改 `src-tauri/Cargo.toml` 的 `version`（运行时版本唯一来源；
+   latest.json 的 version 必须**大于**已发布版本，否则用户检查恒「已是最新」；
+   清单脚本对相等版本会警告）。
 1. `export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/wmessage-updater.key)"`
    与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""`，再走安装版出包两步（暂存 + 构建）。
    `createUpdaterArtifacts` 只在 `tauri.windows.conf.json`——mac 构建不需要签名
    环境变量，两平台解耦。
 2. `bash scripts/make-update-manifest.sh <版本> "<说明>"` 生成仓库根 `latest.json`
-   （缺安装器/缺签名即断）。
+   （缺安装器/缺签名即断；版本与 Cargo 相等时警告）。
 3. GitHub Releases 建 `v<版本>`：上传 `wmessage_x64-setup.exe`（setup.exe 改名，
    固定资产名）与 `latest.json`。
 
 **丢私钥 = 更新链路全断**：`.key` 与口令务必另存一份（密码管理器/离线介质）；
 若重生成密钥，`tauri.conf.json` 的 pubkey 必须同批换。
+
+**更新即退出的语义**（插件源码实证）：点「下载并安装」→ 下载验签通过后插件
+拉起安装器并 `exit(0)` 硬退——在途回合 / ask_user 等待 / 定时作业执行被中断
+（重启后按既有启动恢复链处理），这是手动确认过的行为，不另做优雅停机。
 
 ## 四、不做清单
 

@@ -3,10 +3,13 @@
  *  口径：仅按钮手动触发，不做启动自动检查、不做静默更新——定时作业/
  *  无人值守场景不被更新打断；失败显式报错，不许「检查失败当最新」的假成功；
  *  版本/进度一律显示真值；非 Windows 平台不渲染（更新源目前只有 Windows 安装包）。
+ *
+ *  Windows 安装语义（插件源码实证）：downloadAndInstall 末段拉起安装器后进程
+ *  exit(0)，本组件的 await 之后代码不可达——重启由安装器 /R 参数完成，前端
+ *  不调 relaunch；下载全程进度真值，Finished 即安装器接管。
  */
 import { useCallback, useEffect, useState } from "react";
 import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { Download, RefreshCw } from "lucide-react";
 
@@ -78,7 +81,7 @@ export function UpdateCard({ ua = navigator.userAgent }: { ua?: string }) {
           setState({ t: "installed" });
         }
       });
-      await relaunch();
+      /* 进程在此前已被插件 exit(0) 接管（安装器自动重启），此处不可达不写代码 */
     } catch (e) {
       setState({ t: "error", message: e instanceof Error ? e.message : String(e) });
     }
@@ -145,7 +148,7 @@ export function UpdateCard({ ua = navigator.userAgent }: { ua?: string }) {
       )}
 
       {state.t === "installed" && (
-        <div className="mt-3 text-sm">已更新，应用即将重启…</div>
+        <div className="mt-3 text-sm">已更新，安装器接管中，应用将自动重启…</div>
       )}
 
       {state.t === "error" && (

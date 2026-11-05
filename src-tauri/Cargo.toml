@@ -48,8 +48,6 @@ tauri-plugin-autostart = "2"
 tauri-plugin-clipboard-manager = "2"
 # 检查更新：官方更新链路标准件——下载 + minisign 验签 + 拉起安装器（自写等于重造验签）
 tauri-plugin-updater = "2"
-# 更新装完后的应用重启（updater 官方搭配件）
-tauri-plugin-process = "2"
 
 rusqlite = { version = "0.37", features = ["bundled"] }
 chrono = "0.4"

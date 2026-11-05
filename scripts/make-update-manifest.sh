@@ -20,14 +20,20 @@ URL="https://github.com/BLAGICLAB/WMessage/releases/download/${TAG}/${ASSET}"
 [[ -f "$SIG" ]] || { echo "✗ 缺签名 ${SIG}，构建时须设 TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)" >&2; exit 1; }
 
 SIG_BODY="$(cat "$SIG")"
-PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-python3 - "$VER" "$NOTES" "$PUB_DATE" "$URL" "$SIG_BODY" "$OUT" <<'PY'
+# 版本对拍：latest.json 的 version 必须 > 当前安装版（Cargo.toml）才会被判「有更新」；
+# 忘 bump 就发 = 用户点检查恒「已是最新」。相等只警告不阻断（可能故意重发）。
+CARGO_VER="$(grep -m1 '^version' src-tauri/Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
+if [[ "$VER" == "$CARGO_VER" ]]; then
+  echo "⚠ 版本 ${VER} 与 Cargo.toml 当前版本相同——检查更新将判「已是最新」，确认是否忘了 bump" >&2
+fi
+
+python3 - "$VER" "$NOTES" "$URL" "$SIG_BODY" "$OUT" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
 
-ver, notes, pub_date, url, sig, out = sys.argv[1:7]
+ver, notes, url, sig, out = sys.argv[1:6]
 data = {
     "version": ver,
     "notes": notes,
