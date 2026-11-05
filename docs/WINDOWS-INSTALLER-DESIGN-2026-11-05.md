@@ -198,6 +198,19 @@ npm run tauri build -- --target x86_64-pc-windows-gnu --bundles nsis
 src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/wmessage_<版本>_x64-setup.exe
 ```
 
+发布更新（设置页「检查更新」用，`docs/UPDATE-CHECK-DESIGN-2026-11-05.md`）：
+
+```bash
+# 4 带 Signing 密钥出包（签名由 createUpdaterArtifacts 触发，私钥在 ~/.tauri/，不进仓）
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/wmessage-updater.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+# （重新跑 §五 1-2 步的暂存与构建，产物旁多出 .sig）
+# 5 生成清单 + 发布
+bash scripts/make-update-manifest.sh <版本> "<更新说明>"
+# 6 GitHub Releases 建 v<版本>：上传 wmessage_x64-setup.exe（setup.exe 改名，固定资产名）
+#   与 latest.json 两个文件；检查更新端点 = releases/latest/download/latest.json
+```
+
 流程约束：
 
 - **必须走完整 `tauri build`**（它先跑 `npm run build` 把前端嵌进 exe）；
