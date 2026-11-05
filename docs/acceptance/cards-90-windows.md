@@ -222,13 +222,13 @@ powershell -ExecutionPolicy Bypass -File D:\wmessage-probe\regression-probe.ps1 
 - **前置**：完成一次打包（见 `docs/WINDOWS-INSTALLER-DESIGN-2026-11-05.md`：暂存脚本 → 交叉构建）
 - **步骤**：
   1. 暂存 + 交叉构建，产出 `bundle/nsis/*.exe` 安装器。
-  2. 本地核对：`strings` 安装器能查到 `pp-ocr-v6/det.onnx`、`bge-small-zh-v1.5/onnx/model_quantized.onnx`、`dotnet/wm-docx-revisions.exe` 三个**目标路径**，且**查不到 `_up_` 字样**。
+  2. 本地核对：`7z l` 列安装器内容，应含 `pp-ocr-v6/det.onnx`、`bge-small-zh-v1.5/onnx/model_quantized.onnx`、`dotnet/wm-docx-revisions.exe`、`onnxruntime.dll` 四项，且**无 `_up_` 目录、无 `.DS_Store`**。
   3. 实机安装后核对目录结构（配合 ACC-W-01）。
 - **判据**：
-  1. 【可观测】构建成功产出安装器，体积 ~100–120MB。
-  2. 【可核对】`strings` 断言三个目标路径命中、无 `_up_`。
+  1. 【可观测】构建成功产出安装器，体积 ~85–100MB。
+  2. 【可核对】`7z l` 断言四项资源在包内、无 `_up_`、无 `.DS_Store`（**不要用 `strings`**：NSIS LZMA solid 压缩使路径不裸露，恒查不到——首包验证曾误判资源缺失）。
   3. 【可核对】安装器的 SHA256 与发版记录一致。
-- **证据**：构建日志 + `strings` 命中输出 + SHA256。
+- **证据**：构建日志 + `7z l` 输出 + SHA256。
 - **失败处置**：资源落位不对先查 `tauri.windows.conf.json` 的 resources 映射与暂存目录；**换包必须重记 SHA256 与路径两处**。
 
 ---

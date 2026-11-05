@@ -231,9 +231,11 @@ bash scripts/make-update-manifest.sh <版本> "<更新说明>"
 
 - [ ] `npm run tauri build -- --target x86_64-pc-windows-gnu --bundles nsis` 成功，产出 `bundle/nsis/*.exe`
 - [ ] 体积核对：`ls -lh` 安装器应 ~100–120MB（含 79MB dotnet + 31MB OCR + 23MB bge + 54MB exe 的压缩结果）
-- [ ] 资源落位核对（不装也能查）：`strings` 安装器应能查到 `pp-ocr-v6/det.onnx`、
-      `bge-small-zh-v1.5/onnx/model_quantized.onnx`、`dotnet/wm-docx-revisions.exe`
-      三个**目标路径**；**查不到 `_up_` 字样**（那是发现 1 的复发信号）
+- [ ] 资源落位核对（不装也能查）：**`7z l` 列安装器内容**，应能查到 `pp-ocr-v6/det.onnx`、
+      `bge-small-zh-v1.5/onnx/model_quantized.onnx`、`dotnet/wm-docx-revisions.exe`、
+      `onnxruntime.dll` 四项；同时**不应出现 `.DS_Store`**。
+      （不要用 `strings` 查：NSIS LZMA solid 压缩使文件路径不裸露，strings 恒查不到——
+      首包验证时误判过一次；`_up_` 同理用 7z 列表确认无 `_up_` 目录）
 - [ ] `src-tauri/bundle-staging/` 三个来源齐全（dotnet 侧车 / 两个 onnx dll）
 
 ### B. 实机（Windows）安装后

@@ -50,4 +50,4 @@ with open(out, "w", encoding="utf-8") as f:
 PY
 
 echo "✓ 已生成 ${OUT}（v${VER} → ${URL}）"
-echo "  发布：GitHub Releases v${TAG} 上传 ${ASSET}（由 ${SETUP} 改名）与 ${OUT}"
+echo "  发布：GitHub Releases ${TAG} 上传 ${ASSET}（由 ${SETUP} 改名）与 ${OUT}"

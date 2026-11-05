@@ -7,6 +7,24 @@
 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
 
+## 2026-11-05（周四）v0.2.0 出包记录：首个 Windows 安装版（带更新签名）
+
+**产物三件**（构建机 macOS，commit ef8548c5）：
+- `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/wmessage_0.2.0_x64-setup.exe`
+  （87MB）SHA256 `95ef19a7b8fb8e8065730a1ba32013dc9e70d7b0f92d8c1360d061374567262f`
+- 同名 `.sig`（minisign 更新签名，私钥 `~/.tauri/wmessage-updater.key`）
+- `latest.json`（仓库根，不上 git；上传 GitHub Releases 时与安装器一并传）
+
+**7z 清单核验**：212 文件 / 原始 236.8MB → 压缩 91MB；bge / pp-ocr / dotnet 侧车 /
+onnxruntime 双 dll / WebView2 引导全在；无 `_up_`、无 `.DS_Store`（首包带过两个，
+删源重打）。**教训两条在录**：NSIS LZMA solid 压缩使 `strings` 判据恒失效
+（曾误判资源缺失，正确判据是 `7z l`，ACC-W-10 与方案 §六 已改写）；清单脚本
+对「版本与 Cargo 相同」的警告对首包是预期误报（已装的是 0.1.0 绿色包）。
+
+**上传**（手动，gh 未装）：GitHub Releases 新建 `v0.2.0` → 上传
+`wmessage_x64-setup.exe`（setup.exe 改此名，固定资产）与 `latest.json` 两个文件。
+
+
 ## 2026-11-05（周四）检查更新：方案二一步到位
 
 **为什么记**：安装版落地后自动更新的布局卡点消失。选官方 updater 插件

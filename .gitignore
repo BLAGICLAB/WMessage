@@ -135,3 +135,6 @@ wm-mail-auth-qr.png
 
 # 安装版打包暂存目录（构建时由 scripts/stage-windows-bundle.sh 铺装，勿入库）
 src-tauri/bundle-staging/
+
+# 更新清单（发布产物，每次出包重新生成，不上传仓库）
+/latest.json
