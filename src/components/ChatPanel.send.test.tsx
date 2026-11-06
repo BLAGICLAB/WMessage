@@ -35,7 +35,12 @@ const mocks = vi.hoisted(() => {
 });
 
 mocks.invokeMock.mockImplementation(chatDefaultInvoke);
-mocks.listenMock.mockImplementation(async () => () => {});
+mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+  ((mocks.listeners[event] ??= []) as Array<typeof cb>).push(
+    cb as (e: { payload: Record<string, unknown> }) => void,
+  );
+  return () => {};
+});
 mocks.emitMock.mockImplementation(async () => {});
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -123,7 +128,20 @@ describe("ChatPanel", () => {
         }),
       );
     });
-    // 流式完成后机器人回复渲染
+    // 真源化：终稿行经 bot-msg-upserted 事件回显（后端落行，前端投影）
+    await act(async () => {
+      for (const cb of mocks.listeners["bot-msg-upserted"] ?? []) {
+        cb({
+          payload: {
+            sessionId: "s1",
+            msgId: "m1",
+            role: "assistant",
+            content: "机器人回复",
+            turnStatus: "completed",
+          },
+        });
+      }
+    });
     expect(await screen.findByText("机器人回复")).toBeInTheDocument();
   });
 
@@ -171,11 +189,11 @@ describe("ChatPanel", () => {
         }),
       );
     });
+    // 正常回合前端零落库（终稿行归后端）：提示无从混进落库载荷
     const saveCalls = mocks.invokeMock.mock.calls.filter(
       (c) => c[0] === "bot_history_save",
     );
-    const saveCall = saveCalls[saveCalls.length - 1];
-    expect(JSON.stringify(saveCall?.[1])).not.toContain("当前对话没有进行中的回复");
+    expect(saveCalls.length).toBe(0);
     const chatCalls = mocks.invokeMock.mock.calls.filter(
       (c) => c[0] === "bot_chat",
     );
@@ -193,6 +211,19 @@ describe("ChatPanel", () => {
     // 先跑完一轮，让列表里有一条可移除的助手回复
     await user.type(input, "你好");
     await user.keyboard("{Enter}");
+    await act(async () => {
+      for (const cb of mocks.listeners["bot-msg-upserted"] ?? []) {
+        cb({
+          payload: {
+            sessionId: "s1",
+            msgId: "m1",
+            role: "assistant",
+            content: "机器人回复",
+            turnStatus: "completed",
+          },
+        });
+      }
+    });
     expect(await screen.findByText("机器人回复")).toBeInTheDocument();
     // 再造一条本地提示（/stop 且本会话无在途回复）
     await user.type(input, "/stop ");
@@ -232,6 +263,20 @@ describe("ChatPanel", () => {
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
     await user.type(input, "你好");
     await user.keyboard("{Enter}");
+    await act(async () => {
+      for (const cb of mocks.listeners["bot-msg-upserted"] ?? []) {
+        cb({
+          payload: {
+            sessionId: "s1",
+            msgId: "m1",
+            role: "assistant",
+            content: "带 trace 的答复",
+            turnStatus: "completed",
+            traceId: 123,
+          },
+        });
+      }
+    });
     expect(await screen.findByText("带 trace 的答复")).toBeInTheDocument();
   });
 
@@ -251,6 +296,20 @@ describe("ChatPanel", () => {
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
     await user.type(input, "你好");
     await user.keyboard("{Enter}");
+    await act(async () => {
+      for (const cb of mocks.listeners["bot-msg-upserted"] ?? []) {
+        cb({
+          payload: {
+            sessionId: "s1",
+            msgId: "m1",
+            role: "assistant",
+            content: "带 trace 的答复",
+            turnStatus: "completed",
+            traceId: 123,
+          },
+        });
+      }
+    });
     const btn = await screen.findByRole("button", { name: /执行轨迹/ });
     await user.click(btn);
     // 按会话维度查（同会话的多次执行列出来），并预选这一轮那条
@@ -262,7 +321,7 @@ describe("ChatPanel", () => {
     });
   });
 
-  it("回合终态跟着消息走：历史行带的 turnStatus 落库时原样带回", async () => {
+  it("回合终态跟着消息走：历史行带的 turnStatus 在保存回程原样带出", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_history_load") {
@@ -288,11 +347,37 @@ describe("ChatPanel", () => {
       return chatDefaultInvoke(cmd);
     });
     render(<ChatPanel {...defaultProps} />);
+    // 读进来的终态行渲染成终态（不亮假活体指示）
     expect(await screen.findByText("被打断的答复")).toBeInTheDocument();
-    // 再发一条 → 整段历史重写：读进来的终态必须原样带回
+    expect(screen.queryByText("正在思考")).not.toBeInTheDocument();
+    // 再发一条 → 终稿行事件回显 → 移除该回复触发整段保存：读进来的
+    // interrupted 终态必须原样带出（persistHistory 全字段回程）
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
     await user.type(input, "再问一句");
     await user.keyboard("{Enter}");
+    await act(async () => {
+      for (const cb of mocks.listeners["bot-msg-upserted"] ?? []) {
+        cb({
+          payload: {
+            sessionId: "s1",
+            msgId: "m2",
+            role: "assistant",
+            content: "新的答复",
+            turnStatus: "completed",
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("新的答复")).toBeInTheDocument();
+    const bubbleRow = screen
+      .getByText("新的答复")
+      .closest("div.chat-bubble")?.parentElement;
+    expect(bubbleRow).not.toBeNull();
+    await user.click(
+      within(bubbleRow as HTMLElement).getByTitle(
+        "移除这条回复（不满意时删除，不再作为上下文）",
+      ),
+    );
     await waitFor(() => {
       const saveCalls = mocks.invokeMock.mock.calls.filter(
         (c) => c[0] === "bot_history_save",
@@ -441,6 +526,19 @@ describe("ChatPanel", () => {
         expect.objectContaining({ reasoningEffort: "medium" }),
       );
     });
+    await act(async () => {
+      for (const cb of mocks.listeners["bot-msg-upserted"] ?? []) {
+        cb({
+          payload: {
+            sessionId: "s1",
+            msgId: "m1",
+            role: "assistant",
+            content: "机器人回复",
+            turnStatus: "completed",
+          },
+        });
+      }
+    });
     expect(await screen.findByText("机器人回复")).toBeInTheDocument();
 
     // 打开覆盖下拉选「高」→ 按钮改显所选档位
@@ -462,6 +560,20 @@ describe("ChatPanel", () => {
         expect.objectContaining({ reasoningEffort: "high" }),
       );
     });
+    await act(async () => {
+      for (const cb of mocks.listeners["bot-msg-upserted"] ?? []) {
+        cb({
+          payload: {
+            sessionId: "s1",
+            msgId: "m1",
+            role: "assistant",
+            content: "机器人回复",
+            turnStatus: "completed",
+          },
+        });
+      }
+    });
+
 
     // 覆盖不回写后台：全程不应出现 bot_set_config
     expect(mocks.invokeMock).not.toHaveBeenCalledWith(

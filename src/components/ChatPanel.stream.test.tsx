@@ -173,6 +173,16 @@ describe("ChatPanel", () => {
         payload: { status: "interrupted", detail: "", sessionId: "s1" },
       });
       settleChat?.({ text: "⏹ 已停止", taskRefs: [] });
+      // 真源化：终稿行由后端落库并经事件回显替换占位气泡
+      handlers["bot-msg-upserted"]?.({
+        payload: {
+          sessionId: "s1",
+          msgId: "m-stop",
+          role: "assistant",
+          content: "⏹ 已停止",
+          turnStatus: "interrupted",
+        },
+      });
       // 等过合并窗口（flush 落在下一帧）：增量此时已被处理完
       await new Promise((r) => setTimeout(r, 60));
     });
@@ -205,6 +215,18 @@ describe("ChatPanel", () => {
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
     await user.type(input, "你好");
     await user.keyboard("{Enter}");
+    // 真源化：终稿行经事件回显（后端落行）
+    await act(async () => {
+      handlers["bot-msg-upserted"]?.({
+        payload: {
+          sessionId: "s1",
+          msgId: "m1",
+          role: "assistant",
+          content: "机器人回复",
+          turnStatus: "completed",
+        },
+      });
+    });
     expect(await screen.findByText("机器人回复")).toBeInTheDocument();
     // 后端主动起的一轮：先来一条 running 状态（回合状态机口径：本轮在跑），
     // 再来增量——前端没有预置气泡，增量要能自己开一个

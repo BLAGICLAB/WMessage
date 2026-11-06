@@ -845,6 +845,12 @@ async fn execute_tool_impl(
             crate::trace_sink::record_file_change(crate::trace_sink::file_change_record(
                 trace_id, rc,
             ));
+            // 终稿聚合记账（自盖章事件不经 emit 收口，单独 push）
+            if let Some(sid) = session_id {
+                crate::bot::turn_record::push_file_change(
+                    sid, &rc.path, rc.kind, rc.added, rc.deleted,
+                );
+            }
             let _ = app.emit(
                 "bot-file-changed",
                 serde_json::json!({

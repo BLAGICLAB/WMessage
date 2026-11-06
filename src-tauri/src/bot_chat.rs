@@ -248,11 +248,54 @@ async fn bot_chat_entry(
         TurnOrigin::User,
     )
     .await?;
+    // 终稿落行（真源化 §5.2 ③）：聚合器收走本轮事实（thinking/tools/files/
+    // 终态）→ upsert 终稿行 → bot-msg-upserted。恒在该回合 bot-turn-status
+    // 终态事件之后——终态在循环唯一出口发出（core 的 final_status 收口），
+    // 这里才返回，占位替换依赖此序。失败轮（Err）不落终稿行：失败叙事由
+    // 前端 catch 路径落（批 4 断代时一并收编）
+    if let Some(sid) = session_id.as_deref() {
+        let record = crate::bot::turn_record::take(sid);
+        let row = build_final_row(record, &out.result);
+        let sid2 = sid.to_string();
+        // 行内核就地补服务端身份并随返回值带回：事件载荷带同一 id（前端对账键）
+        let (msg_id, mut row) = crate::db::lock::with_write_conn(app, move |conn| {
+            let id = crate::db::bot_history::bot_history_upsert_row_inner(conn, &sid2, &row)?;
+            Ok((id, row))
+        })
+        .await
+        .map_err(CommandError::DbError)?;
+        row.msg_id = Some(msg_id);
+        emit_row_upserted(app, Some(sid), &row);
+    }
     // 交互聊天：模型确实看到了那段回报 → 记「已吸收」（digest 不再重念它）。
     for id in &out.absorb {
         crate::bot_orchestrator::mark_digested(session_id.as_deref(), id);
     }
     Ok(out.result)
+}
+
+/// 终稿行组装（纯函数，锚点可直测）：聚合事实 + 循环产出 → 一条 assistant 行。
+/// 身份由行内核就地生成（前端经事件获得 id）。turn_status 兜底 completed——
+/// 循环唯一出口必发终态，None 只在异常路径出现，与前端旧口径一致。
+fn build_final_row(
+    record: crate::bot::turn_record::TurnRecord,
+    result: &BotChatResult,
+) -> crate::db::BotMsgRow {
+    crate::db::BotMsgRow {
+        msg_id: None,
+        role: "assistant".into(),
+        content: result.text.clone(),
+        refs_json: serde_json::to_string(&result.task_refs).ok(),
+        thinking: record.thinking,
+        tools_json: record.tools_json,
+        turn_status: Some(
+            record
+                .turn_status
+                .unwrap_or_else(|| "completed".to_string()),
+        ),
+        file_changes_json: record.file_changes_json,
+        trace_id: result.trace_id,
+    }
 }
 
 /// 用户轮的真源化落行 + 上下文重建（§5.2 ①）。
@@ -283,6 +326,8 @@ async fn user_turn_context<R: tauri::Runtime>(
         thinking: None,
         tools_json: None,
         turn_status: None,
+        file_changes_json: None,
+        trace_id: None,
     };
     let row_for_event = row.clone();
     let sid2 = sid.to_string();
@@ -317,7 +362,9 @@ fn emit_row_upserted<R: tauri::Runtime>(
         "refsJson": row.refs_json,
         "thinking": row.thinking,
         "toolsJson": row.tools_json,
+        "fileChangesJson": row.file_changes_json,
         "turnStatus": row.turn_status,
+        "traceId": row.trace_id,
     });
     crate::bot::stream_log::emit_recorded(app, session_id, "bot-msg-upserted", payload);
 }

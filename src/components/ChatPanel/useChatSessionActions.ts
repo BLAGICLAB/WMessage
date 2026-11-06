@@ -19,6 +19,7 @@ import type { Dispatch, RefObject, SetStateAction } from "react";
 
 export type ChatSessionActionsParams = {
   addHint: (content: string, actionSessionId?: string | undefined) => void;
+  loadFinalText: (sid: string) => Promise<void>;
   confirm: (messageOrOptions: string | ConfirmOptions) => Promise<boolean>;
   effortBase: ReasoningLevel;
   effortBySession: Map<string, ReasoningLevel>;
@@ -50,6 +51,7 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
     effortBySession,
     enterChat,
     exitChat,
+    loadFinalText,
     mergeInflight,
     messagesRef,
     persistHistory,
@@ -90,6 +92,8 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
             refsJson?: string | null;
             thinking?: string | null;
             toolsJson?: string | null;
+            fileChangesJson?: string | null;
+            traceId?: number | null;
           }[]
         >("bot_history_load", { sessionId: sid });
         // 等待期间用户已切到别的会话：丢弃过期响应（后到的慢响应不得盖掉新会话的加载结果）
@@ -185,6 +189,8 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
               refsJson?: string | null;
               thinking?: string | null;
               toolsJson?: string | null;
+              fileChangesJson?: string | null;
+              traceId?: number | null;
             }[]
           >("bot_history_load", { sessionId: targetSid });
           // 等待期用户已切走：丢弃过期历史，防旧会话消息刷进新视图
@@ -272,29 +278,16 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
         }
         return;
       }
-      // 把流式过程中累积的思考/工具行并入最终消息
-      const meta = streamState.metaOf(sid) ?? {};
-      const done: Msg[] = [
-        ...history,
-        {
-          role: "assistant",
-          content: full.text || "",
-          refs: full.taskRefs ?? [],
-          // 本回合的 trace 归属：跟着消息走，跳转执行轨迹时用得上
-          traceId: full.traceId ?? null,
-          thinking: meta.thinking,
-          tools: meta.tools,
-          fileChanges: meta.fileChanges,
-          skillFailure: meta.skillFailure,
-          // 终态随消息一起留档：turnStatus 缺失时 LiveIndicator 会退回
-          // 「正在思考」文案，历史气泡复用时就会出现假活体指示
-          turnStatus: meta.turnStatus ?? "completed",
-          turnStartedAt: meta.turnStartedAt,
-        },
-      ];
-      // 持久化始终按 sid 写；UI 只在会话未切换时更新（防旧会话消息渲染进新会话）
-      persistHistory(sid, done);
-      if (sessionIdRef.current === sid) setMessages(done);
+      // 真源化批 3：终稿行由后端落库（聚合 thinking/tools/fileChanges/终态/
+      // trace），经 bot-msg-upserted 事件回显替换占位气泡——前端不再拼终稿
+      // 快照落库。事件万一丢失（发射竞态/后台窗）→ 延迟 reload 兜底：尾行
+      // 还是没身份的本回合助手行时整段重读（不变式 2：正确性以 load 为准）
+      window.setTimeout(() => {
+        const tail = messagesRef.current[messagesRef.current.length - 1];
+        if (sessionIdRef.current === sid && tail?.role === "assistant" && !tail.id) {
+          void loadFinalText(sid);
+        }
+      }, 1500);
       // 首轮对话后把「新对话」标题改为用户消息前 20 字（仿主流聊天应用）
       const sess = sessions.find((s) => s.id === sid);
       if (sess?.title === "新对话" && renameText) {

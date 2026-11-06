@@ -262,6 +262,8 @@ pub async fn run_model_loop(
     if stream_to_main {
         if let Some(sid) = session_id {
             crate::bot::stream_log::begin(sid);
+            // 终稿聚合器同步清场：上一轮崩溃残留不得串进本轮落库事实
+            crate::bot::turn_record::begin(sid);
             stream_guard.0 = Some(sid.to_string());
         }
     }
@@ -282,6 +284,11 @@ pub async fn run_model_loop(
             crate::tool_guard::set_subagent_tool_in_flight(session_id, false);
         }
         if stream_to_main {
+            // 终稿聚合记账与广播同源同点：事件发出去的同时记进本轮落库事实，
+            // 发射点全集即此处 + bot-file-changed（自盖章单独 push）
+            if let Some(sid) = session_id {
+                crate::bot::turn_record::push_event(sid, event, &payload);
+            }
             // 走统一出口：分配序号 + 写会话缓冲 + 广播。
             // 序号让客户端能按 seq 补齐（补齐与实时可能重叠，靠序号去重）。
             crate::bot::stream_log::emit_recorded(&app, session_id, event, payload);

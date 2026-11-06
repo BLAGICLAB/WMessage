@@ -748,6 +748,52 @@ describe("ChatPanel", () => {
     });
   });
 
+  it("bot-msg-upserted 终稿行：替换本回合占位气泡（正文整表换、streaming 落）", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load")
+        return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      // 回合挂起不返回：占位气泡保持流式中
+      if (cmd === "bot_chat") return new Promise(() => {});
+      return defaultInvoke(cmd);
+    });
+    const fire: Record<string, (e: { payload: Record<string, unknown> }) => void> = {};
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      fire[event] = cb as (e: { payload: Record<string, unknown> }) => void;
+      return () => {};
+    });
+    const user = userEvent.setup();
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    await user.type(screen.getByPlaceholderText(/和机器人说点什么/), "问一句");
+    await user.keyboard("{Enter}");
+    await act(async () => {
+      fire["bot-chat-delta"]?.({ payload: { sessionId: "s1", text: "流式中的半句" } });
+    });
+    expect(await screen.findByText("流式中的半句")).toBeInTheDocument();
+    // 终态先行（循环出口发），随后终稿行事件到达
+    await act(async () => {
+      fire["bot-turn-status"]?.({ payload: { sessionId: "s1", status: "completed" } });
+      fire["bot-msg-upserted"]?.({
+        payload: {
+          sessionId: "s1",
+          msgId: "m-final",
+          role: "assistant",
+          content: "终稿完整答复",
+          thinking: "想了三步",
+          toolsJson: JSON.stringify([{ id: "t1", name: "read", done: true }]),
+          fileChangesJson: JSON.stringify([{ path: "/a.md", kind: "create", added: 2, deleted: 0 }]),
+          turnStatus: "completed",
+          traceId: 42,
+        },
+      });
+    });
+    // 整表替换：流式残句让位终稿；活体指示随 streaming 落下而消失
+    expect(await screen.findByText("终稿完整答复")).toBeInTheDocument();
+    expect(screen.queryByText("流式中的半句")).not.toBeInTheDocument();
+    expect(screen.queryByText("正在思考")).not.toBeInTheDocument();
+  });
+
   it("busy 拒答：乐观用户行一并摘掉（后端零落行），不再留孤立用户消息", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {

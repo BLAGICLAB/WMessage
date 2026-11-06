@@ -23,6 +23,13 @@ pub struct BotMsgRow {
     /// 回合终态（bot_model_loop::TurnStatus 的机器读标识）。
     /// None = 用户消息 / 后端自己写的行 / 旧行——没有回合概念，不是「进行中」
     pub turn_status: Option<String>,
+    /// 本轮结构化文件变更（bot-file-changed 聚合的 JSON 数组，前端
+    /// FileChangeLite 形状）；None = 本轮没有文件产出
+    #[serde(default)]
+    pub file_changes_json: Option<String>,
+    /// 执行痕迹行号（exec_traces）：消息 → 执行轨迹直达。None = 本轮没开 trace
+    #[serde(default)]
+    pub trace_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -402,6 +409,8 @@ mod tests {
     fn turn_status_uses_camel_case_on_the_wire() {
         let row = BotMsgRow {
             msg_id: None,
+            file_changes_json: None,
+            trace_id: None,
             role: "assistant".into(),
             content: "答".into(),
             refs_json: None,

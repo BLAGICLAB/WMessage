@@ -324,15 +324,16 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
     role: string;
     content: string;
     refsJson?: string | null;
+    thinking?: string | null;
+    toolsJson?: string | null;
+    fileChangesJson?: string | null;
+    turnStatus?: string | null;
+    traceId?: number | null;
   }>("bot-msg-upserted", (payload) => {
     const sid = sessionIdRef.current;
     if (!sid || payload.sessionId !== sid) return;
     const rows = messagesRef.current;
     const idx = rows.findIndex((m) => m.id && m.id === payload.msgId);
-    if (idx === -1) {
-      void loadFinalText(sid);
-      return;
-    }
     const [mapped] = rowsToMsgs(
       [
         {
@@ -340,10 +341,34 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
           role: payload.role,
           content: payload.content,
           refsJson: payload.refsJson ?? null,
+          thinking: payload.thinking ?? null,
+          toolsJson: payload.toolsJson ?? null,
+          fileChangesJson: payload.fileChangesJson ?? null,
+          turnStatus: payload.turnStatus ?? null,
+          traceId: payload.traceId ?? null,
         },
       ],
       sid,
     );
+    if (idx === -1) {
+      // 无 id 匹配：终稿行替换本回合占位气泡（流式中 / 已到终态但还没身份的
+      // 尾行——终态事件先行，占位的 streaming 旗要在这里落）；尾行不是本回合
+      // 的（切走错过等）→ 整段 reload 兜底
+      const last = rows[rows.length - 1];
+      if (
+        last &&
+        last.role === "assistant" &&
+        !last.id &&
+        (last.streaming || last.turnStatus !== undefined)
+      ) {
+        const next = [...rows];
+        next[next.length - 1] = { ...last, ...mapped, streaming: false };
+        setMessages(next);
+        return;
+      }
+      void loadFinalText(sid);
+      return;
+    }
     const next = [...rows];
     next[idx] = { ...next[idx], ...mapped };
     setMessages(next);
@@ -659,6 +684,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
     addHint,
     confirm,
     effortBase,
+    loadFinalText,
     effortBySession,
     enterChat,
     exitChat,

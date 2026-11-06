@@ -110,6 +110,7 @@ pub mod tags_consolidate;
 #[cfg(test)]
 pub mod test_files;
 pub mod tools;
+pub(crate) mod turn_record;
 
 // params re-export：参数表命令（设置页「Agent 运行参数」卡的数据源）。
 // 走 facade 口径——外部只认 `crate::bot::bot_effective_params`，不直接摸

@@ -7,7 +7,7 @@
 import { useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { handleCommandError } from "../../lib/errorHandler";
-import type { Msg, Session, TaskRef, ToolCall } from "./types";
+import type { FileChangeLite, Msg, Session, TaskRef, ToolCall } from "./types";
 import * as streamState from "./streamState";
 import * as askStore from "./askStore";
 import { parseTurnStatus } from "./parse";
@@ -41,7 +41,8 @@ export function useChatHistory(params: ChatHistoryParams) {
         .filter((m) => !m.hint)
         .map((m) => ({
           // 消息身份随行（真源化）：后端按 (session_id, msg_id) upsert，
-          // 缺 id 的行由后端补服务端身份
+          // 缺 id 的行由后端补服务端身份。后端行的聚合字段（fileChanges/
+          // trace）原样回程——upsert 不回传即被清 NULL
           msgId: m.id ?? null,
           role: m.role,
           content: m.content,
@@ -49,6 +50,10 @@ export function useChatHistory(params: ChatHistoryParams) {
           thinking: m.thinking ?? null,
           toolsJson: m.tools?.length ? JSON.stringify(m.tools) : null,
           turnStatus: m.turnStatus ?? null,
+          fileChangesJson: m.fileChanges?.length
+            ? JSON.stringify(m.fileChanges)
+            : null,
+          traceId: m.traceId ?? null,
         })),
     }).catch((e) =>
       // 后台持久化失败：UI 还能跑，不打断当前对话
@@ -81,6 +86,8 @@ export function useChatHistory(params: ChatHistoryParams) {
       thinking?: string | null;
       toolsJson?: string | null;
       turnStatus?: string | null;
+      fileChangesJson?: string | null;
+      traceId?: number | null;
     }[],
     sid?: string | null,
   ): Msg[] =>
@@ -93,6 +100,13 @@ export function useChatHistory(params: ChatHistoryParams) {
       thinking: r.thinking ?? undefined,
       tools: parseHistoryJson<ToolCall>(r.toolsJson, "toolsJson", i, sid ?? null),
       turnStatus: parseTurnStatus(r.turnStatus),
+      fileChanges: parseHistoryJson<FileChangeLite>(
+        r.fileChangesJson,
+        "fileChangesJson",
+        i,
+        sid ?? null,
+      ),
+      traceId: r.traceId ?? undefined,
     }));
   const loadFinalText = useCallback(async (sid: string, attempt = 0) => {
     try {
@@ -104,6 +118,8 @@ export function useChatHistory(params: ChatHistoryParams) {
           refsJson?: string | null;
           thinking?: string | null;
           toolsJson?: string | null;
+          fileChangesJson?: string | null;
+          traceId?: number | null;
         }[]
       >("bot_history_load", { sessionId: sid });
       const msgs = rowsToMsgs(rows ?? [], sid);
@@ -253,6 +269,8 @@ export function useChatHistory(params: ChatHistoryParams) {
             refsJson?: string | null;
             thinking?: string | null;
             toolsJson?: string | null;
+            fileChangesJson?: string | null;
+            traceId?: number | null;
           }[]
         >("bot_history_load", { sessionId: cur.id });
         // 历史加载期间用户已切走（如 ⌘K 跨窗口跳会话）：过期历史不得盖掉新会话视图

@@ -35,7 +35,12 @@ const mocks = vi.hoisted(() => {
 });
 
 mocks.invokeMock.mockImplementation(chatDefaultInvoke);
-mocks.listenMock.mockImplementation(async () => () => {});
+mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+  ((mocks.listeners[event] ??= []) as Array<typeof cb>).push(
+    cb as (e: { payload: Record<string, unknown> }) => void,
+  );
+  return () => {};
+});
 mocks.emitMock.mockImplementation(async () => {});
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -259,6 +264,23 @@ describe("ChatPanel", () => {
         "写个文档",
       );
       await user.keyboard("{Enter}");
+      // 终稿行事件回显：交付物随行（后端聚合 file-changed），pill 过存在性探测挂上
+      await act(async () => {
+        for (const cb of mocks.listeners["bot-msg-upserted"] ?? []) {
+          cb({
+            payload: {
+              sessionId: "s1",
+              msgId: "m1",
+              role: "assistant",
+              content: "写到 /Users/x/out.md 了",
+              turnStatus: "completed",
+              fileChangesJson: JSON.stringify([
+                { path: "/Users/x/out.md", kind: "create", added: 5, deleted: 0 },
+              ]),
+            },
+          });
+        }
+      });
       // 交付物 chip（正文点名的路径，过存在性探测后挂上）
       const pill = await screen.findByTitle(
         "打开交付物：/Users/x/out.md",
@@ -503,6 +525,15 @@ describe("ChatPanel", () => {
       // 回复收尾（解除 inflight），切回 s1 后删除 s2
       await act(async () => {
         releaseChat({ text: "回复A", taskRefs: [] });
+        listeners.get("bot-msg-upserted")?.({
+          payload: {
+            sessionId: "s2",
+            msgId: "m1",
+            role: "assistant",
+            content: "回复A",
+            turnStatus: "completed",
+          },
+        });
       });
       await screen.findByText("回复A");
       await user.click(railSession("默认会话"));
@@ -666,7 +697,16 @@ describe("ChatPanel", () => {
       release2 = r;
     });
     const chatCalls: Array<Record<string, unknown> | undefined> = [];
-    const saves: Array<Record<string, unknown> | undefined> = [];
+    // 终稿事件显式捕获（前例 finally 会把默认 listenMock 恢复成 no-op，
+    // mocks.listeners 不可依赖——本用例自带捕获，finally 自己恢复）
+    const upsertListeners: Array<(e: { payload: unknown }) => void> = [];
+    const prevListenImpl = mocks.listenMock.getMockImplementation();
+    mocks.listenMock.mockImplementation(
+      async (event: string, cb: (e: { payload: unknown }) => void) => {
+        if (event === "bot-msg-upserted") upsertListeners.push(cb);
+        return () => {};
+      },
+    );
     const prevInvokeImpl = mocks.invokeMock.getMockImplementation();
     mocks.invokeMock.mockImplementation(
       async (cmd: string, args?: Record<string, unknown>) => {
@@ -680,10 +720,18 @@ describe("ChatPanel", () => {
             chatCalls.push(args);
             return chatCalls.length === 1 ? gate1 : gate2;
           case "bot_history_load":
-            return [];
-          case "bot_history_save":
-            saves.push(args);
-            return null;
+            // 真源化投影：非活跃会话不持投影，切回靠 load（答一在库里）
+            return args?.sessionId === "s1"
+              ? [
+                  {
+                    msgId: "m1",
+                    role: "assistant",
+                    content: "答一",
+                    turnStatus: "completed",
+                    refsJson: null,
+                  },
+                ]
+              : [];
           default:
             return chatDefaultInvoke(cmd);
         }
@@ -709,34 +757,42 @@ describe("ChatPanel", () => {
         expect(chatCalls.length).toBe(2);
         expect(chatCalls[1]?.sessionId).toBe("s2");
       });
-      // 各自落库不串台：S1 的回复不进 S2 的历史
+      // 各自投影不串台（真源化：落库归后端，前端按事件回显各自会话）
       await act(async () => {
         release1({ text: "答一", taskRefs: [] });
-      });
-      await waitFor(() => {
-        expect(saves.some((sv) => sv?.sessionId === "s1")).toBe(true);
-      });
-      await act(async () => {
+        for (const cb of upsertListeners) {
+          cb({
+            payload: {
+              sessionId: "s1",
+              msgId: "m1",
+              role: "assistant",
+              content: "答一",
+              turnStatus: "completed",
+            },
+          });
+        }
         release2({ text: "答二", taskRefs: [] });
+        for (const cb of upsertListeners) {
+          cb({
+            payload: {
+              sessionId: "s2",
+              msgId: "m2",
+              role: "assistant",
+              content: "答二",
+              turnStatus: "completed",
+            },
+          });
+        }
       });
-      await waitFor(() => {
-        expect(saves.some((sv) => sv?.sessionId === "s2")).toBe(true);
-      });
-      // 取 S2 最后一次落库（回合收尾那次）：回合开始还会先写一次用户消息
-      const s2Save = saves.filter((sv) => sv?.sessionId === "s2").pop() as {
-        messages: { role: string; content: string }[];
-      };
-      expect(s2Save.messages.some((m) => m.content.includes("问题二"))).toBe(
-        true,
-      );
-      expect(s2Save.messages.some((m) => m.content.includes("答二"))).toBe(
-        true,
-      );
-      expect(s2Save.messages.some((m) => m.content.includes("答一"))).toBe(
-        false,
-      );
+      // 当前在 s2：只见 s2 的答二，s1 的答一不得串进来
+      expect(await screen.findByText("答二")).toBeInTheDocument();
+      expect(screen.queryByText("答一")).toBeNull();
+      // 切回 s1：答一在
+      await user.click(railSession("默认会话"));
+      expect(await screen.findByText("答一")).toBeInTheDocument();
     } finally {
       mocks.invokeMock.mockImplementation(prevInvokeImpl!);
+      mocks.listenMock.mockImplementation(prevListenImpl!);
     }
   });
 

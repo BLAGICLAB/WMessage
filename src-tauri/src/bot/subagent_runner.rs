@@ -809,6 +809,8 @@ pub(crate) async fn run_subagent(
                 &[
                     crate::db::BotMsgRow {
                         msg_id: None,
+                        file_changes_json: None,
+                        trace_id: None,
                         role: "user".into(),
                         content: wrapper_for_db,
                         refs_json: None,
@@ -818,6 +820,8 @@ pub(crate) async fn run_subagent(
                     },
                     crate::db::BotMsgRow {
                         msg_id: None,
+                        file_changes_json: None,
+                        trace_id: None,
                         role: "assistant".into(),
                         content: final_for_db,
                         refs_json: None,

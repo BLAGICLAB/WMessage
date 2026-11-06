@@ -14,6 +14,8 @@ fn bot_history_append_keeps_existing_rows_and_order() {
     .unwrap();
     let mk = |c: &str| BotMsgRow {
         msg_id: None,
+        file_changes_json: None,
+        trace_id: None,
         role: "user".into(),
         content: c.into(),
         refs_json: None,
@@ -30,6 +32,8 @@ fn bot_history_append_keeps_existing_rows_and_order() {
         "s1",
         &BotMsgRow {
             msg_id: None,
+            file_changes_json: None,
+            trace_id: None,
             role: "assistant".into(),
             content: "汇报轮回复".into(),
             refs_json: None,
@@ -137,6 +141,8 @@ fn bot_history_save_inner_commits_in_tx() {
     let new_msgs = vec![
         BotMsgRow {
             msg_id: None,
+            file_changes_json: None,
+            trace_id: None,
             role: "user".into(),
             content: "hi".into(),
             refs_json: None,
@@ -146,6 +152,8 @@ fn bot_history_save_inner_commits_in_tx() {
         },
         BotMsgRow {
             msg_id: None,
+            file_changes_json: None,
+            trace_id: None,
             role: "assistant".into(),
             content: "hello".into(),
             refs_json: None,
@@ -193,6 +201,8 @@ fn bot_history_overwrite_restores_order_and_batch_created_at() {
     .unwrap();
     let mk = |content: &str| BotMsgRow {
         msg_id: None,
+        file_changes_json: None,
+        trace_id: None,
         role: "user".into(),
         content: content.into(),
         refs_json: None,

@@ -124,6 +124,70 @@ fn guard_check_precedes_user_row_write_in_chat_entry() {
     );
 }
 
+/// 锚点⑯（接线半边）：终稿落行恒在主链之后——终态事件在循环唯一出口发出，
+/// 主链返回后这里才 take + 落行 + 广播，占位替换依赖此序
+#[test]
+fn final_row_lands_after_the_main_chain_in_chat_entry() {
+    let src = include_str!("../bot_chat.rs");
+    let start = src.find("async fn bot_chat_entry(").expect("入口函数起点");
+    let body = &src[start..];
+    let end = body.find("\n}\n").map(|i| i + 3).unwrap_or(body.len());
+    let entry = &body[..end];
+    let chain = entry.find("bot_chat_guarded(").expect("主链调用");
+    let take = entry.find("turn_record::take").expect("聚合收走");
+    let emit = entry
+        .find("emit_row_upserted(app, Some(sid), &row)")
+        .expect("终稿事件广播");
+    assert!(
+        chain < take && take < emit,
+        "主链 → take → 终稿事件，顺序不可倒：chain={chain} take={take} emit={emit}"
+    );
+}
+
+/// 终稿行组装（纯函数）：聚合事实逐字段落行；终态缺失兜底 completed
+/// （循环唯一出口必发终态，None 只在异常路径，与前端旧口径一致）
+#[test]
+fn build_final_row_maps_aggregate_fields_with_status_fallback() {
+    let record = crate::bot::turn_record::TurnRecord {
+        thinking: Some("想了".into()),
+        tools_json: Some(r#"[{"id":"t1"}]"#.into()),
+        file_changes_json: Some(r#"[{"path":"/a"}]"#.into()),
+        turn_status: Some("interrupted".into()),
+    };
+    let result = BotChatResult {
+        text: "答复".into(),
+        task_refs: vec![TaskRef {
+            id: "t9".into(),
+            title: "卡".into(),
+        }],
+        busy: false,
+        trace_id: Some(7),
+    };
+    let row = build_final_row(record, &result);
+    assert_eq!(row.role, "assistant");
+    assert_eq!(row.content, "答复");
+    assert_eq!(row.thinking.as_deref(), Some("想了"));
+    assert_eq!(row.tools_json.as_deref(), Some(r#"[{"id":"t1"}]"#));
+    assert_eq!(row.file_changes_json.as_deref(), Some(r#"[{"path":"/a"}]"#));
+    assert_eq!(
+        row.turn_status.as_deref(),
+        Some("interrupted"),
+        "有终态用终态"
+    );
+    assert_eq!(row.trace_id, Some(7), "trace 随行（消息 → 执行痕迹直达）");
+    assert!(
+        row.refs_json.as_deref().unwrap().contains("t9"),
+        "引用卡随行"
+    );
+    assert_eq!(row.msg_id, None, "身份由行内核就地生成");
+    let row2 = build_final_row(crate::bot::turn_record::TurnRecord::default(), &result);
+    assert_eq!(
+        row2.turn_status.as_deref(),
+        Some("completed"),
+        "终态缺失兜底"
+    );
+}
+
 /// 测试种子 DDL：身份测试需要 bot_sessions 表（bot_messages 由 open_db 基线建好）
 const BOT_MESSAGES_TEST_SEED: &str = "CREATE TABLE IF NOT EXISTS bot_sessions (
              id TEXT PRIMARY KEY,

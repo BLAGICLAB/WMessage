@@ -436,6 +436,8 @@ fn report_turn_history_passes_rows_through_in_order() {
     let rows = vec![
         crate::db::BotMsgRow {
             msg_id: None,
+            file_changes_json: None,
+            trace_id: None,
             role: "user".into(),
             content: "派子 agent 查一下".into(),
             refs_json: None,
@@ -445,6 +447,8 @@ fn report_turn_history_passes_rows_through_in_order() {
         },
         crate::db::BotMsgRow {
             msg_id: None,
+            file_changes_json: None,
+            trace_id: None,
             role: "assistant".into(),
             content: "已派发".into(),
             refs_json: None,

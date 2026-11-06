@@ -23,7 +23,8 @@ pub(crate) const BOT_MESSAGES_DDL: &str = "
            created_at INTEGER NOT NULL,
            msg_id     TEXT,
            ord        INTEGER NOT NULL DEFAULT 0,
-           trace_id   INTEGER
+           trace_id   INTEGER,
+           file_changes TEXT
          );";
 
 /// 消息身份两索引：upsert 冲突目标与读序都靠它们。唯一索引用全列
@@ -46,6 +47,7 @@ pub(crate) fn ensure_bot_messages_identity(conn: &rusqlite::Connection) -> Resul
             ("msg_id", "TEXT"),
             ("ord", "INTEGER NOT NULL DEFAULT 0"),
             ("trace_id", "INTEGER"),
+            ("file_changes", "TEXT"),
         ],
     )?;
     conn.execute_batch(BOT_MESSAGES_IDENTITY_INDEX_DDL)
@@ -59,7 +61,7 @@ pub fn bot_history_load_inner(
     session_id: &str,
 ) -> Result<Vec<BotMsgRow>, String> {
     let mut stmt = conn
-        .prepare("SELECT role, content, refs, thinking, tools, turn_status, msg_id FROM bot_messages WHERE session_id = ?1 ORDER BY ord, id")
+        .prepare("SELECT role, content, refs, thinking, tools, turn_status, msg_id, trace_id, file_changes FROM bot_messages WHERE session_id = ?1 ORDER BY ord, id")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([session_id], |r| {
@@ -71,6 +73,8 @@ pub fn bot_history_load_inner(
                 thinking: r.get::<_, Option<String>>(3)?,
                 tools_json: r.get::<_, Option<String>>(4)?,
                 turn_status: r.get::<_, Option<String>>(5)?,
+                trace_id: r.get::<_, Option<i64>>(7)?,
+                file_changes_json: r.get::<_, Option<String>>(8)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -131,8 +135,8 @@ pub fn bot_history_save_inner(
     // created_at 故意不在 DO UPDATE 列清单里：同 id 命中旧行时保首插时刻
     let mut stmt = conn
         .prepare(
-            "INSERT INTO bot_messages (session_id, msg_id, ord, role, content, refs, thinking, tools, turn_status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "INSERT INTO bot_messages (session_id, msg_id, ord, role, content, refs, thinking, tools, turn_status, trace_id, file_changes, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(session_id, msg_id) DO UPDATE SET
                 ord = excluded.ord,
                 role = excluded.role,
@@ -140,7 +144,9 @@ pub fn bot_history_save_inner(
                 refs = excluded.refs,
                 thinking = excluded.thinking,
                 tools = excluded.tools,
-                turn_status = excluded.turn_status",
+                turn_status = excluded.turn_status,
+                trace_id = excluded.trace_id,
+                file_changes = excluded.file_changes",
         )
         .map_err(|e| e.to_string())?;
     for (i, m) in messages.iter().enumerate() {
@@ -154,6 +160,8 @@ pub fn bot_history_save_inner(
             m.thinking,
             m.tools_json,
             m.turn_status,
+            m.trace_id,
+            m.file_changes_json,
             now
         ])
         .map_err(|e| e.to_string())?;
@@ -180,25 +188,28 @@ pub fn bot_history_save_inner(
 ///
 /// 新行 = 会话尾追加（ord = MAX+1，created_at = 当刻）；命中旧行只更新
 /// 内容列——位置与首插时刻都不动（同 id 重写 = 同一条消息）。行带 None
-/// id 时就地补服务端 id。不自带事务：调用方需要原子语义时传入事务连接
+/// id 时就地补服务端 id 并随返回值带回（调用方广播事件要用同一身份）。
+/// 不自带事务：调用方需要原子语义时传入事务连接
 /// （`&Transaction` 经 Deref 解引用可用）。
 pub fn bot_history_upsert_row_inner(
     conn: &rusqlite::Connection,
     session_id: &str,
     message: &BotMsgRow,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let msg_id = message.msg_id.clone().unwrap_or_else(new_msg_id);
     let now = crate::db::now_ms();
     conn.execute(
-        "INSERT INTO bot_messages (session_id, msg_id, ord, role, content, refs, thinking, tools, turn_status, created_at)
-         VALUES (?1, ?2, (SELECT COALESCE(MAX(ord), -1) + 1 FROM bot_messages WHERE session_id = ?1), ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "INSERT INTO bot_messages (session_id, msg_id, ord, role, content, refs, thinking, tools, turn_status, trace_id, file_changes, created_at)
+         VALUES (?1, ?2, (SELECT COALESCE(MAX(ord), -1) + 1 FROM bot_messages WHERE session_id = ?1), ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(session_id, msg_id) DO UPDATE SET
             role = excluded.role,
             content = excluded.content,
             refs = excluded.refs,
             thinking = excluded.thinking,
             tools = excluded.tools,
-            turn_status = excluded.turn_status",
+            turn_status = excluded.turn_status,
+            trace_id = excluded.trace_id,
+            file_changes = excluded.file_changes",
         rusqlite::params![
             session_id,
             msg_id,
@@ -208,6 +219,8 @@ pub fn bot_history_upsert_row_inner(
             message.thinking,
             message.tools_json,
             message.turn_status,
+            message.trace_id,
+            message.file_changes_json,
             now
         ],
     )
@@ -217,7 +230,7 @@ pub fn bot_history_upsert_row_inner(
         rusqlite::params![now, session_id],
     )
     .map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(msg_id)
 }
 
 /// 整段覆盖写（留痕版）：超上限截断时把丢弃条数记进审计账本。
@@ -292,7 +305,7 @@ pub fn bot_history_append_inner(
     let now = crate::db::now_ms();
     let msg_id = message.msg_id.clone().unwrap_or_else(new_msg_id);
     tx.execute(
-        "INSERT INTO bot_messages (session_id, msg_id, ord, role, content, refs, thinking, tools, turn_status, created_at) VALUES (?1, ?2, (SELECT COALESCE(MAX(ord), -1) + 1 FROM bot_messages WHERE session_id = ?1), ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO bot_messages (session_id, msg_id, ord, role, content, refs, thinking, tools, turn_status, trace_id, file_changes, created_at) VALUES (?1, ?2, (SELECT COALESCE(MAX(ord), -1) + 1 FROM bot_messages WHERE session_id = ?1), ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         rusqlite::params![
             session_id,
             msg_id,
@@ -302,6 +315,8 @@ pub fn bot_history_append_inner(
             message.thinking,
             message.tools_json,
             message.turn_status,
+            message.trace_id,
+            message.file_changes_json,
             now
         ],
     )
@@ -445,6 +460,8 @@ mod tests {
         let rows: Vec<BotMsgRow> = (0..2001)
             .map(|i| BotMsgRow {
                 msg_id: None,
+                file_changes_json: None,
+                trace_id: None,
                 role: "user".into(),
                 content: format!("m{i}"),
                 refs_json: None,
@@ -550,6 +567,8 @@ mod tests {
         .expect("建表");
         let row = |content: &str| BotMsgRow {
             msg_id: None,
+            file_changes_json: None,
+            trace_id: None,
             role: "assistant".into(),
             content: content.into(),
             refs_json: None,
@@ -603,6 +622,8 @@ mod tests {
         let rows = vec![
             BotMsgRow {
                 msg_id: None,
+                file_changes_json: None,
+                trace_id: None,
                 role: "user".into(),
                 content: "问".into(),
                 refs_json: None,
@@ -612,6 +633,8 @@ mod tests {
             },
             BotMsgRow {
                 msg_id: None,
+                file_changes_json: None,
+                trace_id: None,
                 role: "assistant".into(),
                 content: "答".into(),
                 refs_json: None,
@@ -667,6 +690,8 @@ mod tests {
             "s1",
             &BotMsgRow {
                 msg_id: None,
+                file_changes_json: None,
+                trace_id: None,
                 role: "assistant".into(),
                 content: "汇报轮回复".into(),
                 refs_json: None,
@@ -757,6 +782,8 @@ mod tests {
     fn row(id: &str, content: &str) -> BotMsgRow {
         BotMsgRow {
             msg_id: if id.is_empty() { None } else { Some(id.into()) },
+            file_changes_json: None,
+            trace_id: None,
             role: "user".into(),
             content: content.into(),
             refs_json: None,
@@ -1013,6 +1040,41 @@ mod tests {
             )
             .expect("数行");
         assert_eq!(distinct, 4, "四行身份互异");
+    }
+
+    /// 锚点⑰：终稿行聚合字段（thinking/tools/file_changes/trace_id）落库
+    /// 读回原样往返——重启后 thinking/tools 从库还原走的就是这条链
+    #[test]
+    fn final_row_aggregate_fields_round_trip_through_db() {
+        let conn = identity_db();
+        let row = BotMsgRow {
+            msg_id: Some("fin".into()),
+            role: "assistant".into(),
+            content: "答复".into(),
+            refs_json: None,
+            thinking: Some("想了".into()),
+            tools_json: Some(r#"[{"id":"t1","name":"read"}]"#.into()),
+            turn_status: Some("completed".into()),
+            file_changes_json: Some(
+                r#"[{"path":"/a","kind":"create","added":1,"deleted":0}]"#.into(),
+            ),
+            trace_id: Some(9),
+        };
+        bot_history_upsert_row_inner(&conn, "s1", &row).expect("落行");
+        let loaded = bot_history_load_inner(&conn, "s1").expect("读回");
+        assert_eq!(loaded.len(), 1);
+        let r = &loaded[0];
+        assert_eq!(r.thinking.as_deref(), Some("想了"));
+        assert_eq!(
+            r.tools_json.as_deref(),
+            Some(r#"[{"id":"t1","name":"read"}]"#)
+        );
+        assert_eq!(
+            r.file_changes_json.as_deref(),
+            Some(r#"[{"path":"/a","kind":"create","added":1,"deleted":0}]"#)
+        );
+        assert_eq!(r.trace_id, Some(9));
+        assert_eq!(r.turn_status.as_deref(), Some("completed"));
     }
 
     /// retry 截尾：锚行后的行（含 NULL id 存量行）全删、锚行保留、活跃时间推进；

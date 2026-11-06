@@ -131,6 +131,8 @@ pub(super) async fn persist_report_reply(
             &sid,
             &crate::db::BotMsgRow {
                 msg_id: None,
+                file_changes_json: None,
+                trace_id: None,
                 role: "assistant".into(),
                 content,
                 refs_json: refs,

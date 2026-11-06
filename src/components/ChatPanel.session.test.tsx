@@ -546,7 +546,6 @@ describe("ChatPanel", () => {
       },
     );
     const historyLoads: unknown[] = [];
-    const saves: Array<Record<string, unknown> | undefined> = [];
     let releaseChat!: (v: { text: string; taskRefs: [] }) => void;
     const chatGate = new Promise<{ text: string; taskRefs: [] }>((r) => {
       releaseChat = r;
@@ -565,9 +564,6 @@ describe("ChatPanel", () => {
           case "bot_history_load":
             historyLoads.push(args?.sessionId);
             return [];
-          case "bot_history_save":
-            saves.push(args);
-            return null;
           case "bot_session_create":
             return { id: "s-new", title: "新对话" };
           default:
@@ -623,23 +619,25 @@ describe("ChatPanel", () => {
       expect(historyLoads.filter((x) => x === "s1").length).toBe(
         s1LoadsBefore + 1,
       );
-      // 收尾：回复落回原会话 s1（不串台核心钉 3），绝不写 s2
+      // 收尾：回复落回原会话 s1（不串台核心钉 3）——真源化后落库归后端，
+      // 前端按事件回显；s1 的终稿事件不得串进当前视图
       await act(async () => {
         releaseChat({ text: "回复A", taskRefs: [] });
+        for (const cb of evListeners["bot-msg-upserted"] ?? []) {
+          cb({
+            payload: {
+              sessionId: "s1",
+              msgId: "m1",
+              role: "assistant",
+              content: "回复A",
+              turnStatus: "completed",
+            },
+          });
+        }
       });
       await waitFor(() => {
-        expect(saves.length).toBeGreaterThan(0);
+        expect(screen.getByText("回复A")).toBeInTheDocument();
       });
-      for (const sv of saves) {
-        expect(sv?.sessionId).toBe("s1");
-      }
-      const lastSave = saves[saves.length - 1] as {
-        sessionId: string;
-        messages: { role: string; content: string }[];
-      };
-      expect(lastSave.messages[lastSave.messages.length - 1].content).toBe(
-        "回复A",
-      );
     } finally {
       mocks.invokeMock.mockImplementation(prevInvokeImpl!);
       mocks.listenMock.mockImplementation(prevListenImpl!);
