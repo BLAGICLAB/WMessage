@@ -26,7 +26,6 @@ export type ChatSendParams = {
   input: string;
   messages: Msg[];
   messagesRef: RefObject<Msg[]>;
-  persistHistory: (sid: string, msgs: Msg[]) => Promise<unknown>;
   refs: TaskRef[];
   rootRef: RefObject<HTMLDivElement | null>;
   runChat: (
@@ -60,7 +59,6 @@ export function useChatSend(params: ChatSendParams) {
     input,
     messages,
     messagesRef,
-    persistHistory,
     refs,
     rootRef,
     runChat,
@@ -116,6 +114,13 @@ export function useChatSend(params: ChatSendParams) {
         return true;
       }
       enterChat(sid);
+      // 摘要范围取当前历史行的身份（真源化：落库归后端，前端只报范围）
+      const msgIds = history.map((m) => m.id).filter((v): v is string => !!v);
+      if (msgIds.length < 2) {
+        addHint("消息还没有身份记录（旧数据），先刷新对话再压缩");
+        exitChat(sid);
+        return true;
+      }
       // 进度占位：压缩请求期间有可见反馈（否则界面像卡死）
       if (sessionIdRef.current === sid) {
         setMessages((prev) => [
@@ -124,25 +129,29 @@ export function useChatSend(params: ChatSendParams) {
         ]);
       }
       try {
+        // 后端读库总结（旧摘要行也参与——幂等再压缩）
         const summary = await invoke<string>("bot_compact", {
-          messages: history.map((m) => ({ role: m.role, content: m.content })),
+          sessionId: sid,
         });
-        const compacted: Msg[] = [
-          {
-            role: "assistant",
-            content: `📦 上下文已压缩（原 ${history.length} 条消息）：\n${summary}`,
-          },
-        ];
-        persistHistory(sid, compacted);
-        if (sessionIdRef.current === sid) setMessages(compacted);
+        const label = `📦 上下文已压缩（原 ${msgIds.length} 条消息）：\n${summary}`;
+        // 摘要行换血（真源侧操作）：指定行换成一条摘要行，事件回显对账
+        const summaryRow = await invoke<{ msgId: string | null }>(
+          "bot_history_replace_summary",
+          { sessionId: sid, msgIds, content: label },
+        );
+        const compacted: Msg = {
+          id: summaryRow.msgId ?? undefined,
+          role: "assistant",
+          content: label,
+        };
+        if (sessionIdRef.current === sid) setMessages([compacted]);
       } catch (e) {
+        // 压缩失败不动库（原历史完好），只提示
         const note: Msg = {
           role: "assistant",
           content: `⚠️ 压缩失败：${formatCommandError(e)}`,
         };
-        const failed = [...history, note];
-        persistHistory(sid, failed);
-        if (sessionIdRef.current === sid) setMessages(failed);
+        if (sessionIdRef.current === sid) setMessages([note]);
         handleCommandError(e, "bot_compact", { silent: true });
       } finally {
         exitChat(sid);
@@ -316,9 +325,17 @@ export function useChatSend(params: ChatSendParams) {
   const removeMessage = useCallback((idx: number) => {
     const sid = sessionIdRef.current;
     if (!sid || streamState.isInflight(sid)) return;
+    const target = messagesRef.current[idx];
+    // 真源化：删行走真源侧操作（bot_history_drop），本视图即时摘除
+    if (!target?.id) {
+      handleCommandError("该消息还没有身份记录（旧数据），先刷新对话再移除", "removeMessage");
+      return;
+    }
     const next = messagesRef.current.filter((_, j) => j !== idx);
     setMessages(next);
-    persistHistory(sid, next);
+    invoke("bot_history_drop", { sessionId: sid, msgId: target.id }).catch(
+      (e) => handleCommandError(e, "bot_history_drop"),
+    );
   }, []);
   const openTaskInMain = useCallback(async (ref: TaskRef) => {
     emit("edit-task", { id: ref.id }).catch(() => {});

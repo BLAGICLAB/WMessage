@@ -27,7 +27,6 @@ export type ChatSessionActionsParams = {
   exitChat: (sid: string) => void;
   mergeInflight: (rows: Msg[], sid: string) => Msg[];
   messagesRef: RefObject<Msg[]>;
-  persistHistory: (sid: string, msgs: Msg[]) => Promise<unknown>;
   resumeInflight: (sid: string) => Promise<void>;
   rowsToMsgs: (rows: { role: string; content: string; refsJson?: string | null | undefined; thinking?: string | null | undefined; toolsJson?: string | null | undefined; turnStatus?: string | null | undefined; }[], sid?: string | null | undefined) => Msg[];
   sessionId: string | null;
@@ -54,7 +53,6 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
     loadFinalText,
     mergeInflight,
     messagesRef,
-    persistHistory,
     resumeInflight,
     rowsToMsgs,
     sessionId,
@@ -325,7 +323,9 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
             partial && !alreadyNoted ? `${partial}\n\n${note}` : partial || note,
         },
       ];
-      persistHistory(sid, failed);
+      // 真源化批 4：失败行已由后端落库（entry 的 Err 分支，事件回显），
+      // 本地只做视图兜底（事件万一丢失，partial + note 仍在屏上）；重启
+      // 后失败叙事从库还原
       if (sessionIdRef.current === sid) setMessages(failed);
       // 流式错误已经写进消息气泡了，不重复弹 alert
       handleCommandError(e, "bot_chat", { silent: true });

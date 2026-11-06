@@ -26,6 +26,9 @@ pub(crate) struct TurnRecord {
     pub(crate) file_changes_json: Option<String>,
     /// 最后一次 bot-turn-status 的 status（循环唯一出口必发终态）
     pub(crate) turn_status: Option<String>,
+    /// 正文增量累积：成功轮弃用（content 以循环产出为准），失败轮它是
+    /// 已流出正文的唯一聚合处（模型循环 Err 时拿不到 BotChatResult）
+    pub(crate) partial_text: Option<String>,
 }
 
 static RECORDS: Mutex<Option<HashMap<String, serde_json::Value>>> = Mutex::new(None);
@@ -50,6 +53,15 @@ pub(crate) fn push_event(session_id: &str, event: &str, payload: &serde_json::Va
             .entry(session_id.to_string())
             .or_insert_with(|| serde_json::json!({ "thinking": "", "tools": [], "files": [] }));
         match event {
+            "bot-chat-delta" => {
+                if let Some(t) = payload["text"].as_str() {
+                    rec["text"] = serde_json::Value::String(format!(
+                        "{}{}",
+                        rec["text"].as_str().unwrap_or(""),
+                        t
+                    ));
+                }
+            }
             "bot-think-delta" => {
                 if let Some(t) = payload["text"].as_str() {
                     rec["thinking"] = serde_json::Value::String(format!(
@@ -138,6 +150,10 @@ pub(crate) fn take(session_id: &str) -> TurnRecord {
         tools_json: array_to_string(Some(rec["tools"].clone())),
         file_changes_json: array_to_string(Some(rec["files"].clone())),
         turn_status: rec["status"].as_str().map(str::to_string),
+        partial_text: rec["text"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
     }
 }
 

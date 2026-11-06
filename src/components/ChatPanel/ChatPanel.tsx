@@ -395,7 +395,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
   });
   const {
     loadFinalText,
-    persistHistory,
     resumeInflight,
     rowsToMsgs,
   } = useChatHistory({
@@ -690,7 +689,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
     exitChat,
     mergeInflight,
     messagesRef,
-    persistHistory,
     resumeInflight,
     rowsToMsgs,
     sessionId,
@@ -726,7 +724,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
     input,
     messages,
     messagesRef,
-    persistHistory,
     refs,
     rootRef,
     runChat,

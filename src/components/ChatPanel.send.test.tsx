@@ -201,7 +201,7 @@ describe("ChatPanel", () => {
     expect(JSON.stringify(chatCall?.[1])).not.toContain("当前对话没有进行中的回复");
   });
 
-  it("移除一条回复时的整段落库也不带本地提示（persistHistory 收口）", async () => {
+  it("移除一条回复：按行删（bot_history_drop），提示不混进任何载荷", async () => {
     const user = userEvent.setup();
     render(<ChatPanel {...defaultProps} />);
     await waitFor(() => {
@@ -231,7 +231,7 @@ describe("ChatPanel", () => {
     await waitFor(() => {
       expect(screen.getByText(/当前对话没有进行中的回复/)).toBeInTheDocument();
     });
-    // 移除助手回复 → 整段历史重新落库：提示不得混进去
+    // 移除助手回复 → 按行删（真源化批 4：全量快照写权已断代）
     const bubbleRow = screen
       .getByText("机器人回复")
       .closest("div.chat-bubble")?.parentElement;
@@ -241,11 +241,18 @@ describe("ChatPanel", () => {
         "移除这条回复（不满意时删除，不再作为上下文）",
       ),
     );
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_drop", {
+        sessionId: "s1",
+        msgId: "m1",
+      });
+    });
+    // 全量保存通道已退役：提示无从混进任何落库载荷
     const saveCalls = mocks.invokeMock.mock.calls.filter(
       (c) => c[0] === "bot_history_save",
     );
-    const saveCall = saveCalls[saveCalls.length - 1];
-    expect(JSON.stringify(saveCall?.[1])).not.toContain("当前对话没有进行中的回复");
+    expect(saveCalls.length).toBe(0);
+    expect(screen.queryByText("机器人回复")).not.toBeInTheDocument();
   });
 
   it("bot_chat 回传 traceId：答复照常呈现（trace 归属跟着消息走）", async () => {
@@ -369,6 +376,8 @@ describe("ChatPanel", () => {
       }
     });
     expect(await screen.findByText("新的答复")).toBeInTheDocument();
+    // 读回的终态行随事件回显的行一样是可删实体：按行删（全量重写已断代，
+    // interrupted 的库级往返由后端锚点⑰钉住）
     const bubbleRow = screen
       .getByText("新的答复")
       .closest("div.chat-bubble")?.parentElement;
@@ -379,16 +388,10 @@ describe("ChatPanel", () => {
       ),
     );
     await waitFor(() => {
-      const saveCalls = mocks.invokeMock.mock.calls.filter(
-        (c) => c[0] === "bot_history_save",
-      );
-      const last = saveCalls[saveCalls.length - 1];
-      const payload = (last?.[1] ?? {}) as {
-        messages?: { content?: string; turnStatus?: string | null }[];
-      };
-      const msgs = payload.messages ?? [];
-      const row = msgs.find((m) => m.content === "被打断的答复");
-      expect(row?.turnStatus).toBe("interrupted");
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_drop", {
+        sessionId: "s1",
+        msgId: "m2",
+      });
     });
   });
 

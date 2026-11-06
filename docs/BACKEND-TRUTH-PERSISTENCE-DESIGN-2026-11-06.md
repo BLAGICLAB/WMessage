@@ -1,6 +1,6 @@
 # 聊天持久化真源化改造方案（持久层唯一事实、前端投影）
 
-状态：**实施中（批 1–3 已落地）**。2026-11-06 拍板：取代同日
+状态：**实施中（批 1–4 已落地；B 阶段收官——最后一个前端全量快照保存点已退役，汇报竞态在写权层面不可再构造）**。2026-11-06 拍板：取代同日
 《MSG-IDENTITY-PERSISTENCE-DESIGN-2026-11-06.md》（快照混合方案作废；其数据面
 设计、消费方清单、出生点清单、业界口径作为本文素材继续被引用，见旧文 §四/§七/§十四）。
 
@@ -298,6 +298,19 @@ bot_chat(session_id, content, client_msg_id, ...):
 - **偏离 5（批 3）**：终稿聚合需要新列 `file_changes`（TEXT，前端
   FileChangeLite 数组 JSON）——§5.3 聚合表列了 fileChanges 来源但没点名要落列，
   数据面三列实为四列（msg_id/ord/trace_id/file_changes），迁移清单同步。
+- **偏离 7（批 4，锚点㉒ 形态变更）**：汇报竞态「红转绿」测试改为**白盒守卫**
+  （设计 §十四-5 预案启用）：断代后「前端全量保存」在写权层面不存在，红态不可
+  构造。守卫断言三件：useChatHistory 无 persistHistory/bot_history_save、lib.rs
+  不再注册 bot_history_save、useChatSend 的残余路径全部改后端操作（drop/
+  replace_summary）。
+- **偏离 8（批 4）**：`/compact` 失败路径不再动库——旧实现把失败 note 落库
+  （persistHistory(failed)），新实现原历史完好、note 仅本地视图（不入库）。
+  属改善。压缩范围口径微差：旧前端过滤空 content 行后传参，新后端读库取全
+  行——库里空 content 行实际不存在（发送闸拦空），等价。
+- **批 4 附带（过渡态）**：失败轮时序 = 后端失败行事件回显替换占位 → invoke
+  reject → 前端 catch 本地合成行覆盖视图（内容近似、无 id）→ 下次 reload 对齐
+  库行。removeMessage 对无 id 行（旧数据）拒绝并提示（旧行为整段重存可删任意
+  行——写权断代后的边界，与 retry 同口径）。
 - **偏离 6（批 3）**：失败轮（循环返回 Err）**不落终稿行**，失败叙事仍由前端
   catch 路径落（partial + ⚠️ note）——批 4 断代删除 `bot_history_save` 时一并
   收编（后端写失败行或定向操作）。锚点⑯据此钉的是 Ok 路径顺序：主链出口先发

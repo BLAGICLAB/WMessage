@@ -34,31 +34,6 @@ export function useChatHistory(params: ChatHistoryParams) {
     streamHandlersRef,
   } = params;
 
-  const persistHistory = (sid: string, msgs: Msg[]) =>
-    invoke("bot_history_save", {
-      sessionId: sid,
-      messages: msgs
-        .filter((m) => !m.hint)
-        .map((m) => ({
-          // 消息身份随行（真源化）：后端按 (session_id, msg_id) upsert，
-          // 缺 id 的行由后端补服务端身份。后端行的聚合字段（fileChanges/
-          // trace）原样回程——upsert 不回传即被清 NULL
-          msgId: m.id ?? null,
-          role: m.role,
-          content: m.content,
-          refsJson: m.refs?.length ? JSON.stringify(m.refs) : null,
-          thinking: m.thinking ?? null,
-          toolsJson: m.tools?.length ? JSON.stringify(m.tools) : null,
-          turnStatus: m.turnStatus ?? null,
-          fileChangesJson: m.fileChanges?.length
-            ? JSON.stringify(m.fileChanges)
-            : null,
-          traceId: m.traceId ?? null,
-        })),
-    }).catch((e) =>
-      // 后台持久化失败：UI 还能跑，不打断当前对话
-      handleCommandError(e, "bot_history_save", { silent: true }),
-    );
   const parseHistoryJson = <T,>(
     raw: string | null | undefined,
     field: string,
@@ -291,7 +266,6 @@ export function useChatHistory(params: ChatHistoryParams) {
 
   return {
     loadFinalText,
-    persistHistory,
     resumeInflight,
     rowsToMsgs,
   };

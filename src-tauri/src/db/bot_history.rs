@@ -260,30 +260,6 @@ pub fn bot_history_save_audited<R: tauri::Runtime>(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn bot_history_save(
-    app: AppHandle,
-    session_id: String,
-    messages: Vec<BotMsgRow>,
-) -> CommandResult<()> {
-    async_runtime::spawn_blocking(move || {
-        let _g = crate::db::lock::lock_or_recover(
-            &super::DB_WRITE_LOCK,
-            "db::bot_history DB_WRITE_LOCK",
-        );
-        let mut conn = super::open_db(&app)?;
-        let tx = conn
-            .transaction()
-            .map_err(|e| CommandError::DbError(e.to_string()))?;
-        bot_history_save_audited(&app, &tx, &session_id, &messages)
-            .map_err(CommandError::DbError)?;
-        tx.commit()
-            .map_err(|e| CommandError::DbError(e.to_string()))
-    })
-    .await
-    .map_err(|e| CommandError::from(format!("历史保存线程 join 失败：{e}")))?
-}
-
 /// 追加单条消息（不覆盖已有行）。
 ///
 /// 给后端主动发起的轮次用：那种轮次没有前端快照可覆写，走全量覆盖写就得先
@@ -380,6 +356,123 @@ pub fn bot_history_drop_after_inner(
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok((ids, n))
+}
+
+/// 删单行（removeMessage 的真源侧操作）：按 msg_id 精确删，他行不动。
+/// 返回删除条数（0 = 行不存在，调用方提示即可）。删行与会话活跃时间推进
+/// 同一事务（与 clear/截尾同口径）。
+pub fn bot_history_drop_inner(
+    conn: &mut rusqlite::Connection,
+    session_id: &str,
+    msg_id: &str,
+) -> Result<usize, String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let n = tx
+        .execute(
+            "DELETE FROM bot_messages WHERE session_id = ?1 AND msg_id = ?2",
+            rusqlite::params![session_id, msg_id],
+        )
+        .map_err(|e| e.to_string())?;
+    let now = crate::db::now_ms();
+    tx.execute(
+        "UPDATE bot_sessions SET updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(n)
+}
+
+/// 摘要行换血（compact 的真源侧操作）：把 msg_ids 集合的行删掉，换成一条
+/// 服务端身份的摘要行，位置取被删集合的最小 ord（摘要代表那一段历史，
+/// 不得挪到会话尾）。支持部分压缩：集合外的行 ord 不动。返回摘要行投影
+/// （含服务端 id，供 bot-msg-upserted 载荷）+ 被删行身份清单。
+///
+/// msg_ids 为空 = 无事发生（前端不会这么调，防御性短路）。
+pub fn bot_history_replace_summary_inner(
+    conn: &mut rusqlite::Connection,
+    session_id: &str,
+    msg_ids: &[String],
+    summary_content: &str,
+) -> Result<(Vec<String>, crate::db::BotMsgRow), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let ids_json = serde_json::to_string(msg_ids).map_err(|e| e.to_string())?;
+    let dropped: Vec<String> = tx
+        .prepare(
+            "SELECT msg_id FROM bot_messages
+              WHERE session_id = ?1 AND msg_id IS NOT NULL
+                AND msg_id IN (SELECT value FROM json_each(?2))",
+        )
+        .map_err(|e| e.to_string())?
+        .query_map(rusqlite::params![session_id, ids_json], |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    if dropped.is_empty() {
+        tx.commit().map_err(|e| e.to_string())?;
+        return Ok((
+            Vec::new(),
+            crate::db::BotMsgRow {
+                msg_id: None,
+                role: "assistant".into(),
+                content: String::new(),
+                refs_json: None,
+                thinking: None,
+                tools_json: None,
+                turn_status: None,
+                file_changes_json: None,
+                trace_id: None,
+            },
+        ));
+    }
+    let min_ord: i64 = tx
+        .query_row(
+            "SELECT MIN(ord) FROM bot_messages
+              WHERE session_id = ?1 AND msg_id IN (SELECT value FROM json_each(?2))",
+            rusqlite::params![session_id, ids_json],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM bot_messages
+          WHERE session_id = ?1 AND msg_id IN (SELECT value FROM json_each(?2))",
+        rusqlite::params![session_id, ids_json],
+    )
+    .map_err(|e| e.to_string())?;
+    // 摘要行走行内核落行（就地补服务端 id），随后改盖 ord 到被删集合起点
+    let summary = crate::db::BotMsgRow {
+        msg_id: None,
+        role: "assistant".into(),
+        content: summary_content.to_string(),
+        refs_json: None,
+        thinking: None,
+        tools_json: None,
+        turn_status: None,
+        file_changes_json: None,
+        trace_id: None,
+    };
+    let msg_id = crate::db::bot_history_upsert_row_inner(&tx, session_id, &summary)
+        .map_err(|e| e.to_string())?;
+    // 行内核按 MAX+1 尾插——摘要行要占被删集合的起点，改盖 ord
+    tx.execute(
+        "UPDATE bot_messages SET ord = ?2 WHERE session_id = ?1 AND msg_id = ?3",
+        rusqlite::params![session_id, min_ord, msg_id],
+    )
+    .map_err(|e| e.to_string())?;
+    let now = crate::db::now_ms();
+    tx.execute(
+        "UPDATE bot_sessions SET updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok((
+        dropped,
+        crate::db::BotMsgRow {
+            msg_id: Some(msg_id),
+            ..summary
+        },
+    ))
 }
 
 /// 清空指定会话的聊天记录（会话保留），并把会话的活跃时间推到当前。
@@ -1040,6 +1133,81 @@ mod tests {
             )
             .expect("数行");
         assert_eq!(distinct, 4, "四行身份互异");
+    }
+
+    /// 锚点⑱：drop 单行——删指定行、他行保留、无锚无事发生、活跃时间推进
+    #[test]
+    fn drop_removes_exactly_one_row_and_keeps_others() {
+        let mut conn = identity_db();
+        let tx = conn.transaction().expect("开事务");
+        bot_history_save_inner(&tx, "s1", &[row("a", "问题"), row("b", "答复")]).expect("首批");
+        tx.commit().expect("提交");
+        let n = bot_history_drop_inner(&mut conn, "s1", "b").expect("drop");
+        assert_eq!(n, 1, "精确删一行");
+        let contents: Vec<String> = conn
+            .prepare("SELECT content FROM bot_messages WHERE session_id = 's1'")
+            .expect("prepare")
+            .query_map([], |r| r.get(0))
+            .expect("map")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("收集");
+        assert_eq!(contents, vec!["问题".to_string()], "他行保留");
+        let n2 = bot_history_drop_inner(&mut conn, "s1", "锚不存在").expect("无锚");
+        assert_eq!(n2, 0, "行不存在 = 无事发生");
+        let updated_at: i64 = conn
+            .query_row(
+                "SELECT updated_at FROM bot_sessions WHERE id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("读会话");
+        assert!(updated_at > 1000, "删行也推会话活跃时间");
+    }
+
+    /// 锚点⑳：摘要行换血——集合行删净、摘要行占被删集合起点（ord=最小）、
+    /// 服务端身份随行返回；集合外行不动
+    #[test]
+    fn replace_summary_bloods_out_set_and_lands_summary_at_its_start() {
+        let mut conn = identity_db();
+        let tx = conn.transaction().expect("开事务");
+        bot_history_save_inner(
+            &tx,
+            "s1",
+            &[row("a", "旧一"), row("b", "旧二"), row("c", "保留行")],
+        )
+        .expect("首批");
+        tx.commit().expect("提交");
+        let (dropped, summary) = bot_history_replace_summary_inner(
+            &mut conn,
+            "s1",
+            &["a".into(), "b".into()],
+            "摘要：早前聊了两句",
+        )
+        .expect("换血");
+        assert_eq!(dropped, vec!["a".to_string(), "b".to_string()]);
+        assert!(
+            summary.msg_id.as_deref().is_some_and(|s| !s.is_empty()),
+            "摘要行带服务端身份（事件载荷用）"
+        );
+        let rows: Vec<(i64, String)> = conn
+            .prepare("SELECT ord, content FROM bot_messages WHERE session_id = 's1' ORDER BY ord")
+            .expect("prepare")
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("map")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("收集");
+        assert_eq!(
+            rows,
+            vec![
+                (0, "摘要：早前聊了两句".to_string()),
+                (2, "保留行".to_string())
+            ],
+            "摘要行占被删集合起点（ord=0），集合外行 ord 不动"
+        );
+        // 空集合防御性短路
+        let (dropped2, s2) =
+            bot_history_replace_summary_inner(&mut conn, "s1", &[], "x").expect("空集合");
+        assert!(dropped2.is_empty() && s2.msg_id.is_none(), "空集合无事发生");
     }
 
     /// 锚点⑰：终稿行聚合字段（thinking/tools/file_changes/trace_id）落库

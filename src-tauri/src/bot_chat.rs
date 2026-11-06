@@ -240,19 +240,41 @@ async fn bot_chat_entry(
         refs_json.as_deref(),
     )
     .await?;
-    let out = bot_chat_guarded(
+    let out = match bot_chat_guarded(
         app.clone(),
         messages,
         session_id.clone(),
         reasoning_effort,
         TurnOrigin::User,
     )
-    .await?;
+    .await
+    {
+        Ok(out) => out,
+        // 失败轮也要落行（真源化 §5.2 ③ 的 Err 半边，批 4 收编）：已流出的
+        // 正文只活在聚合器里（模型循环 Err 时拿不到 BotChatResult），不落行
+        // = 重启后失败叙事凭空消失。失败行落库后前端 catch 只做本地视图兜底
+        Err(e) => {
+            if let Some(sid) = session_id.as_deref() {
+                let record = crate::bot::turn_record::take(sid);
+                let row = build_failed_row(record, &e);
+                let sid2 = sid.to_string();
+                let (msg_id, mut row) = crate::db::lock::with_write_conn(app, move |conn| {
+                    let id =
+                        crate::db::bot_history::bot_history_upsert_row_inner(conn, &sid2, &row)?;
+                    Ok((id, row))
+                })
+                .await
+                .map_err(CommandError::DbError)?;
+                row.msg_id = Some(msg_id);
+                emit_row_upserted(app, Some(sid), &row);
+            }
+            return Err(e);
+        }
+    };
     // 终稿落行（真源化 §5.2 ③）：聚合器收走本轮事实（thinking/tools/files/
     // 终态）→ upsert 终稿行 → bot-msg-upserted。恒在该回合 bot-turn-status
     // 终态事件之后——终态在循环唯一出口发出（core 的 final_status 收口），
-    // 这里才返回，占位替换依赖此序。失败轮（Err）不落终稿行：失败叙事由
-    // 前端 catch 路径落（批 4 断代时一并收编）
+    // 这里才返回，占位替换依赖此序
     if let Some(sid) = session_id.as_deref() {
         let record = crate::bot::turn_record::take(sid);
         let row = build_final_row(record, &out.result);
@@ -272,6 +294,33 @@ async fn bot_chat_entry(
         crate::bot_orchestrator::mark_digested(session_id.as_deref(), id);
     }
     Ok(out.result)
+}
+
+/// 失败行组装（纯函数，锚点可直测）：已流出正文 + ⚠️ 失败说明，格式与前端
+/// 旧 catch 合成行一致（`{partial}\n\n{note}`）——重启后失败叙事从库还原。
+/// 失败行无 refs / trace / 终态细节，turn_status = failed。
+fn build_failed_row(
+    record: crate::bot::turn_record::TurnRecord,
+    e: &CommandError,
+) -> crate::db::BotMsgRow {
+    let partial = record.partial_text.unwrap_or_default();
+    let note = format!("⚠️ {}", e.message());
+    let content = if partial.is_empty() {
+        note
+    } else {
+        format!("{partial}\n\n{note}")
+    };
+    crate::db::BotMsgRow {
+        msg_id: None,
+        role: "assistant".into(),
+        content,
+        refs_json: None,
+        thinking: record.thinking,
+        tools_json: record.tools_json,
+        turn_status: Some("failed".into()),
+        file_changes_json: record.file_changes_json,
+        trace_id: None,
+    }
 }
 
 /// 终稿行组装（纯函数，锚点可直测）：聚合事实 + 循环产出 → 一条 assistant 行。
@@ -369,6 +418,66 @@ fn emit_row_upserted<R: tauri::Runtime>(
     crate::bot::stream_log::emit_recorded(app, session_id, "bot-msg-upserted", payload);
 }
 
+/// 删单行（removeMessage 的真源侧操作）：按 msg_id 精确删。返回删除条数
+/// （0 = 行不存在，前端提示即可）。bot-msg-dropped 指名广播。
+#[tauri::command]
+pub async fn bot_history_drop(
+    app: AppHandle,
+    session_id: String,
+    msg_id: String,
+) -> CommandResult<usize> {
+    let n = {
+        let sid = session_id.clone();
+        let mid = msg_id.clone();
+        crate::db::lock::with_write_conn(&app, move |conn| {
+            crate::db::bot_history::bot_history_drop_inner(conn, &sid, &mid)
+        })
+        .await
+        .map_err(CommandError::DbError)?
+    };
+    if n > 0 {
+        crate::bot::stream_log::emit_recorded(
+            &app,
+            Some(&session_id),
+            "bot-msg-dropped",
+            serde_json::json!({ "msgIds": [msg_id] }),
+        );
+    }
+    Ok(n)
+}
+
+/// 摘要行换血（compact 的真源侧操作）：msg_ids 集合行换成一条摘要行，
+/// 摘要行身份/位置由内核定（占被删集合起点）。两个事件一起广播：
+/// 被删行 bot-msg-dropped（指名）+ 摘要行 bot-msg-upserted（整行投影）。
+#[tauri::command]
+pub async fn bot_history_replace_summary(
+    app: AppHandle,
+    session_id: String,
+    msg_ids: Vec<String>,
+    content: String,
+) -> CommandResult<crate::db::BotMsgRow> {
+    let (dropped_ids, summary) = {
+        let sid = session_id.clone();
+        crate::db::lock::with_write_conn(&app, move |conn| {
+            crate::db::bot_history::bot_history_replace_summary_inner(
+                conn, &sid, &msg_ids, &content,
+            )
+        })
+        .await
+        .map_err(CommandError::DbError)?
+    };
+    if !dropped_ids.is_empty() {
+        crate::bot::stream_log::emit_recorded(
+            &app,
+            Some(&session_id),
+            "bot-msg-dropped",
+            serde_json::json!({ "msgIds": dropped_ids }),
+        );
+        emit_row_upserted(&app, Some(&session_id), &summary);
+    }
+    Ok(summary)
+}
+
 /// retry 截尾（定向操作提前落地，原计划批 4；依赖见 §十二批 2）：删掉排在
 /// msg_id 行之后的所有行，让后端重建的上下文不含上一轮的失败回复等残行。
 /// 返回删除条数。锚行不存在 = 无事发生（0）。
@@ -428,9 +537,19 @@ fn require_api_key(api_key: &str) -> CommandResult<()> {
 /// 改其中一处前先看另一处。
 const SUMMARIZE_MAX_CHARS: usize = 200_000;
 
-/// /compact 快捷命令：把当前会话历史交给模型总结成摘要（单次非流式请求，不带工具）
+/// /compact 快捷命令（真源化契约）：读库取全会话历史交给模型总结成摘要
+/// （单次非流式请求，不带工具）。摘要行落库走 bot_history_replace_summary
+/// （前端编排），本命令只产出摘要文本——幂等：库里的旧摘要行也参与总结。
 #[tauri::command]
-pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<String> {
+pub async fn bot_compact(app: AppHandle, session_id: String) -> CommandResult<String> {
+    let rows = crate::db::bot_history::bot_history_load(app.clone(), session_id).await?;
+    let messages: Vec<ChatMsg> = rows
+        .into_iter()
+        .map(|r| ChatMsg {
+            role: r.role,
+            content: r.content,
+        })
+        .collect();
     summarize_messages(&app, COMPACT_SYSTEM_PROMPT, &messages).await
 }
 

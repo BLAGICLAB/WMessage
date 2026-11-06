@@ -153,6 +153,7 @@ fn build_final_row_maps_aggregate_fields_with_status_fallback() {
         tools_json: Some(r#"[{"id":"t1"}]"#.into()),
         file_changes_json: Some(r#"[{"path":"/a"}]"#.into()),
         turn_status: Some("interrupted".into()),
+        partial_text: None,
     };
     let result = BotChatResult {
         text: "答复".into(),
@@ -186,6 +187,84 @@ fn build_final_row_maps_aggregate_fields_with_status_fallback() {
         Some("completed"),
         "终态缺失兜底"
     );
+}
+
+/// 锚点㉒/㉓（竞态根治的白盒形态）：前端全量快照保存通道已断代。
+/// 「前端全量保存冲掉后端 append 行」的汇报竞态在写权层面不可再构造——
+/// 构造不出红态即绿态的证明（设计 §十四-5 预案）。
+#[test]
+fn frontend_snapshot_write_path_is_retired() {
+    let history = include_str!("../../../src/components/ChatPanel/useChatHistory.ts");
+    assert!(
+        !history.contains("persistHistory"),
+        "前端历史模块不得再有 persistHistory（全量快照写权已断代）"
+    );
+    assert!(
+        !history.contains("bot_history_save"),
+        "前端不得再调用 bot_history_save"
+    );
+    let lib = include_str!("../lib.rs");
+    assert!(
+        !lib.contains("bot_history::bot_history_save,"),
+        "bot_history_save 命令已断代删除，不得再注册"
+    );
+    // 残余保存路径全部改后端操作
+    let send = include_str!("../../../src/components/ChatPanel/useChatSend.ts");
+    assert!(
+        send.contains("bot_history_drop"),
+        "removeMessage → bot_history_drop 接线缺失"
+    );
+    assert!(
+        send.contains("bot_history_replace_summary"),
+        "compact → bot_history_replace_summary 接线缺失"
+    );
+    assert!(
+        !send.contains("persistHistory"),
+        "send 模块不得再有 persistHistory 残留"
+    );
+}
+
+/// 失败行接线守卫：entry 的 Err 分支也 take + 落行，且错误继续上抛
+/// （前端 catch 仍要走错误路径做本地视图兜底）
+#[test]
+fn failed_turn_lands_a_row_too_in_chat_entry() {
+    let src = include_str!("../bot_chat.rs");
+    let start = src.find("async fn bot_chat_entry(").expect("入口起点");
+    let body = &src[start..];
+    let end = body.find("\n}\n").map(|i| i + 3).unwrap_or(body.len());
+    let entry = &body[..end];
+    assert!(
+        entry.contains("build_failed_row"),
+        "入口 Err 分支必须落失败行（失败叙事重启后从库还原）"
+    );
+    assert!(
+        entry.contains("return Err(e)"),
+        "失败行落库后错误必须继续上抛"
+    );
+}
+
+/// 失败行组装（纯函数）：partial + ⚠️ note，与前端旧 catch 合成格式一致；
+/// 空正文只有 note
+#[test]
+fn build_failed_row_formats_partial_and_note() {
+    let record = crate::bot::turn_record::TurnRecord {
+        partial_text: Some("写了一半的正文".into()),
+        ..Default::default()
+    };
+    // 显式变体：门禁拦 From<String> blanket 降级（测试里也不许）
+    let e = CommandError::Internal("后端错误详情".to_string());
+    let row = build_failed_row(record, &e);
+    assert!(
+        row.content.starts_with("写了一半的正文"),
+        "已流出正文在前：{}",
+        row.content
+    );
+    assert!(row.content.contains("⚠️"), "失败说明随行");
+    assert!(row.content.contains("后端错误详情"));
+    assert_eq!(row.turn_status.as_deref(), Some("failed"));
+    let row2 = build_failed_row(crate::bot::turn_record::TurnRecord::default(), &e);
+    assert!(row2.content.contains("⚠️"), "空正文只有 note");
+    assert_eq!(row2.turn_status.as_deref(), Some("failed"));
 }
 
 /// 测试种子 DDL：身份测试需要 bot_sessions 表（bot_messages 由 open_db 基线建好）
