@@ -79,7 +79,10 @@ pub fn bot_history_load_inner(
 }
 
 #[tauri::command]
-pub async fn bot_history_load(app: AppHandle, session_id: String) -> CommandResult<Vec<BotMsgRow>> {
+pub async fn bot_history_load<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    session_id: String,
+) -> CommandResult<Vec<BotMsgRow>> {
     async_runtime::spawn_blocking(move || {
         let conn = super::open_db(&app)?;
         bot_history_load_inner(&conn, &session_id).map_err(CommandError::DbError)
@@ -310,6 +313,58 @@ pub fn bot_history_append_inner(
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// 截尾删除：删掉 msg_id 锚行之后（ord 更大）的所有行，锚行本身保留。
+///
+/// retry 的真源侧配套：上一轮的失败回复等残行不清掉，后端重建的上下文就会
+/// 把它们摆回模型面前。锚行不存在 = 无事发生（调用方随后照常起轮，行内核
+/// upsert 会按 client_msg_id 补上）。被删行里带身份的以清单返回（供
+/// bot-msg-dropped 事件指名），NULL id 行不可指名，只计条数。
+///
+/// 删行与会话活跃时间推进同一事务（与 clear 同口径）。
+pub fn bot_history_drop_after_inner(
+    conn: &mut rusqlite::Connection,
+    session_id: &str,
+    msg_id: &str,
+) -> Result<(Vec<String>, usize), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let anchor: Option<i64> = match tx.query_row(
+        "SELECT ord FROM bot_messages WHERE session_id = ?1 AND msg_id = ?2",
+        rusqlite::params![session_id, msg_id],
+        |r| r.get(0),
+    ) {
+        Ok(v) => Some(v),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => return Err(e.to_string()),
+    };
+    let Some(anchor) = anchor else {
+        return Ok((Vec::new(), 0));
+    };
+    let ids: Vec<String> = tx
+        .prepare(
+            "SELECT msg_id FROM bot_messages
+              WHERE session_id = ?1 AND ord > ?2 AND msg_id IS NOT NULL",
+        )
+        .map_err(|e| e.to_string())?
+        .query_map(rusqlite::params![session_id, anchor], |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let n = tx
+        .execute(
+            "DELETE FROM bot_messages WHERE session_id = ?1 AND ord > ?2",
+            rusqlite::params![session_id, anchor],
+        )
+        .map_err(|e| e.to_string())?;
+    let now = crate::db::now_ms();
+    tx.execute(
+        "UPDATE bot_sessions SET updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok((ids, n))
 }
 
 /// 清空指定会话的聊天记录（会话保留），并把会话的活跃时间推到当前。
@@ -958,6 +1013,49 @@ mod tests {
             )
             .expect("数行");
         assert_eq!(distinct, 4, "四行身份互异");
+    }
+
+    /// retry 截尾：锚行后的行（含 NULL id 存量行）全删、锚行保留、活跃时间推进；
+    /// 锚行不存在 = 无事发生
+    #[test]
+    fn drop_after_truncates_rows_after_anchor_and_keeps_it() {
+        let mut conn = identity_db();
+        let tx = conn.transaction().expect("开事务");
+        bot_history_save_inner(
+            &tx,
+            "s1",
+            &[row("a", "问题"), row("b", "坏答复"), row("c", "残行")],
+        )
+        .expect("首批");
+        tx.commit().expect("提交");
+        let (ids, n) = bot_history_drop_after_inner(&mut conn, "s1", "a").expect("截尾");
+        assert_eq!(n, 2, "锚行后的两行全删");
+        assert_eq!(
+            ids,
+            vec!["b".to_string(), "c".to_string()],
+            "被删行身份按序返回"
+        );
+        let contents: Vec<String> = conn
+            .prepare("SELECT content FROM bot_messages WHERE session_id = 's1'")
+            .expect("prepare")
+            .query_map([], |r| r.get(0))
+            .expect("map")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("收集");
+        assert_eq!(contents, vec!["问题".to_string()], "锚行保留");
+        let updated_at: i64 = conn
+            .query_row(
+                "SELECT updated_at FROM bot_sessions WHERE id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("读会话");
+        assert!(
+            updated_at > 1000,
+            "截尾也要推会话活跃时间（与 clear 同口径）"
+        );
+        let (_, n2) = bot_history_drop_after_inner(&mut conn, "s1", "锚不存在").expect("无锚");
+        assert_eq!(n2, 0, "锚行不存在 = 无事发生");
     }
 
     /// 差集删除的 id 清单走 json_each 单参数：2000 行（截断上限）整批进出

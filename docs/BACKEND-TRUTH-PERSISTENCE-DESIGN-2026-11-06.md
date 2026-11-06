@@ -1,6 +1,6 @@
 # 聊天持久化真源化改造方案（持久层唯一事实、前端投影）
 
-状态：**方案，未实施**。2026-11-06 拍板：取代同日
+状态：**实施中（批 1、批 2 已落地）**。2026-11-06 拍板：取代同日
 《MSG-IDENTITY-PERSISTENCE-DESIGN-2026-11-06.md》（快照混合方案作废；其数据面
 设计、消费方清单、出生点清单、业界口径作为本文素材继续被引用，见旧文 §四/§七/§十四）。
 
@@ -281,6 +281,23 @@ bot_chat(session_id, content, client_msg_id, ...):
   ≥3.45）`json_each` 为核心功能，单参数天然无变量上限；临时表的生命周期约束
   （旧方案风险清单的「临时表与连接池」条目）随之整体消失。影响面：批 1 锚点
   2000 行差集进出已实测通过。
+- **偏离 3（批 2）**：`bot_history_drop_after` 从批 4 提前落地。原因：retry
+  语义依赖它——旧契约里 retry 靠前端 slice `messages` 入参砍尾，新契约上下文
+  由后端从库里重建，不截尾则上一轮失败回复回到模型面前。锚点：drop_after_inner
+  单测三条（截尾保留锚行/身份清单按序/无锚无事发生）+ 前端 /retry 先截尾再重放
+  同一 client_msg_id。
+- **偏离 4（批 2 附带，测试基建惯例）**：共享 app-data 库的**首开 DDL 竞态**——
+  `open_db` 的整套建表批不在进程写锁内，并行测试同时首开同一个全新库文件会撞
+  SQLite 文级写锁（零等待即报 locked，且只在全新库时发生，极难归因）。惯例：
+  测试开头在 `lock_db_write()` 内先行一次 `open_db` warm-up（参照
+  `bot_chat/user_turn_tests.rs` 的 `warm_shared_db`）。
+- **批 2 附带（锚点⑨形态）**：busy 零落行拆成两半钉——后端半边是接线守卫
+  （源码顺序：guard 判定先于 `user_turn_context`，入口无裸写面；命令链持守卫
+  后进 Wry 具型主链，MockRuntime 无法整链驱动），前端半边是真行为测试（busy
+  全程零 `bot_history_save` + 乐观行摘除）。守卫判 err 语义本身已有专测。
+- **批 2 附带（过渡态，批 3 自消）**：assistant 回复行在前端 done 快照里仍无
+  id，每轮收尾由后端补新身份（旧行差集收走）——身份逐轮换血，无消费方、无害；
+  批 3 后端接管终稿行后自然消失。
 - **批 1 附带（口径统一）**：`bot_messages` 建表 DDL 收为单源常量
   `bot_history::BOT_MESSAGES_DDL`（基线与测试建表共用），消灭 7 处手写
   schema 的漂移面；`bot_history_load_inner` 读序换 `ORDER BY ord, id`（存量

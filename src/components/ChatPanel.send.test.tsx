@@ -112,14 +112,14 @@ describe("ChatPanel", () => {
     await user.keyboard("{Enter}");
     // 消息气泡出现
     expect(await screen.findByText("你好")).toBeInTheDocument();
-    // 触发 bot_chat RPC
+    // 触发 bot_chat RPC（真源化契约：只发本轮意图 + 预生成 clientMsgId）
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith(
         "bot_chat",
         expect.objectContaining({
-          messages: expect.arrayContaining([
-            expect.objectContaining({ role: "user", content: "你好" }),
-          ]),
+          sessionId: "s1",
+          content: "你好",
+          clientMsgId: expect.any(String),
         }),
       );
     });
@@ -166,9 +166,8 @@ describe("ChatPanel", () => {
       expect(mocks.invokeMock).toHaveBeenCalledWith(
         "bot_chat",
         expect.objectContaining({
-          messages: expect.arrayContaining([
-            expect.objectContaining({ role: "user", content: "第二个问题" }),
-          ]),
+          content: "第二个问题",
+          clientMsgId: expect.any(String),
         }),
       );
     });
@@ -337,15 +336,12 @@ describe("ChatPanel", () => {
       screen.queryByText(/这条会话正在处理上一条消息/),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("正在思考")).not.toBeInTheDocument();
-    // ③ 助手答复不落库（用户消息那一条是允许的）
+    // ③ 零落库（真源化）：用户行落库权归后端且 busy 判定在前——拒答路径
+    // 连用户行都不写（后端锚点⑨），前端不再回合开始存快照，全程零 save
     const saveCalls = mocks.invokeMock.mock.calls.filter(
       (c) => c[0] === "bot_history_save",
     );
-    expect(saveCalls.length).toBeGreaterThan(0);
-    for (const call of saveCalls) {
-      const msgs = (call[1] as { messages?: { role?: string }[] }).messages ?? [];
-      expect(msgs.some((m) => m.role === "assistant")).toBe(false);
-    }
+    expect(saveCalls.length).toBe(0);
   });
 
   it("回复中发送键变为红框停止键：点击调 bot_stop", async () => {
@@ -508,9 +504,8 @@ describe("ChatPanel", () => {
         "bot_chat",
         expect.objectContaining({
           sessionId: "s1",
-          messages: expect.arrayContaining([
-            expect.objectContaining({ role: "user", content: "给一会的草稿" }),
-          ]),
+          content: "给一会的草稿",
+          clientMsgId: expect.any(String),
         }),
       );
     });

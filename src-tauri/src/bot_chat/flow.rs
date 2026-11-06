@@ -240,7 +240,9 @@ pub(super) struct ChatOutcome {
     pub(super) absorb: Vec<String>,
 }
 
-#[allow(clippy::too_many_lines)]
+/// 自取前置闸（enabled 开关 + 会话防重入守卫）的入口。用户轮命令层不走这里——
+/// 它要自持守卫后先落用户行再进主链（真源化 §5.2，busy 拒答必须发生在任何
+/// 落库之前）；汇报轮等后端驱动方仍走本入口。
 pub(super) async fn bot_chat_inner(
     app: AppHandle,
     messages: Vec<ChatMsg>,
@@ -266,6 +268,19 @@ pub(super) async fn bot_chat_inner(
             });
         }
     };
+    bot_chat_guarded(app, messages, session_id, reasoning_effort, origin).await
+}
+
+/// 前置闸已由调用方完成后的主链路。调用方持守卫时**不得**再经
+/// `bot_chat_inner`——守卫非重入，会把持守者自己判成 busy。
+#[allow(clippy::too_many_lines)]
+pub(super) async fn bot_chat_guarded(
+    app: AppHandle,
+    messages: Vec<ChatMsg>,
+    session_id: Option<String>,
+    reasoning_effort: Option<String>,
+    origin: TurnOrigin,
+) -> CommandResult<ChatOutcome> {
     // L0 pre_ingest（设计 §二）：输入侧唯一改写点，在**所有**输入判定之前。
     // 位置是刻意的——挂起恢复、技能路由、纠正检测、批量执行触发四处都扫
     // 同一条原文，只要有一处读到未清洗的原文，规范化就只做了一半

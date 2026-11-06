@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { newMsgId } from "../../lib/msgId";
 import type { Msg, ReasoningLevel, Session, TaskRef } from "./types";
 import type { ChatDraft } from "./chatDrafts";
 import * as streamState from "./streamState";
@@ -83,6 +84,7 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
       try {
         const rows = await invoke<
           {
+            msgId?: string | null;
             role: string;
             content: string;
             refsJson?: string | null;
@@ -177,6 +179,7 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
           sessionIdRef.current = targetSid;
           const rows = await invoke<
             {
+              msgId?: string | null;
               role: string;
               content: string;
               refsJson?: string | null;
@@ -207,7 +210,11 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
       handleCommandError(e, "bot_session_delete");
     }
   };
-  const runChat = async (history: Msg[], renameText?: string) => {
+  const runChat = async (
+    history: Msg[],
+    renameText?: string,
+    opts?: { optimistic?: boolean },
+  ) => {
     const sid = sessionId;
     if (!sid || streamState.isInflight(sid)) return;
     enterChat(sid);
@@ -236,17 +243,20 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
     // 覆盖本身只存前端内存，不回写 bot-config.json）
     const effort = effortBySession.get(sid) ?? effortBase;
     try {
-      // 回合开始即落库：用户消息先进库，之后任何一次「按会话重载历史」
-      // 都拿得到它——在途回合不再只活在内存里（切走再切回不丢消息的根因修复）
-      await persistHistory(sid, history);
+      // 真源化：用户行由后端落库（busy 拒答零落行），前端只发本轮意图 +
+      // 乐观行的预生成 id；上下文由后端从库里重建，前端不再全量快照。
+      // 回合开始即落库的旧兜底（11-03 修复）由后端「guard 过了就落行」接替
+      const lastUser = lastMsg?.role === "user" ? lastMsg : undefined;
       const full = await invoke<{
         text: string;
         taskRefs?: TaskRef[];
         busy?: boolean;
         traceId?: number | null;
       }>("bot_chat", {
-        messages: history.map((m) => ({ role: m.role, content: m.content })),
         sessionId: sid,
+        content: lastUser?.content ?? "",
+        clientMsgId: lastUser?.id ?? newMsgId(),
+        refsJson: lastUser?.refs?.length ? JSON.stringify(lastUser.refs) : null,
         reasoningEffort: effort,
       });
       // 会话锁被占（别的回合在跑）：本轮压根没跑，full.text 是拒答文案。
@@ -254,9 +264,10 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
       if (full.busy) {
         if (sessionIdRef.current === sid) {
           // 先 reset 摘掉本轮塞的空占位气泡（它带 streaming，活体指示会一直亮），
-          // 再补提示——顺序反了提示会被 reset 冲掉
-          setMessages(history);
-          // 文案要自洽：用户消息已在上一步落库，历史里会留一条孤立用户消息
+          // 再补提示——顺序反了提示会被 reset 冲掉。
+          // 后端 busy 零落行：乐观用户行（还没进库）一并摘掉；retry 重放的行
+          // 本来就在库里，保留
+          setMessages(opts?.optimistic ? history.slice(0, -1) : history);
           addHint("⏳ 模型正忙，本次未生成回复，请稍后重试");
         }
         return;

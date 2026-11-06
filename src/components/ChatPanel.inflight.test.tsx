@@ -306,7 +306,7 @@ describe("在途回合（切走再切回不丢消息）", () => {
     expect(streamState.isInflight("s2")).toBe(true);
   });
 
-  it("回合开始即落库：在途时用户消息已经进库（崩了也不丢）", async () => {
+  it("回合开始不再前端落库：用户行落库权归后端（真源化批 2）", async () => {
     const user = userEvent.setup();
     useDb();
     render(<ChatPanel {...defaultProps} />);
@@ -314,16 +314,27 @@ describe("在途回合（切走再切回不丢消息）", () => {
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
     await user.type(input, "先记下来");
     await user.keyboard("{Enter}");
-    // 回合还没结束，库里已经有这条用户消息
+    // 「回合开始即落库」的 durability 由后端接替：guard 过了就落用户行
+    // （busy 判定在前，拒答零落行），前端只发本轮意图
     await waitFor(() => {
-      const saved = mocks.invokeMock.mock.calls.find(
-        (c) => c[0] === "bot_history_save" && c[1]?.sessionId === "s1",
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_chat",
+        expect.objectContaining({
+          sessionId: "s1",
+          content: "先记下来",
+          clientMsgId: expect.any(String),
+        }),
       );
-      expect(saved).toBeTruthy();
-      expect(saved?.[1]?.messages).toEqual([
-        expect.objectContaining({ role: "user", content: "先记下来" }),
-      ]);
     });
+    // bot_chat 之前前端零落库：save 只发生在回合收尾（done 快照，批 3 退役）
+    const chatAt = mocks.invokeMock.mock.calls.findIndex(
+      (c) => c[0] === "bot_chat",
+    );
+    expect(chatAt).toBeGreaterThanOrEqual(0);
+    const savedBeforeChat = mocks.invokeMock.mock.calls
+      .slice(0, chatAt)
+      .some((c) => c[0] === "bot_history_save");
+    expect(savedBeforeChat).toBe(false);
   });
 });
 

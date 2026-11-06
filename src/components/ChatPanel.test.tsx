@@ -523,7 +523,8 @@ describe("ChatPanel", () => {
     expect(
       mocks.invokeMock.mock.calls.some((c) => c[0] === "bot_execute_task"),
     ).toBe(false);
-    // 发送时带出引用块与 refs，正文含任务标题
+    // 发送时带出引用块与 refs：真源化契约只发本轮意图（content 原文 +
+    // 预生成 clientMsgId + refsJson），不再传完整历史
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
     await user.type(input, "这两张卡先做哪张");
     await user.keyboard("{Enter}");
@@ -531,25 +532,20 @@ describe("ChatPanel", () => {
       expect(mocks.invokeMock).toHaveBeenCalledWith(
         "bot_chat",
         expect.objectContaining({
-          messages: expect.arrayContaining([
-            expect.objectContaining({
-              role: "user",
-              content: expect.stringContaining("改文档"),
-            }),
-          ]),
+          sessionId: "s1",
+          content: expect.stringContaining("这两张卡先做哪张"),
+          clientMsgId: expect.any(String),
         }),
       );
     });
     // 引用块必须是 intent_router 能解析的形态：标记 + 每行带 id。
     // 少标记或少 id 时批量执行路由静默不触发，模型只能按标题模糊匹配找卡。
     const chatCalls = mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_chat");
-    const sentMsgs =
-      chatCalls[chatCalls.length - 1]?.[1]?.messages ?? [];
-    const sentContent = [...sentMsgs]
-      .reverse()
-      .find((m: { role: string }) => m.role === "user")?.content;
+    const sentContent = chatCalls[chatCalls.length - 1]?.[1]?.content as string;
     expect(sentContent).toContain("[已选任务]");
     expect(sentContent).toContain("- id=t2，标题=改文档");
+    // refs 随行落 refs 列（气泡引用卡读回用）
+    expect(chatCalls[chatCalls.length - 1]?.[1]?.refsJson).toContain("t2");
     // 位置也是协议的一部分：块在消息头、用户正文在块之后。
     // 解析器只认消息头的块，触发词只从块之后的正文里找——顺序反了两边都落空。
     expect(sentContent.indexOf("[已选任务]")).toBe(0);
@@ -640,5 +636,140 @@ describe("ChatPanel", () => {
       );
     });
     expect(currentTitle()).toHaveTextContent("另一个");
+  });
+
+  it("bot-msg-upserted：同 id 对账就地替换，陌生 id 触发整段 reload（真源化投影）", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load")
+        return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load")
+        return [
+          { msgId: "m1", role: "user", content: "原始问题", refsJson: null },
+          { msgId: "m2", role: "assistant", content: "原始回答", refsJson: null },
+        ];
+      return defaultInvoke(cmd);
+    });
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      if (event === "bot-msg-upserted" || event === "bot-msg-dropped") {
+        ((mocks.listeners[event] ??= []) as Array<typeof cb>).push(
+          cb as (e: { payload: Record<string, unknown> }) => void,
+        );
+      }
+      return () => {};
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    expect(await screen.findByText("原始问题")).toBeInTheDocument();
+    // 同 id：就地替换内容（同一条消息的库行更新，不产生第二条）
+    await act(async () => {
+      for (const cb of mocks.listeners["bot-msg-upserted"] ?? []) {
+        cb({
+          payload: {
+            sessionId: "s1",
+            msgId: "m1",
+            role: "user",
+            content: "更新后的问题",
+            refsJson: null,
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("更新后的问题")).toBeInTheDocument();
+    expect(screen.queryByText("原始问题")).not.toBeInTheDocument();
+    // 陌生 id：投影里没有这一行（切走错过/后端重建换血）→ 整段 reload 兜底
+    const loadsBefore = mocks.invokeMock.mock.calls.filter(
+      (c) => c[0] === "bot_history_load",
+    ).length;
+    await act(async () => {
+      for (const cb of mocks.listeners["bot-msg-upserted"] ?? []) {
+        cb({
+          payload: {
+            sessionId: "s1",
+            msgId: "m-unknown",
+            role: "user",
+            content: "游离行",
+            refsJson: null,
+          },
+        });
+      }
+    });
+    await waitFor(() => {
+      const loadsAfter = mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "bot_history_load",
+      ).length;
+      expect(loadsAfter).toBeGreaterThan(loadsBefore);
+    });
+  });
+
+  it("bot-msg-dropped：已知 id 按行删除，含未知 id 触发整段 reload", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load")
+        return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load")
+        return [
+          { msgId: "m1", role: "user", content: "保留行", refsJson: null },
+          { msgId: "m2", role: "assistant", content: "待删行", refsJson: null },
+        ];
+      return defaultInvoke(cmd);
+    });
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      if (event === "bot-msg-upserted" || event === "bot-msg-dropped") {
+        ((mocks.listeners[event] ??= []) as Array<typeof cb>).push(
+          cb as (e: { payload: Record<string, unknown> }) => void,
+        );
+      }
+      return () => {};
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    expect(await screen.findByText("待删行")).toBeInTheDocument();
+    // 全部已知：精确删掉那几行
+    await act(async () => {
+      for (const cb of mocks.listeners["bot-msg-dropped"] ?? []) {
+        cb({ payload: { sessionId: "s1", msgIds: ["m2"] } });
+      }
+    });
+    expect(await screen.findByText("保留行")).toBeInTheDocument();
+    expect(screen.queryByText("待删行")).not.toBeInTheDocument();
+    // 带上投影外的 id：不再精确删，整段 reload 兜底
+    const loadsBefore = mocks.invokeMock.mock.calls.filter(
+      (c) => c[0] === "bot_history_load",
+    ).length;
+    await act(async () => {
+      for (const cb of mocks.listeners["bot-msg-dropped"] ?? []) {
+        cb({ payload: { sessionId: "s1", msgIds: ["m1", "m-ghost"] } });
+      }
+    });
+    await waitFor(() => {
+      const loadsAfter = mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "bot_history_load",
+      ).length;
+      expect(loadsAfter).toBeGreaterThan(loadsBefore);
+    });
+  });
+
+  it("busy 拒答：乐观用户行一并摘掉（后端零落行），不再留孤立用户消息", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load")
+        return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_chat")
+        return {
+          text: "这条会话正在处理上一条消息，请稍候再发。",
+          busy: true,
+          taskRefs: [],
+          traceId: null,
+        };
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    await user.type(screen.getByPlaceholderText(/和机器人说点什么/), "在吗");
+    await user.keyboard("{Enter}");
+    // busy 返回后：占位气泡与乐观用户行都摘掉，视图回到发送前，只留提示
+    await waitFor(() => {
+      expect(screen.queryByText("在吗")).not.toBeInTheDocument();
+    });
+    expect(await screen.findByText(/模型正忙/)).toBeInTheDocument();
   });
 });

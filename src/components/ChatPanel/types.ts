@@ -51,6 +51,9 @@ export type SkillFailure = {
 };
 
 export type Msg = {
+  /** 消息身份（msg_id）：乐观用户行预生成、历史行从库读回。assistant 新回复
+   *  行在终稿落库（后端接管）前无 id——undefined 由保存侧补服务端身份 */
+  id?: string;
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;

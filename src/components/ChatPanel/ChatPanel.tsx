@@ -226,9 +226,12 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
     const meta = streamState.metaOf(sid);
     const userMsg = meta?.userMsg;
     const last = rows[rows.length - 1];
-    // 库里已经有这条用户消息（回合开始即落库）就不再补，避免重复一条
+    // 库里已经有这条用户消息（后端 guard 过了就落行）就不再补，避免重复一条。
+    // 有身份按身份认（真源化），老数据行没 id 退回内容比对
     const inDb =
-      !!userMsg && last?.role === "user" && last.content === userMsg.content;
+      !!userMsg &&
+      last?.role === "user" &&
+      (userMsg.id ? last.id === userMsg.id : last.content === userMsg.content);
     const base = userMsg && !inDb ? [...rows, userMsg] : rows;
     return [
       ...base,
@@ -311,6 +314,56 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
       }
       return [...prev, { role: "assistant" as const, content: payload.text, turnStatus: "completed" as const }];
     });
+  });
+  // 消息行投影（真源化）：库行变更事件按 id 对账。只听当前会话；同一 id 就地
+  // 替换（同 id upsert = 同一条消息）；投影里没有这一行（切走错过/后端重建
+  // 换血）→ 整段 reload 兜底——正确性永远以 load 为准，事件只是实时增量
+  useTauriListen<{
+    sessionId: string;
+    msgId: string | null;
+    role: string;
+    content: string;
+    refsJson?: string | null;
+  }>("bot-msg-upserted", (payload) => {
+    const sid = sessionIdRef.current;
+    if (!sid || payload.sessionId !== sid) return;
+    const rows = messagesRef.current;
+    const idx = rows.findIndex((m) => m.id && m.id === payload.msgId);
+    if (idx === -1) {
+      void loadFinalText(sid);
+      return;
+    }
+    const [mapped] = rowsToMsgs(
+      [
+        {
+          msgId: payload.msgId,
+          role: payload.role,
+          content: payload.content,
+          refsJson: payload.refsJson ?? null,
+        },
+      ],
+      sid,
+    );
+    const next = [...rows];
+    next[idx] = { ...next[idx], ...mapped };
+    setMessages(next);
+  });
+  useTauriListen<{ sessionId: string; msgIds: string[] }>("bot-msg-dropped", (payload) => {
+    const sid = sessionIdRef.current;
+    if (!sid || payload.sessionId !== sid) return;
+    const known = new Set(
+      messagesRef.current.map((m) => m.id).filter((v): v is string => !!v),
+    );
+    const dropped = payload.msgIds.filter((id) => known.has(id));
+    if (payload.msgIds.length !== dropped.length) {
+      // 有本视图不认识的行被删（后端截尾碰到投影外行）：整段 reload 兜底
+      void loadFinalText(sid);
+      return;
+    }
+    if (dropped.length > 0) {
+      const gone = new Set(dropped);
+      setMessages(messagesRef.current.filter((m) => !m.id || !gone.has(m.id)));
+    }
   });
   useTauriListen<{ subagentId: string }>("subagent-spawned", () => {
     refreshSubagentsRef.current();

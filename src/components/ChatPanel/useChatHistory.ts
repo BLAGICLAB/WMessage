@@ -40,6 +40,9 @@ export function useChatHistory(params: ChatHistoryParams) {
       messages: msgs
         .filter((m) => !m.hint)
         .map((m) => ({
+          // 消息身份随行（真源化）：后端按 (session_id, msg_id) upsert，
+          // 缺 id 的行由后端补服务端身份
+          msgId: m.id ?? null,
           role: m.role,
           content: m.content,
           refsJson: m.refs?.length ? JSON.stringify(m.refs) : null,
@@ -71,6 +74,7 @@ export function useChatHistory(params: ChatHistoryParams) {
   };
   const rowsToMsgs = (
     rows: {
+      msgId?: string | null;
       role: string;
       content: string;
       refsJson?: string | null;
@@ -81,6 +85,8 @@ export function useChatHistory(params: ChatHistoryParams) {
     sid?: string | null,
   ): Msg[] =>
     rows.map((r, i) => ({
+      // 读回保留身份：下次保存带上同一 id，upsert 命中旧行不换身份
+      id: r.msgId ?? undefined,
       role: r.role === "user" ? "user" : "assistant",
       content: r.content,
       refs: parseHistoryJson<TaskRef>(r.refsJson, "refsJson", i, sid ?? null),
@@ -92,6 +98,7 @@ export function useChatHistory(params: ChatHistoryParams) {
     try {
       const rows = await invoke<
         {
+          msgId?: string | null;
           role: string;
           content: string;
           refsJson?: string | null;
@@ -240,6 +247,7 @@ export function useChatHistory(params: ChatHistoryParams) {
         sessionIdRef.current = cur.id;
         const rows = await invoke<
           {
+            msgId?: string | null;
             role: string;
             content: string;
             refsJson?: string | null;

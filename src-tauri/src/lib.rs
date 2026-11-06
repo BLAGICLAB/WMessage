@@ -840,6 +840,7 @@ pub fn run() {
             memory::panel::mem_stats,
             memory::panel::mem_update,
             bot_chat::bot_chat,
+            bot_chat::bot_history_drop_after,
             bot_chat::bot_execute_task,
             bot_orchestrator::cancel_subagent,
             bot_orchestrator::list_subagents,

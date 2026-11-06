@@ -10,6 +10,7 @@ import { emit } from "@tauri-apps/api/event";
 import { unlistenSafe } from "../../lib/useTauriListen";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { newMsgId } from "../../lib/msgId";
 import type { Msg, ReasoningLevel, TaskRef } from "./types";
 import * as streamState from "./streamState";
 import type { Dispatch, RefObject, SetStateAction } from "react";
@@ -28,7 +29,11 @@ export type ChatSendParams = {
   persistHistory: (sid: string, msgs: Msg[]) => Promise<unknown>;
   refs: TaskRef[];
   rootRef: RefObject<HTMLDivElement | null>;
-  runChat: (history: Msg[], renameText?: string | undefined) => Promise<void>;
+  runChat: (
+    history: Msg[],
+    renameText?: string | undefined,
+    opts?: { optimistic?: boolean },
+  ) => Promise<void>;
   sessionId: string | null;
   sessionIdRef: RefObject<string | null>;
   setCopiedIdx: Dispatch<SetStateAction<number | null>>;
@@ -161,6 +166,24 @@ export function useChatSend(params: ChatSendParams) {
         addHint("没有可重试的消息");
         return true;
       }
+      const target = msgs[lastUserIdx];
+      // 真源化 retry：先截尾（库里该用户行之后的失败回复等残行必须清掉，
+      // 否则后端重建的上下文会把它们摆回模型面前），再重放同一用户行
+      // （同 id upsert 命中旧行，保位保首插时刻）
+      if (!target.id) {
+        addHint("该消息还没有身份记录（旧数据），先刷新对话再重试");
+        return true;
+      }
+      try {
+        await invoke("bot_history_drop_after", {
+          sessionId,
+          msgId: target.id,
+        });
+      } catch (e) {
+        // 截尾失败就起轮 = 带残行上下文重跑，宁可不做
+        handleCommandError(e, "bot_history_drop_after");
+        return true;
+      }
       await runChat(msgs.slice(0, lastUserIdx + 1));
       return true;
     }
@@ -209,9 +232,11 @@ export function useChatSend(params: ChatSendParams) {
     setRefs([]);
     const history: Msg[] = [
       ...messages.filter((m) => !m.streaming && !m.hint),
-      { role: "user", content, refs },
+      // 乐观用户行出生即有身份：id 随 bot_chat 传后端落库（client_msg_id），
+      // bot-msg-upserted 事件回显同 id 对账
+      { id: newMsgId(), role: "user", content, refs },
     ];
-    await runChat(history, text);
+    await runChat(history, text, { optimistic: true });
   };
   const addFiles = (paths: string[]) => {
     const clean = paths.filter(Boolean);

@@ -178,18 +178,70 @@ enum SkillRouteOutcome {
 /// 不是这段文案本身——文案只是拒答时随结果带出去的说明。
 pub(crate) const CHAT_BUSY_REPLY: &str = "这条会话正在处理上一条消息，请稍候再发。";
 
+/// 聊天入口（真源化契约）：前端只发本轮意图（content + 预生成的 client_msg_id），
+/// 不再传完整历史——上下文由后端从库里重建（真源唯一，前端投影）。
+///
+/// 前置顺序是 busy 零落行的根基：enabled 开关 → 会话防重入守卫 → **都过了才**
+/// 落用户行进主链。busy 拒答发生在任何落库之前——旧链路「回合开始前端先存
+/// 快照」会把被拒的用户消息孤立在库里（下轮上下文多一条没被理会的用户发言）。
 #[tauri::command]
 pub async fn bot_chat(
     app: AppHandle,
-    messages: Vec<ChatMsg>,
     session_id: Option<String>,
+    content: String,
+    client_msg_id: String,
+    // 用户行随行的任务引用（前端选卡器的 JSON），原样落 refs 列供气泡读回
+    refs_json: Option<String>,
     // 推理强度单次覆盖（RE-1）：聊天输入框按会话选的抽象档位（off/low/medium/high），
     // 由前端解析「会话覆盖 ?? 后台默认」后传入具体值；None = 按后台默认。
     // 只影响本次聊天调用，不回写 bot-config.json。
     reasoning_effort: Option<String>,
 ) -> CommandResult<BotChatResult> {
-    let out = bot_chat_inner(
+    bot_chat_entry(
+        &app,
+        session_id,
+        content,
+        client_msg_id,
+        refs_json,
+        reasoning_effort,
+    )
+    .await
+}
+
+/// bot_chat 命令的实体（命令薄壳直通，测试可达）。
+async fn bot_chat_entry(
+    app: &AppHandle,
+    session_id: Option<String>,
+    content: String,
+    client_msg_id: String,
+    refs_json: Option<String>,
+    reasoning_effort: Option<String>,
+) -> CommandResult<BotChatResult> {
+    require_bot_enabled(bot_get_enabled(app.clone()))?;
+    let _chat_guard = match ChatGuard::acquire(app, session_id.as_deref()) {
+        Ok(g) => g,
+        Err(()) => {
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "bot_chat_rejected | session: {} | 已有执行实例在跑（防重入拦截）",
+                    crate::bot::truncate_for_log(session_id.as_deref().unwrap_or("<none>"), 60)
+                ),
+            );
+            return Ok(busy_chat_result());
+        }
+    };
+    // 用户行先落库再重建上下文（§5.2 ①→②）：末条 = 刚落的用户行
+    let messages = user_turn_context(
         app,
+        session_id.as_deref(),
+        &content,
+        &client_msg_id,
+        refs_json.as_deref(),
+    )
+    .await?;
+    let out = bot_chat_guarded(
+        app.clone(),
         messages,
         session_id.clone(),
         reasoning_effort,
@@ -197,12 +249,105 @@ pub async fn bot_chat(
     )
     .await?;
     // 交互聊天：模型确实看到了那段回报 → 记「已吸收」（digest 不再重念它）。
-    // 前端落库失败不影响这个判断——下一轮的历史来自前端内存，模型那边还留着
-    // 这段回报，「已吸收」成立。
     for id in &out.absorb {
         crate::bot_orchestrator::mark_digested(session_id.as_deref(), id);
     }
     Ok(out.result)
+}
+
+/// 用户轮的真源化落行 + 上下文重建（§5.2 ①）。
+///
+/// 用户行经行内核 upsert（client_msg_id 即行身份：retry 重放同 id 命中旧行，
+/// 保位保首插时刻）→ 广播 bot-msg-upserted → 从库里全量行序重建本轮上下文。
+/// 库里此刻就含刚落的用户行，汇报轮 append 过的行也天然在内——这正是把
+/// 上下文来源从前端内存切到库的意义。
+async fn user_turn_context<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Option<&str>,
+    content: &str,
+    client_msg_id: &str,
+    refs_json: Option<&str>,
+) -> CommandResult<Vec<ChatMsg>> {
+    let Some(sid) = session_id else {
+        // UI 恒带会话 id；None 属防御性保底（无真源可落，单消息上下文直通）
+        return Ok(vec![ChatMsg {
+            role: "user".into(),
+            content: content.to_string(),
+        }]);
+    };
+    let row = crate::db::BotMsgRow {
+        msg_id: Some(client_msg_id.to_string()),
+        role: "user".into(),
+        content: content.to_string(),
+        refs_json: refs_json.map(str::to_string),
+        thinking: None,
+        tools_json: None,
+        turn_status: None,
+    };
+    let row_for_event = row.clone();
+    let sid2 = sid.to_string();
+    crate::db::lock::with_write_conn(app, move |conn| {
+        crate::db::bot_history::bot_history_upsert_row_inner(conn, &sid2, &row)
+    })
+    .await
+    .map_err(CommandError::DbError)?;
+    emit_row_upserted(app, Some(sid), &row_for_event);
+    let rows = crate::db::bot_history::bot_history_load(app.clone(), sid.to_string()).await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| ChatMsg {
+            role: r.role,
+            content: r.content,
+        })
+        .collect())
+}
+
+/// 行投影广播（事件契约 §七）：走 emit_recorded 统一出口（sessionId 信封 +
+/// 回放缓冲）。载荷逐字段手拼而非 serde 整行——序列化是可失败路径，这里要
+/// 不可失败的构造。
+fn emit_row_upserted<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Option<&str>,
+    row: &crate::db::BotMsgRow,
+) {
+    let payload = serde_json::json!({
+        "msgId": row.msg_id,
+        "role": row.role,
+        "content": row.content,
+        "refsJson": row.refs_json,
+        "thinking": row.thinking,
+        "toolsJson": row.tools_json,
+        "turnStatus": row.turn_status,
+    });
+    crate::bot::stream_log::emit_recorded(app, session_id, "bot-msg-upserted", payload);
+}
+
+/// retry 截尾（定向操作提前落地，原计划批 4；依赖见 §十二批 2）：删掉排在
+/// msg_id 行之后的所有行，让后端重建的上下文不含上一轮的失败回复等残行。
+/// 返回删除条数。锚行不存在 = 无事发生（0）。
+#[tauri::command]
+pub async fn bot_history_drop_after(
+    app: AppHandle,
+    session_id: String,
+    msg_id: String,
+) -> CommandResult<usize> {
+    let (dropped_ids, n) = {
+        let sid = session_id.clone();
+        crate::db::lock::with_write_conn(&app, move |conn| {
+            crate::db::bot_history::bot_history_drop_after_inner(conn, &sid, &msg_id)
+        })
+        .await
+        .map_err(CommandError::DbError)?
+    };
+    if !dropped_ids.is_empty() {
+        crate::bot::stream_log::emit_recorded(
+            &app,
+            Some(&session_id),
+            "bot-msg-dropped",
+            serde_json::json!({ "msgIds": dropped_ids }),
+        );
+    }
+    Ok(n)
 }
 
 /// 汇报轮的轮次说明：这一轮没有用户输入，模型唯一的新信息是末尾那段子任务回报。
@@ -393,8 +538,9 @@ use flow::bot_chat_inner;
 #[cfg(debug_assertions)]
 pub use flow::chat_guard_is_held;
 pub(crate) use flow::TurnOrigin;
-#[cfg(test)]
-use flow::{busy_chat_result, require_bot_enabled};
+// busy 零落行入口（bot_chat_entry）生产路径就要这三个：enabled 闸、busy 兜底
+// 结果、自持守卫后的主链入口
+use flow::{bot_chat_guarded, busy_chat_result, require_bot_enabled};
 use inject::{build_history_msgs, build_injection};
 #[cfg(test)]
 use input::normalize_user_input_core;
@@ -429,3 +575,5 @@ mod report;
 mod summary;
 #[cfg(test)]
 mod summary_reuse_tests;
+#[cfg(test)]
+mod user_turn_tests;
