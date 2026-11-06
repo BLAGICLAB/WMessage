@@ -231,6 +231,41 @@ describe("ChatPanel", () => {
     expect(screen.getByRole("button", { name: "收起右侧栏" })).toBeVisible();
   });
 
+  it("全部终态后条带整体退场：新回复不再带着已结束的子 agent 再现", async () => {
+    const user = userEvent.setup();
+    // 用户实机报告的原始症状：条带挂「最后一条助手回复」，每发一条新指令
+    // 已完成的子 agent 就再现一次。修法（对齐业界 running-indicator 语义）：
+    // 有在途才渲染条带，全部终态即退场——完成的详情在右栏，不在对话流里跟轮
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load")
+        return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load")
+        return [{ role: "assistant", content: "已派发", refsJson: null }];
+      if (cmd === "list_subagents")
+        return [
+          { id: "sa_1", status: "succeeded", objective: "已完成的子 agent" },
+        ];
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("list_subagents", {
+        sessionId: "s1",
+        limit: 20,
+      });
+    });
+    // 全部终态：条带连空壳头都不留
+    expect(screen.queryByText("子 Agent")).not.toBeInTheDocument();
+    // 数据仍在：右栏「子 Agent」工作面是完成态的家
+    await user.click(screen.getByRole("button", { name: "展开右侧栏" }));
+    const rail = within(
+      screen.getByRole("complementary", { name: "上下文侧栏" }),
+    );
+    await user.click(rail.getByRole("button", { name: /子 Agent/ }));
+    expect(rail.getByText("已完成的子 agent")).toBeInTheDocument();
+  });
+
   it("点子 agent 条目把 id 带进详情页（只切类别不换视图等于点了没反应）", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
@@ -240,6 +275,13 @@ describe("ChatPanel", () => {
         return [{ role: "assistant", content: "已派发", refsJson: null }];
       if (cmd === "list_subagents")
         return [
+          {
+            // 一条在途在场：条带是「在途指示器」，无在途即退场（完成态详情
+            // 从右栏进）；本例要走的正是条带里点已完成条目的路径
+            id: "sa_0",
+            status: "running",
+            objective: "在途的子 agent",
+          },
           {
             id: "sa_1",
             status: "succeeded",

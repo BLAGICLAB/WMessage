@@ -116,9 +116,13 @@ export function useChatSubagents(params: ChatSubagentsParams) {
     () => setSubagentStripOpen((v) => !v),
     [],
   );
+  // 条带 = 在途指示器（对齐业界 running-indicator 语义）：有在途才挂最新
+  // 回复，全部终态即整体退场——完成态不是活状态，挂在每条新回复底下等于
+  // 「已结束的事跟着每轮对话再现」。完成的子 agent 详情在右侧栏（数据源
+  // 同为 subagentRuns，不受此闸影响），派发记录在原回复的工具徽章里。
   const subagentSlot = useMemo(
     () =>
-      subagentRuns.length === 0
+      !hasPendingSubagent
         ? undefined
         : {
             runs: subagentRuns,
@@ -128,6 +132,7 @@ export function useChatSubagents(params: ChatSubagentsParams) {
             onToggleExpanded: toggleSubagentStrip,
           },
     [
+      hasPendingSubagent,
       subagentRuns,
       subagentStripOpen,
       openSubagentDetail,

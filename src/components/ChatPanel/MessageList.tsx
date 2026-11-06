@@ -244,9 +244,9 @@ function MsgBubbleBase({
           {(m.tools?.length ?? 0) > 0 && (
             <ToolBadges tools={m.tools!} verboseLevel={verboseLevel} />
           )}
-          {/* 子 agent 区域：挂在最后一条助手回复里、工具调用下方。
-              跟着派发它的那一轮走，而不是钉在对话顶部——对话顶部那块地属于会话，
-              「谁派的、派去做什么」属于某一轮，钉在顶上就成了无主浮层。 */}
+          {/* 子 agent 条带 = 在途指示器：有在途才挂在最新回复的工具调用下方，
+              全部终态即退场（完成态详情在右侧栏，派发记录留在原轮的工具徽章）。
+              条带不该跟着每条新回复漂移——已结束的事不是活状态，每轮再现就是噪音。 */}
           {subagentSlot && subagentSlot.runs.length > 0 && (
             <SubagentStrip
               subagents={subagentSlot.runs}
@@ -632,8 +632,9 @@ function renderMessageList(
   }: MessageListProps,
   Bubble: ComponentType<MsgBubbleProps>,
 ) {
-  // 子 agent 区域只挂一条：最后一条助手回复（= 最近一轮的落点）。其余气泡
-  // 拿到 undefined，memo 浅比较继续命中。全程只有一条助手消息时自然是它。
+  // 子 agent 条带（在途指示器）只挂一条：最后一条助手回复（= 最近一轮的
+  // 落点）。其余气泡拿到 undefined，memo 浅比较继续命中。全程只有一条助手
+  // 消息时自然是它。条带本身只在有在途子 agent 时存在（无在途即退场）。
   const hostIdx = (() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role === "assistant") return i;
