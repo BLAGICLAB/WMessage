@@ -435,6 +435,7 @@ fn report_turn_gate_is_the_only_input_read() {
 fn report_turn_history_passes_rows_through_in_order() {
     let rows = vec![
         crate::db::BotMsgRow {
+            msg_id: None,
             role: "user".into(),
             content: "派子 agent 查一下".into(),
             refs_json: None,
@@ -443,6 +444,7 @@ fn report_turn_history_passes_rows_through_in_order() {
             turn_status: None,
         },
         crate::db::BotMsgRow {
+            msg_id: None,
             role: "assistant".into(),
             content: "已派发".into(),
             refs_json: None,

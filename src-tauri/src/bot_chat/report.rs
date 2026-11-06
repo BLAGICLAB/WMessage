@@ -130,6 +130,7 @@ pub(super) async fn persist_report_reply(
             conn,
             &sid,
             &crate::db::BotMsgRow {
+                msg_id: None,
                 role: "assistant".into(),
                 content,
                 refs_json: refs,

@@ -73,20 +73,13 @@ fn setup_bhs_db() -> (std::path::PathBuf, rusqlite::Connection) {
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             is_subagent INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE bot_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            refs TEXT,
-            thinking TEXT,
-            tools TEXT,
-            turn_status TEXT,
-            created_at INTEGER NOT NULL
         );",
     )
     .unwrap();
+    // 消息表走单源 DDL（bot_history 模块，基线建表共用）
+    conn.execute_batch(bot_history::BOT_MESSAGES_DDL).unwrap();
+    conn.execute_batch(bot_history::BOT_MESSAGES_IDENTITY_INDEX_DDL)
+        .unwrap();
     // 会话删除会顺带清子 agent 终态行，夹具得带上这张表（单源 DDL）
     conn.execute_batch(subagents::SUBAGENTS_DDL).unwrap();
     (dir, conn)

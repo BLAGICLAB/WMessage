@@ -6,18 +6,65 @@ use tauri::AppHandle;
 use super::bot_sessions::BotMsgRow;
 use crate::error::{CommandError, CommandResult};
 
-/// 加载指定会话的消息（按写入顺序：行序由自增 id 恢复——写入侧批内 created_at
-/// 相同（覆写原子时刻），id 是唯一行序事实源）
+/// bot_messages 单源 DDL（表 + 身份三列）：基线初始化与测试建表共用同一份，
+/// 防「基线加列、测试漏列」口径漂移（同 subagents::SUBAGENTS_DDL 先例）。
+/// 索引在 IDENTITY_INDEX_DDL——唯一索引依赖 msg_id 列，老库补列之前建不出来，
+/// 必须与建表分开执行。
+pub(crate) const BOT_MESSAGES_DDL: &str = "
+         CREATE TABLE IF NOT EXISTS bot_messages (
+           id         INTEGER PRIMARY KEY AUTOINCREMENT,
+           role       TEXT NOT NULL,
+           content    TEXT NOT NULL,
+           refs       TEXT,
+           session_id TEXT,
+           thinking   TEXT,
+           tools      TEXT,
+           turn_status TEXT,
+           created_at INTEGER NOT NULL,
+           msg_id     TEXT,
+           ord        INTEGER NOT NULL DEFAULT 0,
+           trace_id   INTEGER
+         );";
+
+/// 消息身份两索引：upsert 冲突目标与读序都靠它们。唯一索引用全列
+/// `(session_id, msg_id)` 而非部分索引——SQLite 中 NULL 相异，存量 NULL id
+/// 行彼此不冲突，无需 `WHERE msg_id IS NOT NULL`，也避开 ON CONFLICT 目标
+/// 子句与部分索引 WHERE 匹配的版本兼容坑。
+pub(crate) const BOT_MESSAGES_IDENTITY_INDEX_DDL: &str = "
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_messages_sid_msgid
+             ON bot_messages(session_id, msg_id);
+         CREATE INDEX IF NOT EXISTS idx_bot_messages_sid_ord
+             ON bot_messages(session_id, ord);";
+
+/// bot_messages 身份三列 + 两索引的幂等迁移：新库 DDL 已带齐（补列探测全
+/// 跳过），老库先补列再建索引（唯一索引依赖 msg_id 列存在，顺序不能反）。
+pub(crate) fn ensure_bot_messages_identity(conn: &rusqlite::Connection) -> Result<(), String> {
+    super::ensure_columns(
+        conn,
+        "bot_messages",
+        &[
+            ("msg_id", "TEXT"),
+            ("ord", "INTEGER NOT NULL DEFAULT 0"),
+            ("trace_id", "INTEGER"),
+        ],
+    )?;
+    conn.execute_batch(BOT_MESSAGES_IDENTITY_INDEX_DDL)
+        .map_err(|e| e.to_string())
+}
+
+/// 加载指定会话的消息（按快照序：行序由 `ord` 恢复，id 只作 ord 雷同的次级
+/// 稳定键——存量行 ord 恒 0，落到 id 序，与旧行为一致）
 pub fn bot_history_load_inner(
     conn: &rusqlite::Connection,
     session_id: &str,
 ) -> Result<Vec<BotMsgRow>, String> {
     let mut stmt = conn
-        .prepare("SELECT role, content, refs, thinking, tools, turn_status FROM bot_messages WHERE session_id = ?1 ORDER BY id")
+        .prepare("SELECT role, content, refs, thinking, tools, turn_status, msg_id FROM bot_messages WHERE session_id = ?1 ORDER BY ord, id")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([session_id], |r| {
             Ok(BotMsgRow {
+                msg_id: r.get::<_, Option<String>>(6)?,
                 role: r.get::<_, String>(0)?,
                 content: r.get::<_, String>(1)?,
                 refs_json: r.get::<_, Option<String>>(2)?,
@@ -41,10 +88,26 @@ pub async fn bot_history_load(app: AppHandle, session_id: String) -> CommandResu
     .map_err(|e| CommandError::from(format!("历史读取线程 join 失败：{e}")))?
 }
 
-/// 保存指定会话的聊天记录：全量覆盖 + 更新会话活跃时间
+/// 服务端消息身份生成（uuid v4 文本，与前端 crypto.randomUUID 同格式）。
+/// msg_id 对存储层是不透明串，前后端各生成互不冲突。
+fn new_msg_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// 保存指定会话的聊天记录：快照 upsert + 差集删除 + 更新会话活跃时间。
+///
+/// 入参数组即权威全量：本批内的行按 `(session_id, msg_id)` upsert（内容列
+/// 与 ord 覆盖，created_at 保首插时刻），库里不在本批的行——含未带 id 的
+/// 存量行——全部删除。与旧的「DELETE 全部 + 重插」语义逐一对齐，只是身份
+/// 跨保存存活：同一逻辑消息重存不换行、不换首插时刻。
+///
+/// 行序与身份在本内核定桩：ord = 数组下标（快照序唯一权威是入参数组），
+/// 未带 msg_id 的行就地补服务端 id（exec/子会话整段重建不关心跨轮身份，
+/// 每轮重建即得新身份，旧行由差集删除收走）。
 ///
 /// 返回被丢弃的条数（0 = 没截断）：超上限时截断最旧的若干条，丢弃这件事
-/// 必须留痕——调用方（`bot_history_save_audited`）据此写审计事件。
+/// 必须留痕——调用方（`bot_history_save_audited`）据此写审计事件。被裁行
+/// 不在本批，由差集删除自然收走。
 pub fn bot_history_save_inner(
     conn: &rusqlite::Connection,
     session_id: &str,
@@ -57,42 +120,101 @@ pub fn bot_history_save_inner(
     } else {
         messages
     };
+    let now = crate::db::now_ms();
+    let ids: Vec<String> = messages
+        .iter()
+        .map(|m| m.msg_id.clone().unwrap_or_else(new_msg_id))
+        .collect();
+    // created_at 故意不在 DO UPDATE 列清单里：同 id 命中旧行时保首插时刻
+    let mut stmt = conn
+        .prepare(
+            "INSERT INTO bot_messages (session_id, msg_id, ord, role, content, refs, thinking, tools, turn_status, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(session_id, msg_id) DO UPDATE SET
+                ord = excluded.ord,
+                role = excluded.role,
+                content = excluded.content,
+                refs = excluded.refs,
+                thinking = excluded.thinking,
+                tools = excluded.tools,
+                turn_status = excluded.turn_status",
+        )
+        .map_err(|e| e.to_string())?;
+    for (i, m) in messages.iter().enumerate() {
+        stmt.execute(rusqlite::params![
+            session_id,
+            ids[i],
+            i as i64,
+            m.role,
+            m.content,
+            m.refs_json,
+            m.thinking,
+            m.tools_json,
+            m.turn_status,
+            now
+        ])
+        .map_err(|e| e.to_string())?;
+    }
+    drop(stmt);
+    // 差集删除。id 清单经 json_each 单参数下发：2000 行也不撞 SQLite 变量上限
+    let ids_json = serde_json::to_string(&ids).map_err(|e| e.to_string())?;
     conn.execute(
-        "DELETE FROM bot_messages WHERE session_id = ?1",
-        [session_id],
+        "DELETE FROM bot_messages
+          WHERE session_id = ?1
+            AND (msg_id IS NULL OR msg_id NOT IN (SELECT value FROM json_each(?2)))",
+        rusqlite::params![session_id, ids_json],
     )
     .map_err(|e| e.to_string())?;
-    // created_at 取单次 now 系有意：整批 DELETE+INSERT 是一次原子覆写，created_at
-    // 记录「本次覆写的原子时刻」（同批相同）。行序恢复不依赖 created_at——自增 id
-    // 即 (created_at, id) 复合排序键的 row_sequence 分量；按 created_at 排
-    // bot_messages 的消费方均属缺陷。
-    let now = crate::db::now_ms();
-    if !messages.is_empty() {
-        let mut stmt = conn
-            .prepare(
-                "INSERT INTO bot_messages (role, content, refs, session_id, thinking, tools, turn_status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            )
-            .map_err(|e| e.to_string())?;
-        for m in messages {
-            stmt.execute(rusqlite::params![
-                m.role,
-                m.content,
-                m.refs_json,
-                session_id,
-                m.thinking,
-                m.tools_json,
-                m.turn_status,
-                now
-            ])
-            .map_err(|e| e.to_string())?;
-        }
-    }
     conn.execute(
         "UPDATE bot_sessions SET updated_at = ?1 WHERE id = ?2",
         rusqlite::params![now, session_id],
     )
     .map_err(|e| e.to_string())?;
     Ok(dropped)
+}
+
+/// 按 `(session_id, msg_id)` upsert 单行：回合内用户行/终稿行的落行入口。
+///
+/// 新行 = 会话尾追加（ord = MAX+1，created_at = 当刻）；命中旧行只更新
+/// 内容列——位置与首插时刻都不动（同 id 重写 = 同一条消息）。行带 None
+/// id 时就地补服务端 id。不自带事务：调用方需要原子语义时传入事务连接
+/// （`&Transaction` 经 Deref 解引用可用）。
+pub fn bot_history_upsert_row_inner(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    message: &BotMsgRow,
+) -> Result<(), String> {
+    let msg_id = message.msg_id.clone().unwrap_or_else(new_msg_id);
+    let now = crate::db::now_ms();
+    conn.execute(
+        "INSERT INTO bot_messages (session_id, msg_id, ord, role, content, refs, thinking, tools, turn_status, created_at)
+         VALUES (?1, ?2, (SELECT COALESCE(MAX(ord), -1) + 1 FROM bot_messages WHERE session_id = ?1), ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(session_id, msg_id) DO UPDATE SET
+            role = excluded.role,
+            content = excluded.content,
+            refs = excluded.refs,
+            thinking = excluded.thinking,
+            tools = excluded.tools,
+            turn_status = excluded.turn_status",
+        rusqlite::params![
+            session_id,
+            msg_id,
+            message.role,
+            message.content,
+            message.refs_json,
+            message.thinking,
+            message.tools_json,
+            message.turn_status,
+            now
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE bot_sessions SET updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// 整段覆盖写（留痕版）：超上限截断时把丢弃条数记进审计账本。
@@ -152,6 +274,8 @@ pub async fn bot_history_save(
 /// 把整段历史读回来再拼一遍，而读回来的快照会和并发落库的用户消息打架——
 /// 谁后写谁赢，输的那条消息凭空消失。纯 INSERT 没有这个窗口。
 ///
+/// 追加行就地生成服务端 id、排在会话尾（ord = MAX+1、created_at = 当刻）。
+///
 /// 追加与「会话活跃时间推进」写在同一事务里：两步必须同时成立。只 INSERT
 /// 成功而 UPDATE 失败时，调用方会把这次追加当成「没写进去」（汇报轮据此
 /// 不记「已吸收」并重试），可消息行其实已经在库里——重试就会多插一条一样
@@ -163,13 +287,15 @@ pub fn bot_history_append_inner(
 ) -> Result<(), String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let now = crate::db::now_ms();
+    let msg_id = message.msg_id.clone().unwrap_or_else(new_msg_id);
     tx.execute(
-        "INSERT INTO bot_messages (role, content, refs, session_id, thinking, tools, turn_status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO bot_messages (session_id, msg_id, ord, role, content, refs, thinking, tools, turn_status, created_at) VALUES (?1, ?2, (SELECT COALESCE(MAX(ord), -1) + 1 FROM bot_messages WHERE session_id = ?1), ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
+            session_id,
+            msg_id,
             message.role,
             message.content,
             message.refs_json,
-            session_id,
             message.thinking,
             message.tools_json,
             message.turn_status,
@@ -244,18 +370,11 @@ mod tests {
         let bot_log = crate::db::data_dir(app.handle()).join("bot.log");
         let _ = std::fs::remove_file(&bot_log);
         let mut conn = rusqlite::Connection::open_in_memory().expect("内存库");
+        conn.execute_batch(BOT_MESSAGES_DDL).expect("建表");
+        conn.execute_batch(BOT_MESSAGES_IDENTITY_INDEX_DDL)
+            .expect("建索引");
         conn.execute_batch(
-            "CREATE TABLE bot_messages (
-                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                 role       TEXT NOT NULL,
-                 content    TEXT NOT NULL,
-                 refs       TEXT,
-                 session_id TEXT,
-                 thinking   TEXT,
-                 tools      TEXT,
-                 turn_status TEXT,
-                 created_at INTEGER NOT NULL
-             );
+            "
              CREATE TABLE bot_sessions (
                  id         TEXT PRIMARY KEY,
                  title      TEXT NOT NULL,
@@ -270,6 +389,7 @@ mod tests {
         // 2001 条：超上限 1 条
         let rows: Vec<BotMsgRow> = (0..2001)
             .map(|i| BotMsgRow {
+                msg_id: None,
                 role: "user".into(),
                 content: format!("m{i}"),
                 refs_json: None,
@@ -303,18 +423,11 @@ mod tests {
     #[test]
     fn clearing_history_bumps_session_activity_time() {
         let mut conn = rusqlite::Connection::open_in_memory().expect("内存库");
+        conn.execute_batch(BOT_MESSAGES_DDL).expect("建表");
+        conn.execute_batch(BOT_MESSAGES_IDENTITY_INDEX_DDL)
+            .expect("建索引");
         conn.execute_batch(
-            "CREATE TABLE bot_messages (
-                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                 role       TEXT NOT NULL,
-                 content    TEXT NOT NULL,
-                 refs       TEXT,
-                 session_id TEXT,
-                 thinking   TEXT,
-                 tools      TEXT,
-                 turn_status TEXT,
-                 created_at INTEGER NOT NULL
-             );
+            "
              CREATE TABLE bot_sessions (
                  id         TEXT PRIMARY KEY,
                  title      TEXT NOT NULL,
@@ -360,18 +473,11 @@ mod tests {
     #[test]
     fn history_save_in_a_transaction_rolls_back_as_one_unit() {
         let mut conn = rusqlite::Connection::open_in_memory().expect("内存库");
+        conn.execute_batch(BOT_MESSAGES_DDL).expect("建表");
+        conn.execute_batch(BOT_MESSAGES_IDENTITY_INDEX_DDL)
+            .expect("建索引");
         conn.execute_batch(
-            "CREATE TABLE bot_messages (
-                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                 role       TEXT NOT NULL,
-                 content    TEXT NOT NULL,
-                 refs       TEXT,
-                 session_id TEXT,
-                 thinking   TEXT,
-                 tools      TEXT,
-                 turn_status TEXT,
-                 created_at INTEGER NOT NULL
-             );
+            "
              CREATE TABLE bot_sessions (
                  id         TEXT PRIMARY KEY,
                  title      TEXT NOT NULL,
@@ -388,6 +494,7 @@ mod tests {
         )
         .expect("建表");
         let row = |content: &str| BotMsgRow {
+            msg_id: None,
             role: "assistant".into(),
             content: content.into(),
             refs_json: None,
@@ -422,18 +529,11 @@ mod tests {
     #[test]
     fn turn_status_round_trips_through_history() {
         let mut conn = rusqlite::Connection::open_in_memory().expect("内存库");
+        conn.execute_batch(BOT_MESSAGES_DDL).expect("建表");
+        conn.execute_batch(BOT_MESSAGES_IDENTITY_INDEX_DDL)
+            .expect("建索引");
         conn.execute_batch(
-            "CREATE TABLE bot_messages (
-                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                 role       TEXT NOT NULL,
-                 content    TEXT NOT NULL,
-                 refs       TEXT,
-                 session_id TEXT,
-                 thinking   TEXT,
-                 tools      TEXT,
-                 turn_status TEXT,
-                 created_at INTEGER NOT NULL
-             );
+            "
              CREATE TABLE bot_sessions (
                  id         TEXT PRIMARY KEY,
                  title      TEXT NOT NULL,
@@ -447,6 +547,7 @@ mod tests {
         .expect("建表");
         let rows = vec![
             BotMsgRow {
+                msg_id: None,
                 role: "user".into(),
                 content: "问".into(),
                 refs_json: None,
@@ -455,6 +556,7 @@ mod tests {
                 turn_status: None,
             },
             BotMsgRow {
+                msg_id: None,
                 role: "assistant".into(),
                 content: "答".into(),
                 refs_json: None,
@@ -487,18 +589,11 @@ mod tests {
     #[test]
     fn history_append_rolls_back_the_row_when_the_session_update_fails() {
         let mut conn = rusqlite::Connection::open_in_memory().expect("内存库");
+        conn.execute_batch(BOT_MESSAGES_DDL).expect("建表");
+        conn.execute_batch(BOT_MESSAGES_IDENTITY_INDEX_DDL)
+            .expect("建索引");
         conn.execute_batch(
-            "CREATE TABLE bot_messages (
-                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                 role       TEXT NOT NULL,
-                 content    TEXT NOT NULL,
-                 refs       TEXT,
-                 session_id TEXT,
-                 thinking   TEXT,
-                 tools      TEXT,
-                 turn_status TEXT,
-                 created_at INTEGER NOT NULL
-             );
+            "
              CREATE TABLE bot_sessions (
                  id         TEXT PRIMARY KEY,
                  title      TEXT NOT NULL,
@@ -516,6 +611,7 @@ mod tests {
             &mut conn,
             "s1",
             &BotMsgRow {
+                msg_id: None,
                 role: "assistant".into(),
                 content: "汇报轮回复".into(),
                 refs_json: None,
@@ -577,5 +673,324 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ===== 消息身份数据面锚点（快照 upsert + 差集删除 + 行内核）=====
+
+    /// 身份测试夹具：单源 DDL 建消息表 + 两索引 + 最小会话表（s1，基线时刻 1000）
+    fn identity_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().expect("内存库");
+        conn.execute_batch(BOT_MESSAGES_DDL).expect("建消息表");
+        conn.execute_batch(BOT_MESSAGES_IDENTITY_INDEX_DDL)
+            .expect("建索引");
+        conn.execute_batch(
+            "CREATE TABLE bot_sessions (
+                 id TEXT PRIMARY KEY,
+                 title TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 is_subagent INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO bot_sessions (id, title, created_at, updated_at)
+                 VALUES ('s1', '会话', 1000, 1000);",
+        )
+        .expect("建会话表");
+        conn
+    }
+
+    /// id 传空串 = 不带身份（写内核就地补服务端 id）
+    fn row(id: &str, content: &str) -> BotMsgRow {
+        BotMsgRow {
+            msg_id: if id.is_empty() { None } else { Some(id.into()) },
+            role: "user".into(),
+            content: content.into(),
+            refs_json: None,
+            thinking: None,
+            tools_json: None,
+            turn_status: None,
+        }
+    }
+
+    /// 锚点①：同 id upsert 命中旧行只更新内容，首插时刻与位置都不动
+    #[test]
+    fn upsert_row_keeps_first_insert_time_and_position() {
+        let conn = identity_db();
+        conn.execute(
+            "INSERT INTO bot_messages (session_id, msg_id, ord, role, content, created_at)
+             VALUES ('s1', 'a', 5, 'user', '旧文', 1000)",
+            [],
+        )
+        .expect("seed");
+        bot_history_upsert_row_inner(&conn, "s1", &row("a", "新文")).expect("upsert");
+        let (created_at, ord, content): (i64, i64, String) = conn
+            .query_row(
+                "SELECT created_at, ord, content FROM bot_messages WHERE msg_id = 'a'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("读行");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bot_messages WHERE msg_id = 'a'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("数行");
+        assert_eq!(count, 1, "同 id upsert 不得产生第二行");
+        assert_eq!(created_at, 1000, "命中旧行必须保首插时刻，覆写不漂");
+        assert_eq!(ord, 5, "命中旧行必须保位置");
+        assert_eq!(content, "新文", "内容列要走 upsert 更新");
+    }
+
+    /// 新行 = 会话尾追加（ord = MAX+1）；无 id 行落地即有服务端身份
+    #[test]
+    fn upsert_row_appends_new_ids_at_session_tail() {
+        let conn = identity_db();
+        bot_history_upsert_row_inner(&conn, "s1", &row("a", "一")).expect("a");
+        bot_history_upsert_row_inner(&conn, "s1", &row("b", "二")).expect("b");
+        bot_history_upsert_row_inner(&conn, "s1", &row("", "三")).expect("c");
+        let ords: Vec<i64> = conn
+            .prepare("SELECT ord FROM bot_messages WHERE session_id = 's1' ORDER BY ord")
+            .expect("prepare")
+            .query_map([], |r| r.get(0))
+            .expect("map")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("收集");
+        assert_eq!(ords, vec![0, 1, 2], "新行按会话尾递增排位");
+        let null_ids: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bot_messages WHERE msg_id IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("数行");
+        assert_eq!(null_ids, 0, "行内核不得落地无身份的行");
+    }
+
+    /// 锚点②：快照是权威全量——库里不在本批的行（含 NULL id 存量行）被差集
+    /// 删除收走，本批行按数组下标重排 ord
+    #[test]
+    fn snapshot_diff_removes_missing_and_unidentified_rows() {
+        let mut conn = identity_db();
+        let tx = conn.transaction().expect("开事务");
+        bot_history_save_inner(&tx, "s1", &[row("a", "A"), row("b", "B")]).expect("首批");
+        tx.commit().expect("提交");
+        conn.execute(
+            "INSERT INTO bot_messages (session_id, role, content, created_at)
+             VALUES ('s1', 'user', '无id存量行', 1000)",
+            [],
+        )
+        .expect("seed NULL 行");
+        // 快照只剩 a 与新行 d：b 与 NULL 存量行都要被收走
+        let tx = conn.transaction().expect("开事务");
+        bot_history_save_inner(&tx, "s1", &[row("a", "A2"), row("d", "D")]).expect("次批");
+        tx.commit().expect("提交");
+        let contents: Vec<String> = conn
+            .prepare("SELECT content FROM bot_messages WHERE session_id = 's1' ORDER BY ord")
+            .expect("prepare")
+            .query_map([], |r| r.get(0))
+            .expect("map")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("收集");
+        assert_eq!(
+            contents,
+            vec!["A2".to_string(), "D".to_string()],
+            "差集删除后只剩本批两行且按快照序"
+        );
+        let null_ids: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bot_messages WHERE msg_id IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("数行");
+        assert_eq!(null_ids, 0, "NULL id 存量行必须被差集删除清走");
+    }
+
+    /// 空快照 = 清空会话（/clean 与整段重建空态同语义），且会话活跃时间照推进
+    #[test]
+    fn snapshot_diff_empty_snapshot_clears_session() {
+        let mut conn = identity_db();
+        let tx = conn.transaction().expect("开事务");
+        bot_history_save_inner(&tx, "s1", &[row("a", "A"), row("b", "B")]).expect("首批");
+        tx.commit().expect("提交");
+        let tx = conn.transaction().expect("开事务");
+        bot_history_save_inner(&tx, "s1", &[]).expect("空快照");
+        tx.commit().expect("提交");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bot_messages WHERE session_id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("数行");
+        assert_eq!(count, 0, "空快照必须清空会话");
+        let updated_at: i64 = conn
+            .query_row(
+                "SELECT updated_at FROM bot_sessions WHERE id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("读会话");
+        assert!(updated_at > 1000, "清空也要推会话活跃时间");
+    }
+
+    /// 未带 id 的行每轮重建都换新身份（exec/子会话整段重建语义），
+    /// 旧行由差集删除收走，行数稳定
+    #[test]
+    fn snapshot_rows_without_ids_get_fresh_identity_each_rebuild() {
+        let mut conn = identity_db();
+        let tx = conn.transaction().expect("开事务");
+        bot_history_save_inner(&tx, "s1", &[row("", "X"), row("", "Y")]).expect("首批");
+        tx.commit().expect("提交");
+        let ids1: Vec<String> = conn
+            .prepare("SELECT msg_id FROM bot_messages WHERE session_id = 's1' ORDER BY ord")
+            .expect("prepare")
+            .query_map([], |r| r.get(0))
+            .expect("map")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("收集");
+        assert!(ids1.iter().all(|i| !i.is_empty()), "落地即有服务端身份");
+        let tx = conn.transaction().expect("开事务");
+        bot_history_save_inner(&tx, "s1", &[row("", "X"), row("", "Y")]).expect("次批");
+        tx.commit().expect("提交");
+        let ids2: Vec<String> = conn
+            .prepare("SELECT msg_id FROM bot_messages WHERE session_id = 's1' ORDER BY ord")
+            .expect("prepare")
+            .query_map([], |r| r.get(0))
+            .expect("map")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("收集");
+        assert_eq!(ids2.len(), 2, "重建后行数稳定");
+        assert_ne!(ids1, ids2, "每轮重建都是全新身份（旧行被差集收走）");
+    }
+
+    /// 锚点⑥：老库形态（无三列）迁出 NULL id 行不炸唯一索引（SQLite NULL
+    /// 相异），迁移幂等重跑，列与索引齐备；下一次保存把 NULL 行自然换血
+    #[test]
+    fn migration_tolerates_legacy_null_id_rows_and_is_idempotent() {
+        let mut conn = rusqlite::Connection::open_in_memory().expect("内存库");
+        conn.execute_batch(
+            "CREATE TABLE bot_messages (
+                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                 role       TEXT NOT NULL,
+                 content    TEXT NOT NULL,
+                 refs       TEXT,
+                 session_id TEXT,
+                 thinking   TEXT,
+                 tools      TEXT,
+                 turn_status TEXT,
+                 created_at INTEGER NOT NULL
+             );
+             CREATE TABLE bot_sessions (
+                 id TEXT PRIMARY KEY,
+                 title TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 is_subagent INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO bot_sessions (id, title, created_at, updated_at)
+                 VALUES ('s1', '会话', 1000, 1000);
+             INSERT INTO bot_messages (session_id, role, content, created_at)
+                 VALUES ('s1', 'user', '旧一', 1000), ('s1', 'user', '旧二', 1000), ('s1', 'user', '旧三', 1000);",
+        )
+        .expect("老库建表");
+        ensure_bot_messages_identity(&conn).expect("迁移");
+        ensure_bot_messages_identity(&conn).expect("迁移幂等重跑不得报错");
+        let idx_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_index_list('bot_messages')
+                 WHERE name IN ('idx_bot_messages_sid_msgid', 'idx_bot_messages_sid_ord')",
+                [],
+                |r| r.get(0),
+            )
+            .expect("读索引");
+        assert_eq!(idx_count, 2, "身份两索引必须就位");
+        let legacy: i64 = conn
+            .query_row("SELECT COUNT(*) FROM bot_messages", [], |r| r.get(0))
+            .expect("数行");
+        assert_eq!(legacy, 3, "迁移不得动存量数据");
+        let tx = conn.transaction().expect("开事务");
+        bot_history_save_inner(&tx, "s1", &[row("a", "新血")]).expect("首次保存");
+        tx.commit().expect("提交");
+        let contents: Vec<String> = conn
+            .prepare("SELECT content FROM bot_messages WHERE session_id = 's1'")
+            .expect("prepare")
+            .query_map([], |r| r.get(0))
+            .expect("map")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("收集");
+        assert_eq!(
+            contents,
+            vec!["新血".to_string()],
+            "NULL 存量行在首次保存时被差集换血"
+        );
+    }
+
+    /// 锚点⑤：追加行排会话尾（ord = MAX+1）且落地即有服务端身份
+    #[test]
+    fn append_assigns_tail_ord_and_server_identity() {
+        let mut conn = identity_db();
+        let tx = conn.transaction().expect("开事务");
+        bot_history_save_inner(&tx, "s1", &[row("a", "A"), row("b", "B")]).expect("首批");
+        tx.commit().expect("提交");
+        bot_history_append_inner(&mut conn, "s1", &row("", "汇报一")).expect("append 1");
+        bot_history_append_inner(&mut conn, "s1", &row("", "汇报二")).expect("append 2");
+        let rows: Vec<(Option<String>, i64)> = conn
+            .prepare("SELECT msg_id, ord FROM bot_messages WHERE session_id = 's1' ORDER BY ord")
+            .expect("prepare")
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("map")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("收集");
+        let ords: Vec<i64> = rows.iter().map(|(_, o)| *o).collect();
+        assert_eq!(ords, vec![0, 1, 2, 3], "追加行依次排在会话尾");
+        assert!(
+            rows.iter()
+                .all(|(id, _)| id.as_deref().is_some_and(|s| !s.is_empty())),
+            "追加行落地即有服务端身份，不得留 NULL"
+        );
+        let distinct: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT msg_id) FROM bot_messages WHERE session_id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("数行");
+        assert_eq!(distinct, 4, "四行身份互异");
+    }
+
+    /// 差集删除的 id 清单走 json_each 单参数：2000 行（截断上限）整批进出
+    /// 不撞 SQLite 变量上限，ord 无断裂
+    #[test]
+    fn snapshot_diff_handles_2000_rows_without_variable_limit() {
+        let mut conn = identity_db();
+        let first: Vec<BotMsgRow> = (0..2000)
+            .map(|i| row(&format!("m{i}"), &format!("内容{i}")))
+            .collect();
+        let tx = conn.transaction().expect("开事务");
+        bot_history_save_inner(&tx, "s1", &first).expect("首批 2000 行");
+        tx.commit().expect("提交");
+        let second: Vec<BotMsgRow> = (0..2000).map(|i| row("", &format!("换血{i}"))).collect();
+        let tx = conn.transaction().expect("开事务");
+        bot_history_save_inner(&tx, "s1", &second).expect("次批 2000 行");
+        tx.commit().expect("提交");
+        let (count, ord_max): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(ord), -1) FROM bot_messages WHERE session_id = 's1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("读");
+        assert_eq!(count, 2000, "重建后行数稳定（旧 2000 行全被差集收走）");
+        assert_eq!(ord_max, 1999, "ord 连续无断裂");
+        let stale: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bot_messages WHERE content LIKE '内容%'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("数行");
+        assert_eq!(stale, 0, "首批旧行不得残留");
     }
 }

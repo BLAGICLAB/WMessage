@@ -191,6 +191,7 @@ pub(super) async fn create_exec_session<R: tauri::Runtime>(
             &tx,
             &s.id,
             &[crate::db::BotMsgRow {
+                msg_id: None,
                 role: "user".into(),
                 content: block,
                 refs_json: None,
@@ -242,6 +243,7 @@ pub(super) async fn persist_exec_reply<R: tauri::Runtime>(
             &sid,
             &[
                 crate::db::BotMsgRow {
+                    msg_id: None,
                     role: "user".into(),
                     content: block,
                     refs_json: None,
@@ -250,6 +252,7 @@ pub(super) async fn persist_exec_reply<R: tauri::Runtime>(
                     turn_status: None,
                 },
                 crate::db::BotMsgRow {
+                    msg_id: None,
                     role: "assistant".into(),
                     content,
                     refs_json: refs,

@@ -9,6 +9,12 @@ use crate::error::{CommandError, CommandResult};
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct BotMsgRow {
+    /// 消息身份（uuid 文本，出生即有、终身不变）：前端预生成（用户行乐观
+    /// 对账）或由写内核就地补服务端 id。None = 调用方不关心身份，写内核
+    /// 会生成；读路径原样带回（存量旧行为 NULL）。serde 缺字段落 None，
+    /// 老前端载荷不受影响。
+    #[serde(default)]
+    pub msg_id: Option<String>,
     pub role: String,
     pub content: String,
     pub refs_json: Option<String>,
@@ -395,6 +401,7 @@ mod tests {
     #[test]
     fn turn_status_uses_camel_case_on_the_wire() {
         let row = BotMsgRow {
+            msg_id: None,
             role: "assistant".into(),
             content: "答".into(),
             refs_json: None,

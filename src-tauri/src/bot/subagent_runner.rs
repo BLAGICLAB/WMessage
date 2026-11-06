@@ -808,6 +808,7 @@ pub(crate) async fn run_subagent(
                 &session_id_for_db,
                 &[
                     crate::db::BotMsgRow {
+                        msg_id: None,
                         role: "user".into(),
                         content: wrapper_for_db,
                         refs_json: None,
@@ -816,6 +817,7 @@ pub(crate) async fn run_subagent(
                         turn_status: None,
                     },
                     crate::db::BotMsgRow {
+                        msg_id: None,
                         role: "assistant".into(),
                         content: final_for_db,
                         refs_json: None,

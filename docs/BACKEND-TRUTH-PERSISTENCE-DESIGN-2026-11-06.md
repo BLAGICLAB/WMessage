@@ -86,9 +86,11 @@ DB 行（唯一真源） ──变更事件（msg-upserted / msg-dropped）─�
 ## §四 数据面（继承旧方案，标注差异）
 
 - **列与索引**：`msg_id TEXT` / `ord INTEGER NOT NULL DEFAULT 0` /
-  `trace_id INTEGER` 三列 + 部分唯一索引 `(session_id, msg_id)` + 复合索引
-  `(session_id, ord)`——与旧方案 §4.1 完全一致（含「现状除主键零索引」的
-  核实结论）。
+  `trace_id INTEGER` 三列 + 唯一索引 `(session_id, msg_id)` + 复合索引
+  `(session_id, ord)`（含「现状除主键零索引」的核实结论）。唯一索引是**全列**
+  而非旧方案 §4.1 的部分索引——偏离登记 §十五-1：SQLite 中 NULL 相异，存量
+  NULL id 行彼此不冲突，无需 WHERE 谓词，也避开 ON CONFLICT 目标子句与部分
+  索引 WHERE 匹配的版本兼容坑。
 - **`created_at` 首插时刻语义**：同旧方案 §4.2（upsert 不列该列即保旧值）。
 - **`turn_seq`**：规则同旧方案 §八（新用户行 MAX+1、助手行按 ord 继承、
   汇报 append 自成一轮），实现仍挂工作项重构窗口，本方案不落。
@@ -106,9 +108,10 @@ DB 行（唯一真源） ──变更事件（msg-upserted / msg-dropped）─�
 - **upsert 行内核**：按 `(session_id, msg_id)` upsert 单行/少行，保
   `created_at`，盖 `ord`。使用者：用户消息落行、回合终稿落行、汇报 append
   （append 语义 = 无条件 INSERT，同旧方案）、定向操作的受影响行。
-- **snapshot-diff 内核**：旧方案的全量 upsert + 差集删除 + 临时表，**仅限后端
-  内部整段重建**（exec 会话重跑、子 agent 会话收尾）——前端合约里它已死
-  （§六），不构成误用面。旧方案对「部分快照误用」的担忧随前端合约退役消解。
+- **snapshot-diff 内核**：全量 upsert + 差集删除，**仅限后端内部整段重建**
+  （exec 会话重跑、子 agent 会话收尾）——前端合约里它已死（§六），不构成
+  误用面。旧方案对「部分快照误用」的担忧随前端合约退役消解。差集删除的
+  id 清单经 `json_each` 单参数下发（偏离登记 §十五-2，不用临时表）。
 
 ### 5.2 回合落行时序（主聊天）
 
@@ -269,4 +272,17 @@ bot_chat(session_id, content, client_msg_id, ...):
 
 ## §十五 偏离登记
 
-（实施时逐条登记：偏离点 / 原因 / 影响面 / 是否回写本文）
+- **偏离 1（批 1，已回写 §四）**：`(session_id, msg_id)` 唯一索引由部分索引
+  改全列索引。原因：SQLite 中 NULL 相异，存量 NULL id 行彼此不冲突，全列索引
+  天然兼容老库迁移；部分索引要求 `ON CONFLICT` 目标子句带匹配 WHERE 谓词，
+  是纯增的版本兼容坑。影响面：零（语义等价，锚点⑥ 已钉 NULL 存量共存）。
+- **偏离 2（批 1，已回写 §5.1）**：差集删除的 id 清单走 `json_each`
+  单参数下发，不用旧方案 §5.1 伪码的临时表。原因：rusqlite 0.37 bundled（SQLite
+  ≥3.45）`json_each` 为核心功能，单参数天然无变量上限；临时表的生命周期约束
+  （旧方案风险清单的「临时表与连接池」条目）随之整体消失。影响面：批 1 锚点
+  2000 行差集进出已实测通过。
+- **批 1 附带（口径统一）**：`bot_messages` 建表 DDL 收为单源常量
+  `bot_history::BOT_MESSAGES_DDL`（基线与测试建表共用），消灭 7 处手写
+  schema 的漂移面；`bot_history_load_inner` 读序换 `ORDER BY ord, id`（存量
+  行 ord 恒 0 落回 id 序，行为不变）、SELECT 带回 `msg_id`（读回保留是
+  前后端身份交接的达成机制，提前到数据面批次一并落）。

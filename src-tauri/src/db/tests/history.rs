@@ -13,6 +13,7 @@ fn bot_history_append_keeps_existing_rows_and_order() {
     )
     .unwrap();
     let mk = |c: &str| BotMsgRow {
+        msg_id: None,
         role: "user".into(),
         content: c.into(),
         refs_json: None,
@@ -28,6 +29,7 @@ fn bot_history_append_keeps_existing_rows_and_order() {
         &mut conn,
         "s1",
         &BotMsgRow {
+            msg_id: None,
             role: "assistant".into(),
             content: "汇报轮回复".into(),
             refs_json: None,
@@ -134,6 +136,7 @@ fn bot_history_save_inner_commits_in_tx() {
 
     let new_msgs = vec![
         BotMsgRow {
+            msg_id: None,
             role: "user".into(),
             content: "hi".into(),
             refs_json: None,
@@ -142,6 +145,7 @@ fn bot_history_save_inner_commits_in_tx() {
             turn_status: None,
         },
         BotMsgRow {
+            msg_id: None,
             role: "assistant".into(),
             content: "hello".into(),
             refs_json: None,
@@ -176,8 +180,9 @@ fn bot_history_save_inner_commits_in_tx() {
     fs::remove_dir_all(&dir).ok();
 }
 
-/// 覆写行序不变量：全量覆写后 load 行序 == 写入序，批内 created_at 相等
-/// （覆写原子时刻），id 单调递增——行序唯一由自增 id 恢复，与 created_at 无关。
+/// 快照保存行序不变量：保存后 load 行序 == 写入序（ord 定桩），新行
+/// created_at = 首插时刻（同一批内的新行相等的原子时刻），id 单调递增——
+/// 行序恢复不依赖 created_at 与 id，按 created_at 排 bot_messages 均属缺陷。
 #[test]
 fn bot_history_overwrite_restores_order_and_batch_created_at() {
     let (dir, mut conn) = setup_bhs_db();
@@ -187,6 +192,7 @@ fn bot_history_overwrite_restores_order_and_batch_created_at() {
     )
     .unwrap();
     let mk = |content: &str| BotMsgRow {
+        msg_id: None,
         role: "user".into(),
         content: content.into(),
         refs_json: None,

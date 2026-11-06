@@ -200,17 +200,6 @@ pub fn open_db<R: tauri::Runtime>(
            state       TEXT    NOT NULL,
            created_at  INTEGER NOT NULL
          );
-         CREATE TABLE IF NOT EXISTS bot_messages (
-           id         INTEGER PRIMARY KEY AUTOINCREMENT,
-           role       TEXT NOT NULL,
-           content    TEXT NOT NULL,
-           refs       TEXT,
-           session_id TEXT,
-           thinking   TEXT,
-           tools      TEXT,
-           turn_status TEXT,
-           created_at INTEGER NOT NULL
-         );
          CREATE TABLE IF NOT EXISTS bot_sessions (
            id         TEXT PRIMARY KEY,
            title      TEXT NOT NULL,
@@ -231,6 +220,11 @@ pub fn open_db<R: tauri::Runtime>(
          );",
     )
     .map_err(|e| e.to_string())?;
+    // 聊天消息表单源 DDL（bot_history 模块，测试建表共用）+ 身份迁移
+    // （老库补 msg_id/ord/trace_id 三列再建两索引，顺序不能反）
+    conn.execute_batch(bot_history::BOT_MESSAGES_DDL)
+        .map_err(|e| e.to_string())?;
+    bot_history::ensure_bot_messages_identity(&conn).map_err(|e| e.to_string())?;
     // skill_outcomes 表走单源 DDL（skill_out 模块），与集成测试建表共用
     conn.execute_batch(SKILL_OUTCOMES_DDL)
         .map_err(|e| e.to_string())?;
