@@ -399,7 +399,7 @@ async fn user_turn_context<R: tauri::Runtime>(
 /// 行投影广播（事件契约 §七）：走 emit_recorded 统一出口（sessionId 信封 +
 /// 回放缓冲）。载荷逐字段手拼而非 serde 整行——序列化是可失败路径，这里要
 /// 不可失败的构造。
-fn emit_row_upserted<R: tauri::Runtime>(
+pub(crate) fn emit_row_upserted<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Option<&str>,
     row: &crate::db::BotMsgRow,

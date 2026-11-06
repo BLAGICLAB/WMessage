@@ -186,23 +186,24 @@ pub(super) async fn create_exec_session<R: tauri::Runtime>(
         // 建会话与任务块落库包同一事务：任务块写失败时会话不该留下空壳
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let s = crate::db::bot_session_create_inner(&tx, Some(title))?;
-        crate::db::bot_history_save_audited(
-            &app_for_audit,
-            &tx,
-            &s.id,
-            &[crate::db::BotMsgRow {
-                msg_id: None,
-                file_changes_json: None,
-                trace_id: None,
-                role: "user".into(),
-                content: block,
-                refs_json: None,
-                thinking: None,
-                tools_json: None,
-                turn_status: None,
-            }],
-        )?;
+        // 身份预生成（T1 服务端生成）：事件载荷与库行同 id
+        let history_rows = vec![crate::db::BotMsgRow {
+            msg_id: Some(crate::db::bot_history::new_bot_msg_id()),
+            file_changes_json: None,
+            trace_id: None,
+            role: "user".into(),
+            content: block,
+            refs_json: None,
+            thinking: None,
+            tools_json: None,
+            turn_status: None,
+        }];
+        crate::db::bot_history_save_audited(&app_for_audit, &tx, &s.id, &history_rows)?;
         tx.commit().map_err(|e| e.to_string())?;
+        // 重建广播（真源化批 5）：新 id 在投影里必然陌生 → 前端整段 reload
+        for r in &history_rows {
+            crate::bot_chat::emit_row_upserted(&app_for_audit, Some(&s.id), r);
+        }
         Ok(s)
     })
     .await
@@ -237,42 +238,46 @@ pub(super) async fn persist_exec_reply<R: tauri::Runtime>(
     let block = build_task_block(task);
     let sid = sid.to_string();
     let app_for_audit = app.clone();
+    // 身份预生成（T1 服务端生成）：事件载荷与库行同 id
+    let history_rows = vec![
+        crate::db::BotMsgRow {
+            msg_id: Some(crate::db::bot_history::new_bot_msg_id()),
+            file_changes_json: None,
+            trace_id: None,
+            role: "user".into(),
+            content: block,
+            refs_json: None,
+            thinking: None,
+            tools_json: None,
+            turn_status: None,
+        },
+        crate::db::BotMsgRow {
+            msg_id: Some(crate::db::bot_history::new_bot_msg_id()),
+            file_changes_json: None,
+            trace_id: None,
+            role: "assistant".into(),
+            content,
+            refs_json: refs,
+            thinking: None,
+            tools_json: None,
+            turn_status: None,
+        },
+    ];
+    let rows_for_event = history_rows.clone();
+    let sid_for_conn = sid.clone();
     let r = crate::db::lock::with_write_conn(app, move |conn| {
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-        crate::db::bot_history_save_audited(
-            &app_for_audit,
-            &tx,
-            &sid,
-            &[
-                crate::db::BotMsgRow {
-                    msg_id: None,
-                    file_changes_json: None,
-                    trace_id: None,
-                    role: "user".into(),
-                    content: block,
-                    refs_json: None,
-                    thinking: None,
-                    tools_json: None,
-                    turn_status: None,
-                },
-                crate::db::BotMsgRow {
-                    msg_id: None,
-                    file_changes_json: None,
-                    trace_id: None,
-                    role: "assistant".into(),
-                    content,
-                    refs_json: refs,
-                    thinking: None,
-                    tools_json: None,
-                    turn_status: None,
-                },
-            ],
-        )?;
+        crate::db::bot_history_save_audited(&app_for_audit, &tx, &sid_for_conn, &history_rows)?;
         tx.commit().map_err(|e| e.to_string())
     })
     .await;
     match r {
-        Ok(()) => {}
+        Ok(()) => {
+            // 重建广播（真源化批 5）：投影靠事件对账，新 id 陌生即整段 reload
+            for row in &rows_for_event {
+                crate::bot_chat::emit_row_upserted(app, Some(&sid), row);
+            }
+        }
         Err(e) => {
             crate::audit_event!(app, crate::audit::AuditLevel::Warn, "task_exec.persist_failed",
                 "error" => e);

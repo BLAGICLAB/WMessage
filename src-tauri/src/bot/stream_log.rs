@@ -251,7 +251,10 @@ pub fn emit_recorded<R: Runtime>(
             }
         }
     }
-    let _ = app.emit_to("main", event, payload);
+    // 扇出就绪（真源化批 6）：广播而非定向 main——多窗口各自投影收敛到
+    // 同一事件流；单窗口行为不变（前端按信封 sessionId 过滤）。
+    // tasks/theme 等非投影事件不在本通道，仍走各自的 emit_to。
+    let _ = app.emit(event, payload);
 }
 
 /// 某会话本轮的起始时刻（毫秒）。

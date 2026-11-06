@@ -267,6 +267,55 @@ fn build_failed_row_formats_partial_and_note() {
     assert_eq!(row2.turn_status.as_deref(), Some("failed"));
 }
 
+/// 锚点㉔/㉕（接线守卫）：exec 建会话/回复落库、子会话收尾三个整段重建点
+/// 都必须「身份预生成 + commit 后逐行广播」——重建换血后投影只靠事件对账，
+/// 漏一处那路重建就对前端不可见（围观执行会话/子会话详情停在旧行）
+#[test]
+fn backend_rebuild_sites_emit_rows_with_ids() {
+    let exec = include_str!("exec.rs");
+    // 建会话点：身份预生成 + 广播
+    assert!(
+        exec.contains("let history_rows = vec![crate::db::BotMsgRow {\n            msg_id: Some(crate::db::bot_history::new_bot_msg_id()),"),
+        "exec 建会话点身份预生成缺失"
+    );
+    let rebuild_note = exec.matches("重建广播（真源化批 5）").count();
+    assert_eq!(
+        rebuild_note, 2,
+        "exec 两个重建点（建会话/回复落库）都要广播"
+    );
+    let runner = include_str!("../bot/subagent_runner.rs");
+    assert!(
+        runner.contains("msg_id: Some(crate::db::bot_history::new_bot_msg_id())"),
+        "子会话收尾 wrapper/digest 行必须带服务端身份（锚点㉕）"
+    );
+    assert!(
+        runner.contains("重建广播（真源化批 5）"),
+        "子会话收尾重建广播缺失"
+    );
+}
+
+/// 锚点㉘（扇出不破坏信封）：投递改广播后，sessionId 信封盖章仍是唯一会话
+/// 归属来源——前端按它过滤，单窗口行为不变。既有 stamping 测试覆盖载荷，
+/// 这里钉投递通道本体：emit_recorded 走广播投递而非定向窗口。
+#[test]
+fn stream_events_fan_out_via_broadcast() {
+    let src = include_str!("../bot/stream_log.rs");
+    let start = src
+        .find("pub fn emit_recorded<")
+        .expect("emit_recorded 起点");
+    let body = &src[start..];
+    let end = body.find("\n}\n").map(|i| i + 3).unwrap_or(body.len());
+    let emit_fn = &body[..end];
+    assert!(
+        !emit_fn.contains("emit_to(\"main\""),
+        "emit_recorded 不得再定向单窗口：扇出就绪后归属只看信封 sessionId"
+    );
+    assert!(
+        emit_fn.contains("app.emit(event, payload)"),
+        "emit_recorded 必须走广播投递"
+    );
+}
+
 /// 测试种子 DDL：身份测试需要 bot_sessions 表（bot_messages 由 open_db 基线建好）
 const BOT_MESSAGES_TEST_SEED: &str = "CREATE TABLE IF NOT EXISTS bot_sessions (
              id TEXT PRIMARY KEY,

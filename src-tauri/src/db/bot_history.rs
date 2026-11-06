@@ -96,9 +96,14 @@ pub async fn bot_history_load<R: tauri::Runtime>(
 }
 
 /// 服务端消息身份生成（uuid v4 文本，与前端 crypto.randomUUID 同格式）。
-/// msg_id 对存储层是不透明串，前后端各生成互不冲突。
-fn new_msg_id() -> String {
+/// msg_id 对存储层是不透明串，前后端各生成互不冲突。pub(crate)：后端内部
+/// 重建路径（exec/子会话收尾）预生成身份后再落行——事件载荷要带同一 id。
+pub(crate) fn new_bot_msg_id() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+fn new_msg_id() -> String {
+    new_bot_msg_id()
 }
 
 /// 保存指定会话的聊天记录：快照 upsert + 差集删除 + 更新会话活跃时间。

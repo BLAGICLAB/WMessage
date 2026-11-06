@@ -802,38 +802,45 @@ pub(crate) async fn run_subagent(
                     .map_err(CommandError::DbError)?
                     .ok_or_else(|| CommandError::TaskNotFound(row_for_db.id.clone()))?
             };
+            // 身份预生成（T1 服务端生成）：事件载荷与库行同 id
+            let history_rows = vec![
+                crate::db::BotMsgRow {
+                    msg_id: Some(crate::db::bot_history::new_bot_msg_id()),
+                    file_changes_json: None,
+                    trace_id: None,
+                    role: "user".into(),
+                    content: wrapper_for_db,
+                    refs_json: None,
+                    thinking: None,
+                    tools_json: None,
+                    turn_status: None,
+                },
+                crate::db::BotMsgRow {
+                    msg_id: Some(crate::db::bot_history::new_bot_msg_id()),
+                    file_changes_json: None,
+                    trace_id: None,
+                    role: "assistant".into(),
+                    content: final_for_db,
+                    refs_json: None,
+                    thinking: None,
+                    tools_json: None,
+                    turn_status: None,
+                },
+            ];
             crate::db::bot_history_save_audited(
                 &app_for_audit,
                 &tx,
                 &session_id_for_db,
-                &[
-                    crate::db::BotMsgRow {
-                        msg_id: None,
-                        file_changes_json: None,
-                        trace_id: None,
-                        role: "user".into(),
-                        content: wrapper_for_db,
-                        refs_json: None,
-                        thinking: None,
-                        tools_json: None,
-                        turn_status: None,
-                    },
-                    crate::db::BotMsgRow {
-                        msg_id: None,
-                        file_changes_json: None,
-                        trace_id: None,
-                        role: "assistant".into(),
-                        content: final_for_db,
-                        refs_json: None,
-                        thinking: None,
-                        tools_json: None,
-                        turn_status: None,
-                    },
-                ],
+                &history_rows,
             )
             .map_err(CommandError::DbError)?;
             tx.commit()
                 .map_err(|e| CommandError::DbError(e.to_string()))?;
+            // 重建广播（真源化批 5）：子会话整段换血后投影靠事件对账——
+            // 新 id 在投影里必然陌生，前端收到即整段 reload（不变式 2 兜底）
+            for r in &history_rows {
+                crate::bot_chat::emit_row_upserted(&app_for_audit, Some(&session_id_for_db), r);
+            }
             Ok(Some(fresh))
         })
         .await
