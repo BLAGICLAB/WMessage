@@ -36,11 +36,17 @@
 
 ## 一、发现清单（按严重度）
 
+> **修复批（67c6c779，实机复验通过）**：F-6/F-3/F-5 三项已修并真机复验——
+> F-6：登录 4ms 内 `mcp.tools_discovered tools=1`（快照起死回生），ping_stub 调用
+> 返回 pong（Bearer 通过）；F-3：exec 会话在途 /stop → bot_stop 停止（trace 573
+> running→stopped + 中断终稿落库 + 「⏹ 已停 1 条」反馈，无误报）；F-5：重启后
+> stale running 行（trace 551）自动收尾成 stopped「进程重启中断」，终态行不动。
+
 - **F-4（P2，已修 69cae9b6）**：`instructions.truncated` WARN 判据写错——`rendered > raw` 恒假（深度超限时渲染必短于原文；贴线小超限时标注反而更长，双向都不可靠），截断态永远静默。修法：判据钉在原文超限 + 抽纯函数 `should_warn_truncated` + 回归测试钉死两个方向。**这正是 V171 变异想模拟的形态，不用变异它自己就存在。**
-- **F-6（P2，待修）**：MCP OAuth 登录后的**重挂载缺失**——`mcp.oauth.login` 成功但 manager 的工具快照不刷新，模型清单永远看不到该 server 的工具；连带**过期刷新双链路未生效**（主动刷新窗口错过则调用裸奔无 Bearer，401 兜底刷新也未触发——stub 只收到一次裸请求）。
+- **F-6（P2，已修 67c6c779）**：MCP OAuth 登录后的**重挂载缺失**——`mcp.oauth.login` 成功但 manager 的工具快照不刷新，模型清单永远看不到该 server 的工具；连带**过期刷新双链路未生效**（主动刷新窗口错过则调用裸奔无 Bearer，401 兜底刷新也未触发——stub 只收到一次裸请求）。
 - **F-1（P2，已知复证）**：ask 卡 pill 按钮对合成点击不响应（11-04 轮已登记，本轮再次复证；文本回答路径可用，绕行口径成熟）。
-- **F-3（P2，待修）**：exec 会话的 /stop 失效——围观 exec 会话输入 /stop 返回「当前对话没有进行中的回复」但该会话 trace 实际 running；在途确认弹窗路径同样不可达。
-- **F-5（P3，待修）**：进程被杀后 stale running trace 永久残留（启动清扫不收拾 exec_traces 的 running 行），疑似连带永久锁该会话发送。
+- **F-3（P2，已修 67c6c779）**：exec 会话的 /stop 失效——围观 exec 会话输入 /stop 返回「当前对话没有进行中的回复」但该会话 trace 实际 running；在途确认弹窗路径同样不可达。
+- **F-5（P3，已修 67c6c779）**：进程被杀后 stale running trace 永久残留（启动清扫不收拾 exec_traces 的 running 行），疑似连带永久锁该会话发送。
 - **F-7（P3，外部桩局限）**：elicitation 桩的服务端→客户端请求（POST 响应 SSE 流内载 elicitation/create）未被 rmcp 客户端处理——本测桩接法与 rmcp 期望不匹配，ask 卡未弹出。不排除真服务器按标准接法可通，下轮用 mcp SDK 官方服务器复验。
 - **F-2（设计行为确认）**：围观 exec 会话发送被拦（「执行进行中，围观模式暂不能发送」）——与 useChatSend 注释一致，非缺陷。
 
