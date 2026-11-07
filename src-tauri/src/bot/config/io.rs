@@ -256,7 +256,7 @@ pub(crate) fn load_config(app: &AppHandle) -> BotConfig {
     // 迁移钩子：老配置缺 schemaVersion → 补默认 + 写回（幂等，已迁移不写盘；
     // 失败不阻塞读取——本次仍按下面常规路径读，下次再试）
     let _ = schema::migrate_bot_config_schema(app);
-    with_config(
+    let cfg = with_config(
         &config_path(app),
         "完整配置",
         BotConfig::default(),
@@ -266,7 +266,11 @@ pub(crate) fn load_config(app: &AppHandle) -> BotConfig {
             crate::bot::mcp::secrets::hydrate_mcp_servers(app, &mut cfg);
             cfg
         },
-    )
+    );
+    // 工具分组挂载开关（D-3 灰度）：每次加载同步进程级开关——tools_json_for
+    // 无 app 参数读不到 config，走模块级 AtomicBool
+    crate::bot::registry::groups::set_groups_enabled(cfg.deferred_tool_groups.unwrap_or(false));
+    cfg
 }
 
 /// MCP env/headers 明文 → keyring 迁移（设计
@@ -634,6 +638,8 @@ pub(crate) fn update_config_file(
     migrate_mcp_server_secrets_locked(app)?;
     let mut cfg = load_config(app);
     f(&mut cfg);
+    // 分组挂载开关随保存即时生效（D-3）：此后按开关挂载，已激活组不回滚
+    crate::bot::registry::groups::set_groups_enabled(cfg.deferred_tool_groups.unwrap_or(false));
     write_bot_config_file_locked(&db::data_dir(app), cfg)
 }
 

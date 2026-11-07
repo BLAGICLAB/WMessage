@@ -173,8 +173,12 @@ pub struct ToolDef {
 }
 
 mod claims;
+pub mod groups;
 mod handlers;
 mod schemas;
+
+// 组挂载复用的拼装内核（groups.rs 经 crate::bot::registry:: 取用）
+pub(crate) use schemas::assemble_tools_json_body;
 
 // 拆出后的子模块转出：保持 `crate::bot::registry::X` 旧路径与旧可见性不变
 pub use claims::{

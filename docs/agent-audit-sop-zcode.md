@@ -131,7 +131,7 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 <!-- sop-counts:start -->
 
 ```
-工具总数 = 66
+工具总数 = 67
 调度早退点数 = 8
 子 agent profile 档数 = 3
 内置 onion 配置档数 = 3
@@ -139,8 +139,8 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 
 <!-- sop-counts:end -->
 
-- **工具总数 66** = `src-tauri/src/bot/registry/schemas.rs` 的 `TOOLS_TABLE` 条目数
-  （= `SCHEMA_*` 常量数）。`read_own_card` / `write_artifact_file` 仅子 agent 可见，不进主 agent 清单。
+- **工具总数 67** = `src-tauri/src/bot/registry/schemas.rs` 的 `TOOLS_TABLE` 条目数
+  （= `SCHEMA_*` 常量数；含组挂载元工具 `activate_tools`）。`read_own_card` / `write_artifact_file` 仅子 agent 可见，不进主 agent 清单。
 - **调度早退点数 8** = `src-tauri/src/bot/dispatch.rs` 生产段 `ToolResult::denied(` 的出现次数。
   由 `src-tauri/src/bot/dispatch/pre_tool_hook_tests.rs` 的计数断言锁住（断言值 8）。
 - **子 agent profile 档数 3** = `research` / `coder` / `general`（`bot/registry/schemas.rs`）。
@@ -164,7 +164,7 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 | 参数注册表 | `src-tauri/src/bot/params.rs` | 181 | 已缩表到三行；**不再**是风控来源 |
 | 工具调度 + 闸序 | `src-tauri/src/bot/dispatch.rs` | 984 | 8 级闸序、8 处早退、审计事件 |
 | 闸序测试 | `src-tauri/src/bot/dispatch/pre_tool_hook_tests.rs` | — | 早退点计数断言、hook fail-open 断言 |
-| 工具表 + schema | `src-tauri/src/bot/registry/schemas.rs` | 1226 | 66 个工具、profile 白名单、claims_patterns |
+| 工具表 + schema | `src-tauri/src/bot/registry/schemas.rs` | 1226+ | 67 个工具（含 activate_tools）、profile 白名单、claims_patterns |
 | 声称判定 | `src-tauri/src/bot/registry/claims.rs` | — | `claims_mutation` / `claimed_executed_tools` / `mentioned_tool_names` / `claimed_doc_paths` |
 | Hook 分层 | `src-tauri/src/bot/hooks.rs` | 1058 | L4/L5/L6；层序不可配；L4 只读 |
 | per-onion 配置 | `src-tauri/src/bot_onions.rs` | 1021 | `effective_tools` 交集收窄；配置档落盘 |

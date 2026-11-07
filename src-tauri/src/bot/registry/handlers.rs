@@ -441,3 +441,9 @@ pub(super) fn call_update_plan<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolF
     let session_id = ctx.session_id;
     Box::pin(async move { crate::bot::tools::tool_update_plan(ctx.app, args, session_id).await })
 }
+
+// 组挂载元工具适配器（差距收编方案 D-3）：纯内存 store 写入，无 IO
+pub(super) fn call_activate_tools<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let session_id = ctx.session_id;
+    Box::pin(async move { crate::bot::registry::groups::tool_activate_tools(session_id, args) })
+}

@@ -252,7 +252,9 @@ Anthropic Tool Search Tool（工具 defer_loading，只留 ~500 token 搜索器�
 
 ### 4.5 量化数字回填位
 
-（实施批 4 第一步回填：全量 ___ 字符 / 默认集 ___ 字符 / 休眠三组 ___ 字符。）
+（已回填 2026-11-07：全量清单 **62,624** 字符 / 默认清单 **49,366** 字符（省 21%）/
+休眠三组 schema 原文合计 **13,190** 字符（desktop 5,899 + services 2,308 + apps 4,983）。
+数字来自 `quantify_group_sizes` 测试（--nocapture），工具集变化后重跑即刷新。）
 
 ---
 

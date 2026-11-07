@@ -313,3 +313,21 @@
 - **证据**：cargo/vitest 输出 + bot.log 审计行
 - **失败处置**：先查 checkpoints 目录是否被人为清空（快照缺失=不可恢复，按 deny 设计）；再查 ChatGuard 忙闸误判（`chat_guard_is_held` 转正后的锁表访问）。
 - **缺口补验**：实机三态弹层端到端（撤回复/连消息撤/只撤文件）未验；manage_file move 双凭证的实机回滚未验；Windows 回收站撤销（trash crate 平台差异）未验。
+
+### ACC-P-18 · 工具分组按需挂载
+
+- **SPEC**：6-123
+- **层级**：L1（自动化；实机端到端随下一轮实机批次抽验）
+- **历史卡**：—
+- **前置**：灰度开关默认关（deferredToolGroups 未配置 = 行为零变化）
+- **步骤**：
+  1. 后端面：跑 `cargo test --lib -- bot::registry::groups`（六例：组清单与 TOOLS_TABLE 一一对应 / 量化数字（全量 62,624 / 默认 49,366）/ 默认清单排除休眠与子 agent 专属且含 activate_tools / 激活后组工具挂载其他休眠组仍不挂 / 兜底闸三态（关=直通、开未激活=拒、激活后放行）/ 非法组与空 groups 拒）。
+  2. 量化复核：`cargo test --lib quantify_group_sizes -- --nocapture` 打印全量/默认/各休眠组字符量。
+  3. 对拍：`grep -n "deferred_gate" src-tauri/src/bot/dispatch.rs` 命中（0.57 兜底闸接线在案）；`grep -n "deferred_tool_groups" src-tauri/src/bot/config/types.rs` 命中（灰度开关字段在案）。
+- **判据**：
+  1. 【可核对】开关关时 tools_json_for 返回与全量逐字节相同（默认行为零变化）。
+  2. 【可核对】开关开：休眠组工具不在 schema；dispatch 拒幻觉调用且文案含 activate_tools；activate_tools 激活后下一轮 schema 含该组且 dispatch 放行。
+  3. 【可核对】activate_tools 只接受 desktop/services/apps 三组名；子 agent 会话白名单链路不受影响（0.55 先拒）。
+- **证据**：cargo 输出 + 量化数字
+- **失败处置**：先查组清单覆盖完整性测试（新增工具忘入组会红）；再查开关同步（load_config / update_config_file 两处都写 set_groups_enabled）。
+- **缺口补验**：实机「开关开→对话→activate_tools→桌面工具实际可用」端到端未验；激活瞬间缓存 miss 的 input 成本实测未做；设置页 UI 开关（方案 P-3 手改 config 口径）未做。

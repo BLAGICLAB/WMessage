@@ -576,6 +576,12 @@ async fn execute_tool_impl(
     // allow 到文件工具侧生效（bot_fs 两个 resolve 内接线）。Some = 已早退（配平完成），
     // None = 放行走后续全局档。use_skill 豁免。函数体抽离保持 execute_tool_impl 入口薄壳。
     if name != "use_skill" {
+        // 0.57 休眠组兜底闸（D-3）：schema 层缩面的双保险——分组挂载时休眠工具
+        // 在清单里不可见，模型幻觉调它必须拒（文案含 activate_tools 自愈指引）。
+        // 开关关/已激活/非休眠工具都直通；子 agent 在 0.55 白名单闸已被拒，到不了这。
+        if let Some(denied) = crate::bot::registry::groups::deferred_gate(name, session_id) {
+            return denied;
+        }
         if let Some(denied) =
             tool_rule_gate(app, name, interactive, session_id, trace, &start).await
         {

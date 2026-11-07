@@ -176,6 +176,12 @@ pub struct BotConfig {
     /// None = 默认 7 天；读取侧 resolve_archive_after_days 钳制 1..=365。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub archive_after_days: Option<u32>,
+    /// 工具分组按需挂载总开关（D-3 灰度）：true = 主聊天默认不挂休眠组
+    /// （desktop/services/apps），activate_tools 按会话启用；false/未配置 =
+    /// 全量挂载（行为零变化）。同步进进程级开关见 registry::groups::set_groups_enabled
+    /// 的两处调用（load_config / update_config_file）。无设置页 UI，手改 config。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub deferred_tool_groups: Option<bool>,
     /// 每协议下的大模型列表：双协议各自独立维护一个
     /// ModelEntry 列表。设置页协议切换时整体切换显示；新增的 ModelEntry 落在当前
     /// 协议下。None = 老配置未迁移过来（load_config 时会从 base_url/model 兜底迁移）；
@@ -325,6 +331,7 @@ impl Default for BotConfig {
             selfcheck_model_id: None,   // 未配置 = 自检在主循环内跑（现状）
             verifier_retry_max: None,   // 未配置 = 1 默认 verifier 拒绝重试上限（0 = 不重试）
             archive_after_days: None,   // 未配置 = 7 天默认（前端设置页数据管理可改）
+            deferred_tool_groups: None, // 未配置 = 全量挂载（D-3 灰度开关默认关）
             disabled_vendors: Vec::new(), // 未配置 = 无厂商被禁用
             verified_vendors: Vec::new(), // 未配置 = 无厂商通过连接测试
             schema_version: BOT_CONFIG_SCHEMA_VERSION, // 新建配置即当前版本

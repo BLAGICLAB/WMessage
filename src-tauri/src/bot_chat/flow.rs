@@ -395,6 +395,14 @@ pub(super) async fn bot_chat_guarded(
         ),
     );
     prompt.push(PromptSlot::GenDir, format!("\n\n{}", gen_dir_rule(&app)));
+    // 休眠组广告行（D-3）：分组挂载开关开时告诉模型休眠能力存在（防「不知道
+    // 所以不用」）。同值常驻 GenDir 槽，缓存前缀稳定；开关关时不加（行为零变化）。
+    if crate::bot::registry::groups::groups_enabled() {
+        prompt.push(
+            PromptSlot::GenDir,
+            format!("\n\n{}", crate::bot::registry::groups::DORMANT_HINT),
+        );
+    }
     prompt.push(
         PromptSlot::SkillCatalog,
         format!(
