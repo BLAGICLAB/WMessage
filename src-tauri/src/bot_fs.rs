@@ -359,6 +359,38 @@ pub async fn resolve_with_perm(
         }
         //  auto 档：白名单外降级 ask（弹窗/无人值守拒）——与 Ask 同分支
         crate::bot::PermMode::Ask | crate::bot::PermMode::Auto => {
+            // D-4 分类器兜底：auto 档 + 交互会话 + 灰度开关开时，弹窗前先过
+            // 一次轻量模型判定——allow 免弹窗、deny 直接拒、unsure 落回弹窗
+            //（fail-safe：异常绝不变成放行）。无人值守（!interactive）不启用，
+            // 保持快速拒现状（方案 §六范围收窄）。
+            if crate::bot::perm_mode(app) == crate::bot::PermMode::Auto && interactive {
+                use crate::bot::gate::auto_classifier::Decision;
+                match crate::bot::gate::auto_classifier::auto_gate_decide(
+                    app,
+                    session_id,
+                    tool,
+                    &format!("访问白名单外路径：{p}"),
+                )
+                .await
+                {
+                    Decision::Allow => {
+                        crate::audit_event!(
+                            app,
+                            crate::audit::AuditLevel::Info,
+                            "bot_fs.classifier_allow",
+                            "tool" => tool,
+                            "path" => p,
+                        );
+                        return Ok(strip_verbatim(canonical));
+                    }
+                    Decision::Deny => {
+                        return Err(format!(
+                            "权限分类器判定该操作超出当前诉求范围，已拒绝：{p}（如确有需要，把目录加入白名单后再试）"
+                        ));
+                    }
+                    Decision::Unsure => {}
+                }
+            }
             match crate::bot_slash::ask_path_confirm(
                 app,
                 tool,

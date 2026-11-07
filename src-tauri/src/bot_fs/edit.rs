@@ -147,6 +147,35 @@ pub(crate) async fn resolve_writable(
         }
         //  auto 档：白名单外降级 ask（写确认每次不持久化；无人值守拒）——与 Ask 同分支
         crate::bot::PermMode::Ask | crate::bot::PermMode::Auto => {
+            // D-4 分类器兜底（同读路径口径：allow 免弹窗 / deny 拒 / unsure 落回弹窗）
+            if crate::bot::perm_mode(app) == crate::bot::PermMode::Auto && interactive {
+                use crate::bot::gate::auto_classifier::Decision;
+                match crate::bot::gate::auto_classifier::auto_gate_decide(
+                    app,
+                    session_id,
+                    tool,
+                    &format!("写入白名单外路径：{p}"),
+                )
+                .await
+                {
+                    Decision::Allow => {
+                        crate::audit_event!(
+                            app,
+                            crate::audit::AuditLevel::Info,
+                            "bot_fs.classifier_allow_write",
+                            "tool" => tool,
+                            "path" => p,
+                        );
+                        return Ok(strip_verbatim(expanded));
+                    }
+                    Decision::Deny => {
+                        return Err(format!(
+                            "权限分类器判定该操作超出当前诉求范围，已拒绝写入：{p}（如确有需要，把目录加入白名单后再试）"
+                        ));
+                    }
+                    Decision::Unsure => {}
+                }
+            }
             let approved = crate::bot_slash::ask_user_confirm(
                 app,
                 tool,

@@ -270,6 +270,8 @@ pub(crate) fn load_config(app: &AppHandle) -> BotConfig {
     // 工具分组挂载开关（D-3 灰度）：每次加载同步进程级开关——tools_json_for
     // 无 app 参数读不到 config，走模块级 AtomicBool
     crate::bot::registry::groups::set_groups_enabled(cfg.deferred_tool_groups.unwrap_or(false));
+    // auto 档分类器开关（D-4 灰度）：同款同步
+    crate::bot::gate::auto_classifier::sync_from_cfg(&cfg);
     cfg
 }
 
@@ -640,6 +642,8 @@ pub(crate) fn update_config_file(
     f(&mut cfg);
     // 分组挂载开关随保存即时生效（D-3）：此后按开关挂载，已激活组不回滚
     crate::bot::registry::groups::set_groups_enabled(cfg.deferred_tool_groups.unwrap_or(false));
+    // auto 档分类器开关随保存即时生效（D-4）
+    crate::bot::gate::auto_classifier::sync_from_cfg(&cfg);
     write_bot_config_file_locked(&db::data_dir(app), cfg)
 }
 

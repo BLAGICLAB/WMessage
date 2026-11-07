@@ -182,6 +182,12 @@ pub struct BotConfig {
     /// 的两处调用（load_config / update_config_file）。无设置页 UI，手改 config。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub deferred_tool_groups: Option<bool>,
+    /// auto 档分类器兜底开关（D-4 灰度）：true = auto 档白名单外弹窗前先过
+    /// 一次轻量模型判定（allow 免弹窗 / deny 直接拒 / unsure 落回弹窗）；
+    /// false/未配置 = 行为零变化。判定模型复用 selfcheckModelId 槽位。
+    /// 同步进进程级开关见 gate::auto_classifier::sync_from_cfg 的两处调用。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub auto_gate_classifier: Option<bool>,
     /// 每协议下的大模型列表：双协议各自独立维护一个
     /// ModelEntry 列表。设置页协议切换时整体切换显示；新增的 ModelEntry 落在当前
     /// 协议下。None = 老配置未迁移过来（load_config 时会从 base_url/model 兜底迁移）；
@@ -332,6 +338,7 @@ impl Default for BotConfig {
             verifier_retry_max: None,   // 未配置 = 1 默认 verifier 拒绝重试上限（0 = 不重试）
             archive_after_days: None,   // 未配置 = 7 天默认（前端设置页数据管理可改）
             deferred_tool_groups: None, // 未配置 = 全量挂载（D-3 灰度开关默认关）
+            auto_gate_classifier: None, // 未配置 = 无分类器兜底（D-4 灰度开关默认关）
             disabled_vendors: Vec::new(), // 未配置 = 无厂商被禁用
             verified_vendors: Vec::new(), // 未配置 = 无厂商通过连接测试
             schema_version: BOT_CONFIG_SCHEMA_VERSION, // 新建配置即当前版本

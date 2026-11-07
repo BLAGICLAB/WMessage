@@ -91,6 +91,7 @@ pub mod effects;
 #[cfg(test)]
 mod eval;
 pub mod format;
+pub mod gate;
 pub mod hooks;
 pub mod instructions;
 pub mod log_sanitize;
