@@ -37,6 +37,11 @@ pub fn set_app(app: tauri::AppHandle) {
     let _ = APP.set(app);
 }
 
+/// 进程级 app 只读访问（OAuth 的 call_tool 主动刷新同源取用；None = 早期/测试）
+pub(crate) fn app_handle() -> Option<&'static tauri::AppHandle> {
+    APP.get()
+}
+
 /// 在途工具调用登记：server_id → (session_id, server 显示名)。
 /// `call_locks` 已保证同 server 串行——每个 server 至多一条在途，登记天然单条。
 /// elicitation 到达时反查会话归属（发事件按会话盖章）。
