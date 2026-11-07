@@ -1,13 +1,13 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 324 个文件、约 14.0 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 333 个文件、约 14.5 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1235)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1244)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 │                        （setup 里另起清扫：上次被杀留下的 app_runs running 僵尸行）
 ├── app_state.rs (292)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        14 张执行期表 + 「全局状态总表」文档；详见 §2.1
@@ -69,7 +69,7 @@ src-tauri/src/
 │   ├── db/effects.rs    通用持久化副作用队列 effect_queue（语义对拍 superagent effects.ts）：
 │   │                     同 kind+key 一行、再入队保队位重置计次、CAS 收尾、成功删行、
 │   │                     kind 健康度统计；派发器在 bot/effects.rs
-│   ├── db/trace.rs (927)   执行痕迹三表 exec_traces/exec_spans/file_changes（Agent 透明化
+│   ├── db/trace.rs (1129)   执行痕迹三表 exec_traces/exec_spans/file_changes（Agent 透明化
 │   │                     设计 §4.1）：append-only 观测面 + 钳制单源（SPAN_TEXT_MAX 16KB /
 │   │                     MAX_DIFF_LINES）+ 保留期清理 retire_traces_before（僵尸 running 同删）；
 │   │                     保留期边界（TRACE_RETENTION_MIN/MAX_DAYS）与词元统计可查窗口
@@ -87,7 +87,7 @@ src-tauri/src/
 │   ├── db/trace_usage.rs (218)  词元统计聚合面：按日 / 按模型 / 按模型×按日三档
 │   ├── db/trace_session.rs (417) 本会话文件改动面（聊天侧栏「文件」）：清单 / 详情 /
 │   │                     累计 diff（累计口径 vs 逐次降级口径）
-│   ├── db/trace/tests.rs (1263)  痕迹层单测（三表写入 / 保留期 / 词元统计 / 查询面）
+│   ├── db/trace/tests.rs (1448)  痕迹层单测（三表写入 / 保留期 / 词元统计 / 查询面）
 │   ├── db/trace_session/session_file_changes_tests.rs (319) 本会话文件改动单测
 │   ├── db/apps.rs        程序 apps 表 CRUD + app_runs 运行史 + app_versions 版本快照
 │   │                     （滚动保留最近 100 版，见 docs/APPS-DESIGN-2026-10-15.md §5）
@@ -125,16 +125,16 @@ src-tauri/src/
 │   └── api_handlers/types.rs    共享类型
 │
 │─ Bot 核心（编排 → 决策 → 工具分发）
-├── bot_chat.rs (431)    入口编排门面：bot_chat / bot_compact / bot_execute_task 命令 + 公共类型
+├── bot_chat.rs (830)    入口编排门面：bot_chat / bot_compact / bot_execute_task 命令 + 公共类型
 │                        （ChatMsg/TaskRef/BotChatResult）+ 子模块转出（旧路径 1:1 保持）
-│   ├── bot_chat/flow.rs (805)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
-│   ├── bot_chat/exec.rs (557)   任务执行面：批量执行 + ExecGuard + run_task_in_chat 全链路
+│   ├── bot_chat/flow.rs (838)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
+│   ├── bot_chat/exec.rs (571)   任务执行面：批量执行 + ExecGuard + run_task_in_chat 全链路
 │   ├── bot_chat/media.rs (152)  多模态图片组装：base64 入模 + 扩展名白名单 + 附件索引
 │   ├── bot_chat/summary.rs (322) 历史摘要面：截断点选择 + 摘要请求 + 压缩
 │   ├── bot_chat/inject.rs (96)  上下文注入面：摘要/记忆块并入末条消息（保缓存前缀稳定）
-│   ├── bot_chat/report.rs (159) 子任务汇报轮：回传结果 + 门控 + 历史映射
+│   ├── bot_chat/report.rs (162) 子任务汇报轮：回传结果 + 门控 + 历史映射
 │   ├── bot_chat/input.rs (110)  输入规范化面：不可见字符清洗 + 路由前判定 + 恢复提示
-│   ├── bot_chat/bot_chat_pure_helpers_tests.rs (716) 纯函数与接线守卫单测
+│   ├── bot_chat/bot_chat_pure_helpers_tests.rs (722) 纯函数与接线守卫单测
 │   ├── bot_chat/inject_tests.rs (139)                 注入面单测（注入位置 + 前缀稳定性）
 │   ├── bot_chat/image_attach_tests.rs (73)             图片附件单测
 │   ├── bot_chat/command_error_mapping_tests.rs (33)    命令错误映射单测
@@ -162,7 +162,7 @@ src-tauri/src/
 │   │                                    tool_call 增量累积 / token usage 归一
 │   ├── bot_model_loop/core.rs (1159)     核心循环：run_model_loop_core（可注入 mock）+
 │   │                                    dispatch_round（工具分发/回灌）
-│   ├── bot_model_loop/shell.rs (577)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
+│   ├── bot_model_loop/shell.rs (584)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
 │   ├── bot_model_loop/request.rs (726)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
 │   ├── bot_model_loop/sse.rs (820)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
 │   ├── bot_model_loop/guard.rs (707)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
@@ -185,7 +185,7 @@ src-tauri/src/
 │   ├── bot_model_loop/tests/fail_hint.rs (58)   工具失败「换策略」提示按工具分流的单测
 │   ├── bot_model_loop/tests/intent.rs (113)  侧调自检测试（路由阈值两态 / 用户意图抽取）
 │   ├── bot_model_loop/tests/sse.rs (390)    读流层测试（叫停后不推流 / 正文照旧记账）
-├── bot.rs (214)         bot 族唯一对外门面：跨族 re-export（BotChatResult/TaskRef/ChatMsg/
+├── bot.rs (217)         bot 族唯一对外门面：跨族 re-export（BotChatResult/TaskRef/ChatMsg/
 │                        model_loop/StopGuard/StopToken/AuditLevel/db::* 等）+ 子模块声明；
 │                        **跨族引用一律走 `crate::bot::`**，族外不得直接摸
 │                        `crate::bot_chat::` 这类深层路径（tests-audit/audit_bot_namespace.py
@@ -203,21 +203,21 @@ src-tauri/src/
 │                        只读行不作为设置项露出，但**可被设置页文案引用**（值从表里取）：
 │                        如 trace.retention_days 的可填范围、memory.extract_min_interval_secs
 │                        的抽取限频——文案里的数不留手写副本
-├── bot/registry.rs (221)  **工具单源真相（阶段 2）** 的门面：类型（ToolCtx / ToolStatus /
+├── bot/registry.rs (225)  **工具单源真相（阶段 2）** 的门面：类型（ToolCtx / ToolStatus /
 │                        ToolResult / ToolDef）+ 逐项 re-export——实现按面拆到下面三个子模块，
 │                        `crate::bot::registry::X` 旧路径与旧可见性保持不变
-│   ├── bot/registry/schemas.rs (1226)  65 个 SCHEMA_* 字面量 + TOOLS_TABLE（name/schema/mutating/call，
+│   ├── bot/registry/schemas.rs (1253)  65 个 SCHEMA_* 字面量 + TOOLS_TABLE（name/schema/mutating/call，
 │   │                        数目以 BUILTIN_TOOL_COUNT 为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │   │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
-│   ├── bot/registry/handlers.rs (443)   65 个 call_* 一行转发（ToolCtx + args → 工具实现）
+│   ├── bot/registry/handlers.rs (449)   65 个 call_* 一行转发（ToolCtx + args → 工具实现）
 │   ├── bot/registry/claims.rs (792)     声明判据面：模型「声称做了」的提取与判定
 │   │                        （变更声称 / 执行声称 / 数值 / 文档路径 / 工具点名）
 │   ├── bot/registry/mentioned_tool_names_tests.rs (77)  工具点名整词匹配单测
 │   ├── bot/registry/claimed_executed_tools_tests.rs (63) 执行声称单测
 │   ├── bot/registry/result_claim_tests.rs (98)  结果值抽取与回声判定单测
-│   └── bot/registry/registry_tests.rs (1230)  工具表基线守卫（表长 / 条目顺序 / schema 字面量 /
+│   └── bot/registry/registry_tests.rs (1232)  工具表基线守卫（表长 / 条目顺序 / schema 字面量 /
 │                        profile 白名单 / tools JSON 形状）+ TOOLS_TABLE 无 cfg-gated 条目守卫
-├── bot/dispatch.rs (984)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
+├── bot/dispatch.rs (997)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计；
 │                        工具调用预算的阶梯不在这里（单点在模型循环层 fuse::gate_call），
 │                        dispatch 只留执行计数仪表，不设预算闸、不设墙钟
@@ -377,7 +377,7 @@ src-tauri/src/
 │   ├── bot/tools/service.rs (277) 受管服务面：start/stop/list 长驻进程 + 集成测试钩子
 │   ├── bot/tools/common.rs (153)  公共杂项面：时间工具 / files 参数解析与安全校验 / 审计补充 kv / 改库广播
 │   ├── bot/tools/trace.rs (231)    凭证召回面：按 tool_call_id/span_id/trace_id 调回历史工具结果（只读、零新表）
-│   ├── bot/tools/http.rs (546)     专用 HTTP 工具面：http_request（方法/请求体/自定义头/下载落产物目录；
+│   ├── bot/tools/http.rs (551)     专用 HTTP 工具面：http_request（方法/请求体/自定义头/下载落产物目录；
 │   │                                目的地闸每跳都判、凭据引用真值不过模型、args_preview 裁 method+host）
 │   ├── bot/tools/plan.rs (155)      计划面：update_plan 整表替换写会话内计划状态 + 广播 bot-plan 事件
 │   ├── bot/tools/task_files_arg_tests.rs (180)     files 参数解析与安全校验单测
@@ -400,7 +400,7 @@ src-tauri/src/
 │                        kind 三种：notify（8 处系统通知）/ subagent_finalize（终态落库，
 │                        runner 具化 Wry 故派发器链路具化）/ subagent_dispatch（runner 补派，
 │                        僵尸清扫对派发待办在队列的 queued 行豁免）
-├── bot/stream_log.rs (515) 会话级流式事件的统一出口 emit_recorded：**盖信封**（载荷顶层的
+├── bot/stream_log.rs (518) 会话级流式事件的统一出口 emit_recorded：**盖信封**（载荷顶层的
 │                        sessionId 由本函数统一注入，调用方不许自带同名键——盖章权分散到
 │                        各发射点时漏一处就静默丢事件）→ 分配序号（会话内跨轮次连续，
 │                        客户端据此去重）→ 写会话回放缓冲（2 万条 / 8MB 双上限，
@@ -433,7 +433,7 @@ src-tauri/src/
 │                        走服务端核验，不与模型自报的 met 混算）+ 父会话回报门控
 ├── bot/subagent_repair.rs (449) 收尾 JSON 的本地修复与结果判定：结构化输出三段修复的第二段（尾逗号 / 截断闭合，
 │                        零 token 零延迟）+ parse_final_json + classify_outcome
-├── bot/subagent_runner.rs (1017) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
+├── bot/subagent_runner.rs (1030) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
 │                        + panic 隔离 + 任务包装渲染
 ├── bot/subagent_spawn.rs (439) 子 agent 派发：入参校验 / 建行 / 并发闸 SubagentGate（per-session 2 /
 │                        global 3，闸满排队）
@@ -507,16 +507,16 @@ src-tauri/src/
 │                        原.workflow_questions，随画布退役中立化保留（手动执行任务卡共用）
 │
 │─ Bot 工具实现（被 bot.rs 分发调用）
-├── bot_fs.rs (528)       路径白名单 + perm_mode(strict/ask/auto/yolo) 四档授权闸；
+├── bot_fs.rs (562)       路径白名单 + perm_mode(strict/ask/auto/yolo) 四档授权闸；
 │                        per-tool 规则表（lookup_tool_rule / tool_rule_for）+ 读闸
 │                        （resolve_with_perm / allowed_dirs）；子模块转出（旧路径 1:1 保持）
-│   ├── bot_fs/edit.rs (657)      文件编辑面：写闸 + 三级匹配内核 + edit_file/write_file
+│   ├── bot_fs/edit.rs (686)      文件编辑面：写闸 + 三级匹配内核 + edit_file/write_file
 │   │                             （N6，Aider 式三级匹配：精确→空白容错→reflection；
 │   │                             写白名单≠读白名单：可写根=AI_Gen_Files+任务卡绑定文件夹+
 │   │                             allowedDirs；白名单外 perm_mode 三分支/覆盖确认）
 │   ├── bot_fs/read.rs (750)      读取面：glob / 目录遍历 / 二进制判定 / inode 复核 +
 │   │                             只读工具 read_text_file/grep_files/list_files
-│   ├── bot_fs/receipt.rs (169)   文件变更凭证面：unified diff / sha256 / before 快照 / 回执
+│   ├── bot_fs/receipt.rs (175)   文件变更凭证面：unified diff / sha256 / before 快照 / 回执
 │   ├── bot_fs/tests.rs (845)     读写闸与编辑内核单测
 │   ├── bot_fs/file_change_tests.rs (180) 变更凭证单测
 │   ├── bot_fs/read_path_single_open_tests.rs (70) 读路径只开一次 fd 的源码守卫
@@ -527,7 +527,7 @@ src-tauri/src/
 │                        64MB、整包 256MB、条目 5000 条上限（超限报「疑似压缩炸弹」），放大比
 │                        200:1 封顶；已存在的文件不覆盖（跳过并列出）；解包只认源在读白名单、
 │                        落点在写白名单
-├── bot_manage_file.rs (444) 文件复制/移动/删除 manage_file：copy 复制（源保留）/
+├── bot_manage_file.rs (504) 文件复制/移动/删除 manage_file：copy 复制（源保留）/
 │                        move 移动（同卷 rename、跨卷复制后源入回收站）/ delete 删除
 │                        （进系统回收站，删前弹窗确认、60s 无响应默认拒）；源走读
 │                        白名单、目标走写白名单；目标已存在一律不覆盖；目录树里的
@@ -856,7 +856,7 @@ flowchart TD
 
 ## 6.4 源文件清单（完整列表，由 `tests-audit/audit_module_map.py` 对拍）
 
-`src-tauri/src/` 实际 322 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
+`src-tauri/src/` 实际 333 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
 对拍：每条必须指向真实文件，每个源文件必须在本节列出。新增模块请同步登记。
 
 ### 顶层
@@ -871,6 +871,14 @@ flowchart TD
 - `audit/tests.rs`
 - `bing.rs`
 - `bot.rs`
+- `bot/gate/auto_classifier.rs`
+- `bot/gate/mod.rs`
+- `bot/instructions.rs`
+- `bot/mcp/elicit.rs`
+- `bot/mcp/oauth.rs`
+- `bot/registry/groups.rs`
+- `bot/turn_record.rs`
+- `bot/turn_record/tests.rs`
 - `bot_anthropic.rs`
 - `bot_anthropic/tests.rs`
 - `bot_archive.rs`
@@ -888,6 +896,7 @@ flowchart TD
 - `bot_chat/report.rs`
 - `bot_chat/summary.rs`
 - `bot_chat/summary_reuse_tests.rs`
+- `bot_chat/user_turn_tests.rs`
 - `bot_desktop.rs`
 - `bot_fs.rs`
 - `bot_fs/edit.rs`
