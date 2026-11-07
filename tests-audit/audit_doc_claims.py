@@ -5,7 +5,9 @@
 - 被查文档：`docs/realmachine-regression-test.md`、`docs/realmachine-rerun-2026-10-22.md`、
   `docs/realmachine-mutation-test-2026-10-23.md`、`docs/realmachine-mutation-test-2026-10-24.md`、
   `docs/realmachine-smoke-test-2026-10-25.md`、`docs/realmachine-smoke-test-2026-10-29.md`、
-  `docs/realmachine-smoke-test-2026-11-03.md`、`docs/agent-audit-sop-zcode.md`（审计 SOP）
+  `docs/realmachine-smoke-test-2026-11-03.md`、`docs/realmachine-smoke-test-2026-11-04.md`、
+  `docs/WORK-ITEM-REDESIGN-PLAN-2026-11-04.md`、
+  `docs/agent-audit-sop-zcode.md`（审计 SOP）
 
 **为什么要有这道闸**：实机卡片的判据大半落在「审计里出现哪条事件」上。
 卡片写的事件名一旦和代码分家（改名、删除、压根没写过），执行者在机器上
@@ -37,6 +39,8 @@ DOCS = [
     ROOT / "docs/realmachine-smoke-test-2026-10-25.md",
     ROOT / "docs/realmachine-smoke-test-2026-10-29.md",
     ROOT / "docs/realmachine-smoke-test-2026-11-03.md",
+    ROOT / "docs/realmachine-smoke-test-2026-11-04.md",
+    ROOT / "docs/WORK-ITEM-REDESIGN-PLAN-2026-11-04.md",
     ROOT / "docs/ACCEPTANCE-PLAN-2026-10-30.md",
     ROOT / "docs/agent-audit-sop-zcode.md",
     *ACCEPTANCE_DOCS,
