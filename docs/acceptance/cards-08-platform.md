@@ -276,3 +276,21 @@
 - **证据**：vitest 输出 + 实机录屏 + GitHub release 页截图
 - **失败处置**：先查 latest.json 的 `signature` 字段是否为 .sig 原文（多行内容 JSON 转义）与 asset 是否用固定资产名；再查构建时是否导出了 `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)`。
 - **缺口补验**：实机更新链路未跑（需首个 release）；验签失败路径（篡改安装器）未制造。
+
+### ACC-P-16 · 用户指令文件
+
+- **SPEC**：6-121
+- **层级**：L1（自动化；实机端到端随下一轮实机批次抽验）
+- **历史卡**：—
+- **前置**：无（纯本地文件与提示词装配，不依赖外部服务）
+- **步骤**：
+  1. 组件面：跑 `npx vitest run src/components/SettingsPage/InstructionsCard.test.tsx`（四用例：载入回填+字数 / 保存带完整 content / 超限禁保存钮并显提示 / 保存失败人话展示）。
+  2. 后端面：跑 `cargo test --lib -- bot::instructions prompt_builder`（六用例：短文原样 / 字符边界截断+标注 / 恰好上限不截 / 缺文件空串 / 读回 / 超限载入截断；槽位序测试断言 UserInstructions 落 Base 与 GenDir 之间、VerifierRetryTail 恒末位）。
+  3. 对拍：`grep -n "UserInstructions" src-tauri/src/prompt_builder.rs` 命中；`grep -n "load_user_instructions" src-tauri/src/bot_chat/flow.rs` 命中（装配接线在案）。
+- **判据**：
+  1. 【可核对】保存超 16,000 字被拒（`instructions_set` 返回人话错误，不落盘）；载入侧超限截断尾部带「（已截断）」标注。
+  2. 【可观测】审计 `instructions.updated`（保存）/ `instructions.truncated`（进程内首次截断）在 bot.log 可查；截断告警不逐回合刷屏。
+  3. 【可核对】文件缺失或为空时 system 不含该槽（空串跳过，无多余文案）。
+- **证据**：vitest / cargo 输出 + bot.log 审计行
+- **失败处置**：先查 data_dir 下 instructions.md 是否被外部占用（读错误按空指令处理、留 warn 日志）；再查 PromptSlot 槽序是否被人改动（槽位序测试会红）。
+- **缺口补验**：实机「设置页编辑→发消息→模型遵从指令」端到端未验；截断标注在真机 system 的呈现未验。

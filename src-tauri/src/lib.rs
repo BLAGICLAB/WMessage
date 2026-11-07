@@ -822,6 +822,8 @@ pub fn run() {
             bot::stream_log::bot_stream_replay,
             bot::memory_tuning_get,
             bot::memory_tuning_set,
+            bot::instructions::instructions_get,
+            bot::instructions::instructions_set,
             bot::mcp::commands::mcp_server_save,
             bot::mcp::commands::mcp_server_delete,
             bot::mcp::commands::mcp_server_toggle,

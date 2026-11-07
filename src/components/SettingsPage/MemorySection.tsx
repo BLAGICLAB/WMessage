@@ -4,6 +4,7 @@
  *  同时挂载的（hidden 切可见性），这里只管内容。
  */
 import { MemoryPanel } from "./MemoryPanel";
+import { InstructionsCard } from "./InstructionsCard";
 import { SettingRow } from "./SettingRow";
 import { AUTO_EXTRACT_MODES } from "./constants";
 import type { JSX } from "react";
@@ -179,6 +180,8 @@ export function MemorySection({
           </div>
         </div>
       </div>
+      {/* 用户指令文件：手工维护的确定性指令层（与下方自动记忆互补） */}
+      <InstructionsCard />
       {/* 记忆库管理面板：列表/搜索/编辑/删除 + 统计与嵌入引擎状态 */}
       <MemoryPanel />
     </>

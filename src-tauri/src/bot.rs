@@ -92,6 +92,7 @@ pub mod effects;
 mod eval;
 pub mod format;
 pub mod hooks;
+pub mod instructions;
 pub mod log_sanitize;
 pub mod mcp;
 pub mod params;

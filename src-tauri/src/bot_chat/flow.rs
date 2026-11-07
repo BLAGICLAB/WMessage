@@ -368,6 +368,16 @@ pub(super) async fn bot_chat_guarded(
         PromptSlot::Base,
         format!("\n\n{}", crate::prompts::MAIN_AGENT_ADDENDUM.trim_start()),
     );
+    // 用户指令文件（instructions.md）：每回合读盘，未改动则字节等价、静态
+    // 前缀缓存不受影响；用户改完下一回合生效（一次 cache miss，低频可接受）。
+    // 超限截断与 WARN 审计在 load 侧闭环，这里只管非空才占槽。
+    let user_instructions = crate::bot::instructions::load_user_instructions(&app);
+    if !user_instructions.is_empty() {
+        prompt.push(
+            PromptSlot::UserInstructions,
+            format!("\n\n{user_instructions}"),
+        );
+    }
     // 动态设置项放末尾的 VerifierRetryTail 槽位：保持 Base/GenDir/SkillCatalog
     // 这些「静态前缀」字字节节稳定，让 Anthropic prompt caching 断点 1（system
     // 末尾）能跨会话命中——若把 verifier_retry_max 写进 Base 段，每会话变动

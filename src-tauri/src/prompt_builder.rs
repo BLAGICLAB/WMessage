@@ -14,19 +14,24 @@
 // 行为契约：
 // - empty content（`String::is_empty()`）在 build 时跳过
 // - 同 slot 多次 push：按 push 顺序拼接（定义行为，单测覆盖）
-// - 不同 slot：按 `PromptSlot` 声明顺序拼接（Base → GenDir → SkillCatalog
-//   → SkillBody → Recovery → Plan）
+// - 不同 slot：按 `PromptSlot` 声明顺序拼接（Base → UserInstructions →
+//   GenDir → SkillCatalog → SkillBody → Recovery → Plan → VerifierRetryTail）
 //
 // 不变量：
 // - build 是 deterministic 的：相同输入永远相同输出
 // - 排序是 stable 的（按 slot 分组后，组内保留 push 顺序）
 
-/// System prompt 槽位枚举。**变体声明顺序即拼接顺序**——加新 slot 必须在
-/// 文件末尾追加，不能插中间，否则会改变既有调用点的输出。
+/// System prompt 槽位枚举。**变体声明顺序即拼接顺序**——既有变体的相对顺序
+/// 不许改（改了既有调用点的输出就变）；加新变体允许插在稳定区内（不重排
+/// 既有变体即可），但 `VerifierRetryTail` 恒为末位（缓存断点打在它之后）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PromptSlot {
     /// 静态 SYSTEM_PROMPT（常驻首段）
     Base,
+    /// 用户指令文件（instructions.md，用户手工维护的确定性指令层）。
+    /// 插在 Base 与 GenDir 之间：内容每回合读盘、未改动则字节等价，落进
+    /// 静态前缀区随缓存命中（写在会话级可变段之后则永远吃不到缓存）。
+    UserInstructions,
     /// gen_dir_rule（生成目录规则）
     GenDir,
     /// build_skill_block（已安装技能清单的「名称+描述」层，progressive disclosure 第一层）
@@ -161,6 +166,18 @@ mod tests {
             out,
             "[Base][GenDir][SkillCatalog][SkillBody][Recovery][Plan]"
         );
+    }
+
+    #[test]
+    fn user_instructions_sits_in_stable_prefix_between_base_and_gendir() {
+        // 用户指令层必须落进静态前缀区（Base 之后、每轮重排的 SkillCatalog
+        // 之前），且 VerifierRetryTail 仍是末位——缓存断点语义不许动
+        let mut b = SystemPromptBuilder::new();
+        b.push(PromptSlot::GenDir, "GENDIR");
+        b.push(PromptSlot::VerifierRetryTail, "TAIL");
+        b.push(PromptSlot::Base, "BASE");
+        b.push(PromptSlot::UserInstructions, "INSTR");
+        assert_eq!(b.build(), "BASEINSTRGENDIRTAIL");
     }
 
     #[test]
