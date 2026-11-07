@@ -342,15 +342,20 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
   };
   const currentSession = sessions.find((s) => s.id === sessionId);
   const currentTitle = currentSession?.title ?? "新对话";
-  const stopCurrent = useCallback(() => {
+  const stopCurrent = useCallback((): Promise<number> => {
     const sid = sessionIdRef.current ?? "";
-    invoke<number>("bot_stop", { sessionId: sessionIdRef.current })
+    return invoke<number>("bot_stop", { sessionId: sessionIdRef.current })
       .then((n) => {
         // 一条都没停到就不报数：点了停止却什么都没发生，报「已停 0 条」
-        // 比不报更让人困惑（真停到了才说明停止确实生效了）
+        // 比不报更让人困惑（真停到了才说明停止确实生效了）；条数仍返回，
+        // /stop 斜杠命令用它区分「无可停实例」给人话 hint
         if (n > 0) setStopNotice({ sid, n });
+        return n;
       })
-      .catch((e) => handleCommandError(e, "bot_stop", { silent: true }));
+      .catch((e) => {
+        handleCommandError(e, "bot_stop", { silent: true });
+        return 0;
+      });
   }, []);
 
   return {

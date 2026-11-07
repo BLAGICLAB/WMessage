@@ -385,6 +385,14 @@ async fn login_impl(app: &tauri::AppHandle, server_id: &str) -> Result<String, S
         "mcp.oauth.login",
         "server" => server_id,
     );
+    // 登录成功即重建该 server 的连接与工具快照：登录前的 mount 握手可能带着
+    // 过期/缺失的令牌失败过（槽位 Down / 工具清单空），快照不刷新则模型清单
+    // 永远看不到这台 server 的工具，call_tool 的刷新链路（主动 + 401 兜底）
+    // 也全部以「工具在清单里」为前提——登录是快照起死回生的唯一时点。
+    let manager = super::manager::shared();
+    manager.disconnect(server_id).await;
+    manager.clear_discovery_cooldown(server_id);
+    manager.discover_tools_for(app, server_id).await;
     Ok("授权成功，令牌已存入系统凭据存储。".to_string())
 }
 

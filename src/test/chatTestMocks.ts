@@ -56,7 +56,7 @@ export const chatDefaultInvoke = async (cmd: string) => {
     case "bot_compact":
       return "压缩后的摘要";
     case "bot_stop":
-      return null;
+      return 0;
     case "pick_files_dialog":
       return [];
     default:

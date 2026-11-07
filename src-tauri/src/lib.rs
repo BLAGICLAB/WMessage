@@ -583,7 +583,9 @@ pub fn run() {
             // 置回 running，清扫若在其后跑会把恢复中的行误杀成 failed
             bot_orchestrator::sweep_zombie_subagents(app.handle());
 
-            // 工作单元启动清扫：working 行的执行现场随进程消失，一律按中断收
+            // 工作单元启动清扫：working 行的执行现场随进程消失，一律按中断收；
+            // 同一连接顺手把上世遗留的 running trace 收尾成 stopped（不收则
+            // 活动页永远「进行中」，围观侧拿 running 判 inflight 会锁死该会话）
             {
                 let handle = app.handle().clone();
                 let audit_handle = app.handle().clone();
@@ -591,7 +593,9 @@ pub fn run() {
                     let res = tauri::async_runtime::spawn_blocking(move || {
                         let conn = crate::db::open_db(&handle)?;
                         let _g = crate::db::lock_db_write();
-                        crate::db::work_items::sweep_all_working(&conn)
+                        let work = crate::db::work_items::sweep_all_working(&conn)?;
+                        let traces = crate::db::trace::sweep_stale_running_traces(&conn)?;
+                        Ok(work + traces)
                     })
                     .await;
                     let err = match res {

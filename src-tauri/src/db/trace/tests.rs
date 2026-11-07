@@ -1,11 +1,11 @@
 use super::*;
 use crate::db::bot_history::turn_rollback_files_core;
 
-fn setup_conn() -> rusqlite::Connection {
+pub(crate) fn setup_conn() -> rusqlite::Connection {
     super::super::test_conn(&[EXEC_TRACE_DDL])
 }
 
-fn mk_trace<'a>(
+pub(crate) fn mk_trace<'a>(
     conn: &'a rusqlite::Connection,
     session: &'a str,
     task: Option<&'a str>,

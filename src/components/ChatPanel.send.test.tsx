@@ -90,6 +90,9 @@ const defaultProps = {
 
 beforeEach(() => {
   mocks.invokeMock.mockClear();
+  // 实现也重置：mockClear 只清调用历史，个别用例的 mockImplementation 覆盖
+  // （如 /stop 后端裁决用例）会泄漏进后续用例
+  mocks.invokeMock.mockImplementation(chatDefaultInvoke);
   mocks.listenMock.mockClear();
   mocks.askMock.mockReset();
   mocks.askMock.mockResolvedValue(true);
@@ -157,11 +160,35 @@ describe("ChatPanel", () => {
     // 点击「发送」按钮触发 send → runSlashCommand → /stop
     // （UI-1 圆形发送键：图标按钮以 aria-label 定位）
     await user.click(screen.getByRole("button", { name: "发送" }));
-    // 本会话无在途回复 → addHint："当前对话没有进行中的回复"，bot_stop 不调用
+    // /stop 无条件走后端裁决（前端 streamState 不含任务卡执行等后端在途）：
+    // 后端回 0 条 = 本会话无可停实例 → addHint 人话
     await waitFor(() => {
       expect(screen.getByText(/当前对话没有进行中的回复/)).toBeInTheDocument();
     });
-    expect(mocks.invokeMock).not.toHaveBeenCalledWith("bot_stop");
+    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_stop", {
+      sessionId: "s1",
+    });
+  });
+
+  it("输入 /stop：后端有可停实例（如任务卡执行在途）→ 停止反馈，不误报「没有进行中的回复」", async () => {
+    const user = userEvent.setup();
+    // 前端 streamState 不知道后端在途（exec_traces running 不在主聊流式态）：
+    // mock bot_stop 回 2 条，验证裁决权在后端
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_stop") return 2;
+      return chatDefaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
+    });
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "/stop ");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => {
+      expect(screen.getByText(/⏹ 已停 2 条/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/当前对话没有进行中的回复/)).toBeNull();
   });
 
   it("本地提示不进历史库、不进模型上下文（/stop 无在途 → 提示 → 再发一条）", async () => {

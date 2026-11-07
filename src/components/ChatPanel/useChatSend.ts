@@ -44,7 +44,7 @@ export type ChatSendParams = {
   setMessages: Dispatch<SetStateAction<Msg[]>>;
   setOpenTrace: Dispatch<SetStateAction<{ traceId: number; sessionId: string | null; } | null>>;
   setRefs: (v: TaskRef[] | ((prev: TaskRef[]) => TaskRef[])) => void;
-  stopCurrent: () => void;
+  stopCurrent: () => Promise<number>;
 };
 
 export function useChatSend(params: ChatSendParams) {
@@ -80,12 +80,13 @@ export function useChatSend(params: ChatSendParams) {
     const cmd = raw.split(/\s+/)[0].toLowerCase();
     if (cmd === "/stop") {
       setInput("");
-      // PAR-1：/stop 停「当前视图会话」的在途回复（并行回复按会话隔离）
-      if (streamState.isInflight(sessionIdRef.current ?? "")) {
-        stopCurrent();
-      } else {
-        addHint("当前对话没有进行中的回复");
-      }
+      // PAR-1：/stop 停「当前视图会话」的在途回复（并行回复按会话隔离）。
+      // 前端 streamState 只跟踪主聊流式，任务卡执行等后端在途（exec_traces
+      // running）不在其中——预判会把 exec 会话的 /stop 挡成「没有进行中的
+      // 回复」；裁决统一交给后端 bot_stop（置位数 0 = 本会话无可停实例）。
+      void stopCurrent().then((n) => {
+        if (n === 0) addHint("当前对话没有进行中的回复");
+      });
       return true;
     }
     if (cmd === "/clean") {

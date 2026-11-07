@@ -584,6 +584,25 @@ pub fn retire_traces_before(
 /// 消失，快照留着只是孤儿文件。
 pub const CHECKPOINT_RETENTION_DAYS: i64 = 30;
 
+/// 启动清扫：把上一进程遗留的 running trace 收尾成 stopped。
+///
+/// 单机单进程语义：应用启动时不可能存在真正在途的执行——running 行只会是
+/// 进程被杀（崩溃/强退）留下的残迹。不收拾的话活动页永远挂着「进行中」，
+/// 围观侧还会拿 running 判「会话有在途回合」，把该会话的发送/停止入口锁死。
+/// 幂等：已收尾的行不匹配 running，重复调用返回 0。
+pub fn sweep_stale_running_traces(conn: &rusqlite::Connection) -> Result<usize, String> {
+    conn.execute(
+        "UPDATE exec_traces SET status = ?1, finished_at = ?2, error = ?3 WHERE status = ?4",
+        rusqlite::params![
+            TRACE_STATUS_STOPPED,
+            crate::db::now_ms(),
+            "进程重启中断（上次退出未正常收尾）",
+            TRACE_STATUS_RUNNING,
+        ],
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// 孤儿快照清扫：目录遍历 + 引用集比对。孤儿 = 目录里既无任何 change 行引用、
 /// mtime 又超保留期的文件；被引用的一个不动。目录不存在/读失败返回 0（无清扫面）。
 pub fn sweep_orphan_checkpoints(
@@ -1127,3 +1146,6 @@ pub async fn bot_session_file_changes(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_sweep;

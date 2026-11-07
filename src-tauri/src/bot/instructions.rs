@@ -198,9 +198,9 @@ mod tests {
     #[test]
     fn warn_predicate_fires_exactly_when_raw_exceeds_max() {
         assert!(!should_warn_truncated(&"a".repeat(INSTRUCTIONS_MAX_CHARS)));
-        assert!(should_warn_truncated(&"a".repeat(
-            INSTRUCTIONS_MAX_CHARS + 1
-        )));
+        assert!(should_warn_truncated(
+            &"a".repeat(INSTRUCTIONS_MAX_CHARS + 1)
+        ));
         // 深度超限时渲染结果比原文短；贴线小超限（超限量 < 标注长度）反而更长——
         // 所以「渲染前后比长短」的告警判据在两种方向上都不可靠，判据必须钉在原文上
         let raw = "汉".repeat(INSTRUCTIONS_MAX_CHARS + 100);
