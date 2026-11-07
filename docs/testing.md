@@ -60,6 +60,23 @@ bash scripts/realmachine/smoke.sh        # 实机冒烟（macOS）：启动/静�
                                          #   界面与聊天往返人工段衔接；输出报告同构清单
 ```
 
+## 提示词 / 引擎行为改动后的 eval 口径（手动，不进门禁）
+
+eval 不进 CI/pre-push（既有拍板），「改了必跑」是纪律不是门禁。**触发面**——改了
+下列任一项就该跑一轮，PASS/FAIL 数字与偏差记入 DEVLOG：
+
+- `SYSTEM_PROMPT` 或 `src-tauri/src/prompts/` 下任何提示词文件/常量
+- `bot_model_loop` 行为（重试 / 收尾 / 滑动窗 / 侧调判定等）
+- 工具 schema 文案（`bot/registry/schemas.rs`）
+
+```bash
+bash scripts/run-eval.sh          # 全量 13 用例（真模型，花钱；WMESSAGE_EVAL_ONLY 可挑用例）
+bash scripts/run-eval.sh --memory # 末尾追加记忆黄金集 recall@1/@5（本地 ONNX，不花模型钱）
+```
+
+跑法、判据形态与「幻觉守卫置惰」的量纲分离口径见 `src-tauri/src/bot/eval.rs` 头注释；
+用例表 `all_cases()` 是条数唯一真相源（头注释不写死数字）。
+
 ## Windows 发版前最低验证
 
 自动化测试平时只在 macOS 跑，Windows 行为靠实机 W 卡手测兜底。发 Windows 包之前，
