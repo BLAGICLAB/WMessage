@@ -8,6 +8,7 @@
 // 红线与通知页一致：忽略问题执行也能走——「按假设继续」是一等按钮，不是暗箱兜底。
 
 import { useState, useSyncExternalStore } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import * as askStore from "./askStore";
 import type { AskState } from "./askStore";
 import { respondTaskQuestion } from "../../lib/taskAsk";
@@ -68,16 +69,26 @@ export function AskCard({ ask }: { ask: AskState }) {
   }
   const options = ask.options;
   const answerText = text.trim() || picked;
+  const isElicit = ask.source === "mcp_elicit";
   const respond = async (action: "answer" | "assume") => {
     setBusy(true);
     try {
+      // MCP elicitation 桥接卡（D-7）：应答走独立命令（不落 wfq 通知、
+      // 无「按假设继续」语义——assume 分支传空文本 = 后端按拒绝处理）
+      if (isElicit) {
+        await invoke("elicit_respond", {
+          qid: ask.questionId,
+          text: action === "answer" ? answerText : "",
+        });
+        return;
+      }
       await respondTaskQuestion(
         ask.questionId,
         action,
         action === "answer" ? (answerText || undefined) : undefined,
       );
     } catch (e) {
-      handleCommandError(e, "回答提问");
+      handleCommandError(e, isElicit ? "应答 MCP 输入请求" : "回答提问");
     } finally {
       setBusy(false);
     }
@@ -134,13 +145,15 @@ export function AskCard({ ask }: { ask: AskState }) {
           className={btnGhost}
           disabled={busy}
           title={
-            ask.assumption
-              ? `不回答，按 AI 假设继续：${ask.assumption}`
-              : "不回答，按继续处理"
+            isElicit
+              ? "忽略（拒绝该输入请求）"
+              : ask.assumption
+                ? `不回答，按 AI 假设继续：${ask.assumption}`
+                : "不回答，按继续处理"
           }
           onClick={() => void respond("assume")}
         >
-          按假设继续
+          {isElicit ? "忽略" : "按假设继续"}
         </button>
         <button
           type="button"

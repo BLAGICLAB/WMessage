@@ -331,3 +331,22 @@
 - **证据**：cargo 输出 + 量化数字
 - **失败处置**：先查组清单覆盖完整性测试（新增工具忘入组会红）；再查开关同步（load_config / update_config_file 两处都写 set_groups_enabled）。
 - **缺口补验**：实机「开关开→对话→activate_tools→桌面工具实际可用」端到端未验；激活瞬间缓存 miss 的 input 成本实测未做；设置页 UI 开关（方案 P-3 手改 config 口径）未做。
+
+### ACC-P-19 · MCP elicitation 桥接
+
+- **SPEC**：6-124
+- **层级**：L1（自动化；实机端到端随下一轮实机批次抽验）
+- **历史卡**：—
+- **前置**：per-server `allowElicitation` 默认 false（默认行为=rmcp 自动 Decline，零变化）；需要一个会发 elicitation 的 HTTP MCP server
+- **步骤**：
+  1. 后端面：跑 `cargo test --lib -- bot::mcp::elicit`（三例：多字段与未知字段类型 Decline / URL 模式与无在途调用 Decline / elicit_respond 唤醒 waiter 且同 qid 二次应答报不存在）。
+  2. 组件面：`grep -n "elicit_respond" src/components/ChatPanel/AskCard.tsx src-tauri/src/lib.rs` 命中（应答分叉 + 命令注册在案）；`grep -n "allow_elicitation" src-tauri/src/bot/mcp/config.rs src-tauri/src/bot/mcp/manager.rs` 命中（开关 + handler 注入在案）。
+  3. 对拍：`grep -n "source.*mcp_elicit" src-tauri/src/bot/mcp/elicit.rs src/components/ChatPanel/askStore.ts` 命中（来源标记两侧一致）。
+- **判据**：
+  1. 【可核对】开关关：elicitation 到达 → 自动 Decline（与现状逐字节一致）。
+  2. 【可核对】开关开：在途调用期间 elicitation → ask 卡弹出（含 server 名、单字段）；60s 超时 → Decline；主窗口不可见 → 立即 Decline。
+  3. 【可核对】应答值不出现在 bot.log / 审计事件（只回 `[MCP 应答，值不落日志]` 占位）。
+  4. 【可核对】字段类型映射：boolean 走「允许/不允许」按钮、enum 走选项按钮、number/integer 严格解析失败 → Decline。
+- **证据**：cargo 输出 + AskCard 截图（实机）
+- **失败处置**：先查在途登记（execute_mcp_direct 的 ActiveCallGuard 是否泄漏——panic 路径由 RAII 兜底）；再查 rmcp SEP-2260 关联校验（协议 ≥2026-07-28 时无在途关联的请求 rmcp 内部直接 invalid_params，属预期）。
+- **缺口补验**：实机端到端（真 server elicitation → 卡 → 应答回传）未验；stdio 服务器 elicitation 未接（范围外）；URL 模式未接（范围外）。

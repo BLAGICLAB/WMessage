@@ -247,7 +247,11 @@ pub(crate) async fn execute_mcp_tool(
     app: &tauri::AppHandle,
     name: &str,
     args: &str,
+    session_id: Option<&str>,
 ) -> crate::bot::registry::ToolResult {
+    // elicitation 桥接（D-7）：进程级 app 注册（幂等）——spawn_service 构造
+    // ElicitBridge 时取用；早期发现阶段未注册时 elicitation 自动 Decline
+    crate::bot::mcp::elicit::set_app(app.clone());
     let Some(mounted) = find_mounted(name) else {
         return crate::bot::registry::ToolResult::error(format!("未知工具：{name}"), Vec::new());
     };
@@ -264,7 +268,7 @@ pub(crate) async fn execute_mcp_tool(
     let server = servers.into_iter().find(|s| s.id == mounted.server_id);
     match server {
         Some(cfg) if cfg.enabled => {
-            let (out, original_bytes) = execute_mcp_direct(&cfg, &mounted, args).await;
+            let (out, original_bytes) = execute_mcp_direct(&cfg, &mounted, args, session_id).await;
             if original_bytes > MAX_RESULT_BYTES {
                 audit_mcp_over_budget(app, name, &mounted.server_name, original_bytes);
             }
@@ -313,6 +317,7 @@ pub(crate) async fn execute_mcp_direct(
     cfg: &McpServerConfig,
     mounted: &McpToolRef,
     args: &str,
+    session_id: Option<&str>,
 ) -> (crate::bot::registry::ToolResult, usize) {
     // 参数解析（ 评审：不再把 Null 静默透传远端）——非法 JSON 本地明确回
     // warn 文本，模型拿错误自己重发；空串按空对象（无参工具的常见形态）
@@ -346,6 +351,17 @@ pub(crate) async fn execute_mcp_direct(
             0,
         );
     }
+    // 在途调用登记（D-7 elicitation）：call_locks 已保证同 server 串行，
+    // elicitation 到达时按 server_id 反查会话归属；调用完注销（RAII 保证
+    // panic/早退也注销）
+    struct ActiveCallGuard(String);
+    impl Drop for ActiveCallGuard {
+        fn drop(&mut self) {
+            crate::bot::mcp::elicit::unregister_active_call(&self.0);
+        }
+    }
+    crate::bot::mcp::elicit::register_active_call(&cfg.id, session_id.unwrap_or(""), &cfg.name);
+    let _active_guard = ActiveCallGuard(cfg.id.clone());
     match shared().call_tool(cfg, &mounted.tool_name, parsed).await {
         Ok(result) => {
             let (text, original_bytes) = shape_result_text(&result);
@@ -689,7 +705,7 @@ mod tests {
             tool_name: "read".into(),
         };
         for args in ["[1,2]", "\"x\"", "42"] {
-            let (out, original) = execute_mcp_direct(&cfg, &mounted, args).await;
+            let (out, original) = execute_mcp_direct(&cfg, &mounted, args, Some("s-test")).await;
             assert!(
                 out.text.contains("必须是 JSON 对象"),
                 "args={args} 应本地拒绝：{:?}",
@@ -698,7 +714,7 @@ mod tests {
             assert_eq!(original, 0, "本地拒绝的调用无原始结果规模可言");
         }
         // 空参（无参工具常见形态）仍按空对象放行——不会卡在本地校验
-        let (empty, _) = execute_mcp_direct(&cfg, &mounted, "").await;
+        let (empty, _) = execute_mcp_direct(&cfg, &mounted, "", Some("s-test")).await;
         assert!(
             !empty.text.contains("必须是 JSON 对象"),
             "空串应放行：{:?}",

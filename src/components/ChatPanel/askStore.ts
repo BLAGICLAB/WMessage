@@ -25,6 +25,8 @@ export type AskState = {
   why?: string;
   options: string[];
   assumption?: string;
+  /** 来源标记：mcp_elicit = MCP elicitation 桥接（应答走 elicit_respond） */
+  source?: string;
   resolved?: AskResolved;
 };
 
@@ -36,6 +38,7 @@ export type AskEventPayload = {
   why?: string | null;
   options?: unknown;
   assumption?: string | null;
+  source?: string | null;
 };
 
 /** `bot-ask-resolved` 事件载荷 */
@@ -85,6 +88,7 @@ export function applyAsk(payload: AskEventPayload): boolean {
       ? payload.options.filter((o): o is string => typeof o === "string")
       : [],
     assumption: payload.assumption ?? undefined,
+    source: payload.source ?? undefined,
   };
   const idx = list.findIndex((a) => a.questionId === qid);
   const next =

@@ -732,11 +732,12 @@ async fn execute_tool_impl(
         // 阶段 4（MCP 增量挂载）：查表 miss 先走外部工具兜底路由——
         // 反查挂载表命中则调远端；编造的 mcp_* 名在路由内仍回「未知工具」。
         // 审计（tool.call/tool.return）已在函数出入口统一发出，无需重复。
+        // session_id 穿给 elicitation 桥接（D-7）：bot-ask 事件按会话归属盖章。
         None => {
             run_tool_panic_isolated(
                 app,
                 name,
-                crate::bot::mcp::mount::execute_mcp_tool(app, name, args),
+                crate::bot::mcp::mount::execute_mcp_tool(app, name, args, session_id),
             )
             .await
         }

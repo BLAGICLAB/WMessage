@@ -17,6 +17,7 @@
 pub mod builtin;
 pub mod commands;
 pub mod config;
+pub mod elicit;
 pub mod manager;
 pub mod mount;
 pub mod secrets;

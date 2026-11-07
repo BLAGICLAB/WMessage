@@ -19,6 +19,7 @@ fn echo_cfg(id: &str) -> McpServerConfig {
         url: None,
         headers: Default::default(),
         timeout_secs: Some(30),
+        allow_elicitation: None,
         enabled: true,
     }
 }
@@ -91,8 +92,13 @@ async fn connect_discover_call_roundtrip() {
     }
     assert!(stderr_seen, "stderr 环形缓冲应捕获桩的启动输出");
     // 阶段 4：调用内核（dispatch 路由的下游）——真实远端调用 + 结果整形
-    let (direct, direct_bytes) =
-        crate::bot::mcp::mount::execute_mcp_direct(&cfg, &mounted, r#"{"text": "路由测试"}"#).await;
+    let (direct, direct_bytes) = crate::bot::mcp::mount::execute_mcp_direct(
+        &cfg,
+        &mounted,
+        r#"{"text": "路由测试"}"#,
+        Some("s-e2e"),
+    )
+    .await;
     assert_eq!(direct.status, crate::bot::registry::ToolStatus::Ok);
     assert_eq!(direct.text, "echo: 路由测试");
     assert_eq!(
@@ -103,7 +109,7 @@ async fn connect_discover_call_roundtrip() {
     // 非法参数 JSON：不再透传 Null 到远端（ 评审）——本地明确回 warn
     // 文本「参数非法」，模型拿着错误自己重发，省一轮下游类型困惑
     let (direct_bad, _) =
-        crate::bot::mcp::mount::execute_mcp_direct(&cfg, &mounted, "not-json").await;
+        crate::bot::mcp::mount::execute_mcp_direct(&cfg, &mounted, "not-json", Some("s-e2e")).await;
     assert_eq!(direct_bad.status, crate::bot::registry::ToolStatus::Warn);
     assert!(
         direct_bad.text.contains("不是合法 JSON"),

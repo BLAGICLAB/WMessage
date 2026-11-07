@@ -110,6 +110,11 @@ pub struct McpServerConfig {
     /// 单次工具调用超时秒数；None = 60（钳 5..=600）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// elicitation 桥接开关（D-7）：true = 服务器向用户反问（elicitation/create）
+    /// 时弹 ask 卡；false/未配置 = 默认自动 Decline（与 rmcp 默认行为一致，
+    /// 零变化）。业界共识：对不可信 server 默认关。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub allow_elicitation: Option<bool>,
     /// 启用开关：false = 该服务器工具立即从 agent 工具清单消失（不重连不调用）
     pub enabled: bool,
 }
@@ -117,6 +122,11 @@ pub struct McpServerConfig {
 impl McpServerConfig {
     pub fn transport_kind(&self) -> McpTransport {
         McpTransport::from_cfg(&self.transport)
+    }
+
+    /// elicitation 桥接开关（None = 关）
+    pub fn allow_elicitation(&self) -> bool {
+        self.allow_elicitation.unwrap_or(false)
     }
 
     /// 实际生效的调用超时（秒）：None → 默认 60，钳 5..=600
@@ -577,6 +587,7 @@ mod tests {
             url: None,
             headers: BTreeMap::new(),
             timeout_secs: None,
+            allow_elicitation: None,
             enabled: true,
         }
     }

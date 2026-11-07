@@ -767,7 +767,17 @@ impl McpManager {
                     client,
                     StreamableHttpClientTransportConfig::with_uri(url),
                 );
-                let service = tokio::time::timeout(CONNECT_TIMEOUT, ().into_dyn().serve(transport))
+                // elicitation 桥接（D-7）：开关开才注入自定义 handler（弹 ask 卡），
+                // 默认 `()` = rmcp 默认自动 Decline（行为零变化）
+                let handler = if cfg.allow_elicitation() {
+                    crate::bot::mcp::elicit::ElicitBridge {
+                        server_id: cfg.id.clone(),
+                    }
+                    .into_dyn()
+                } else {
+                    ().into_dyn()
+                };
+                let service = tokio::time::timeout(CONNECT_TIMEOUT, handler.serve(transport))
                     .await
                     .map_err(|_| format!("连接超时（{}s）", CONNECT_TIMEOUT.as_secs()))?
                     .map_err(|e| format!("初始化握手失败：{e}"))?;

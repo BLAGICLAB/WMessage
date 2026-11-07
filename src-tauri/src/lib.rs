@@ -830,6 +830,7 @@ pub fn run() {
             bot::mcp::commands::mcp_status,
             bot::mcp::commands::mcp_server_tools,
             bot::mcp::commands::mcp_server_secrets_masked,
+            bot::mcp::elicit::elicit_respond,
             memory::consolidate::memory_consolidate_now,
             memory::extract::mem_pending_approve,
             memory::extract::mem_pending_list,
