@@ -52,11 +52,18 @@ fn read_raw(dir: &std::path::Path) -> String {
     }
 }
 
+/// 截断告警判据（纯函数便于单测）：原文超限即告警。
+/// 不能用「rendered 与 raw 比长短」——截断只可能缩短或等长，那个条件恒假，
+/// 告警会永久静默（截断态恰恰是最需要可见的时候）。
+fn should_warn_truncated(raw: &str) -> bool {
+    raw.chars().count() > INSTRUCTIONS_MAX_CHARS
+}
+
 /// 进 system 的指令段（已截断渲染）。空文件返回空串，调用方据此跳过槽位。
 pub fn load_user_instructions<R: tauri::Runtime>(app: &AppHandle<R>) -> String {
     let raw = read_raw(&crate::db::data_dir(app));
     let rendered = render(&raw);
-    if rendered.chars().count() > raw.chars().count() {
+    if should_warn_truncated(&raw) {
         warn_truncated_once(app);
     }
     rendered
@@ -186,5 +193,19 @@ mod tests {
         assert!(loaded.ends_with(TRUNCATION_NOTE));
         assert!(loaded.starts_with(&"字".repeat(INSTRUCTIONS_MAX_CHARS)));
         assert!(!loaded.contains(&"字".repeat(INSTRUCTIONS_MAX_CHARS + 1)));
+    }
+
+    #[test]
+    fn warn_predicate_fires_exactly_when_raw_exceeds_max() {
+        assert!(!should_warn_truncated(&"a".repeat(INSTRUCTIONS_MAX_CHARS)));
+        assert!(should_warn_truncated(&"a".repeat(
+            INSTRUCTIONS_MAX_CHARS + 1
+        )));
+        // 深度超限时渲染结果比原文短；贴线小超限（超限量 < 标注长度）反而更长——
+        // 所以「渲染前后比长短」的告警判据在两种方向上都不可靠，判据必须钉在原文上
+        let raw = "汉".repeat(INSTRUCTIONS_MAX_CHARS + 100);
+        let rendered = render(&raw);
+        assert!(rendered.chars().count() < raw.chars().count());
+        assert!(should_warn_truncated(&raw));
     }
 }
