@@ -962,7 +962,7 @@ fn rollback_create(c: &FileChangeRow) -> Result<String, String> {
             c.path
         ));
     }
-    crate::bot_manage_file::trash_context()
+    crate::bot::trash_context()
         .delete(&path)
         .map_err(|e| format!("移入回收站失败，文件保留在原处：{e}（{}）", c.path))?;
     Ok(c.path.clone())
