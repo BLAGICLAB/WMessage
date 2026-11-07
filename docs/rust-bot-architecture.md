@@ -185,7 +185,7 @@ src-tauri/src/
 │   ├── bot_model_loop/tests/fail_hint.rs (58)   工具失败「换策略」提示按工具分流的单测
 │   ├── bot_model_loop/tests/intent.rs (113)  侧调自检测试（路由阈值两态 / 用户意图抽取）
 │   ├── bot_model_loop/tests/sse.rs (390)    读流层测试（叫停后不推流 / 正文照旧记账）
-├── bot.rs (217)         bot 族唯一对外门面：跨族 re-export（BotChatResult/TaskRef/ChatMsg/
+├── bot.rs (219)         bot 族唯一对外门面：跨族 re-export（BotChatResult/TaskRef/ChatMsg/
 │                        model_loop/StopGuard/StopToken/AuditLevel/db::* 等）+ 子模块声明；
 │                        **跨族引用一律走 `crate::bot::`**，族外不得直接摸
 │                        `crate::bot_chat::` 这类深层路径（tests-audit/audit_bot_namespace.py
