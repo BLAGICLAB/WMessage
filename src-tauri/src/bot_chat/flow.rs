@@ -46,11 +46,11 @@ impl Drop for ChatGuard {
     }
 }
 
-/// 会话锁是否被持有：tests/task_chat_exec.rs 断言
-/// run_task_in_chat 执行期持有 ChatGuard——bot_execute_task 纳入会话锁的回归证据。
-/// 生产代码不调用。表随 `AppState` 走，故取注入实例（缺失时兜底实例，
-/// 与生产路径用的是同一个——集成测试的 mock handle 没注入时两边都落到兜底）。
-#[cfg(debug_assertions)]
+/// 会话锁是否被持有。两个消费者：tests/task_chat_exec.rs 断言
+/// run_task_in_chat 执行期持有 ChatGuard；bot_turn_rollback 的忙闸（在途回合
+/// 期间拒绝回合级回滚，防止撤掉正在跑的回合的落盘底座）。表随 `AppState` 走，
+/// 故取注入实例（缺失时兜底实例，与生产路径用的是同一个——集成测试的 mock
+/// handle 没注入时两边都落到兜底）。
 pub fn chat_guard_is_held<R: tauri::Runtime>(app: &AppHandle<R>, session_id: &str) -> bool {
     crate::db::lock::lock_or_recover(&chat_running(app), "bot_chat::chat_running")
         .contains(session_id)

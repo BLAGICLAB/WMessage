@@ -474,3 +474,9 @@ Resource Server 语义（2026-07-28 规范）：授权码 + PKCE + resource 参�
 | 3 | D-4 分类器误拦好操作 | unsure 弹窗兜底 + 3 连拦退回 + 默认关灰度 |
 | 4 | D-6 rmcp 重建 client 的重连语义 | 复用 retire/ensure_connected 路径；实现时验证测试 |
 | 5 | （空位） | |
+| 6 | D-1 saveAs 无 modify 场景（重名不覆盖、恒追加时间戳）——设计假设「覆盖已存在文件」与实现不符 | 只接 create 凭证 + 原子写；modify 快照不适用 |
+| 7 | D-1 apps_update_files 不接快照凭证 | apps 已有版本快照表（app_versions 滚动 100 版）+ 回滚 UI，同一文件面再接 file_changes 回滚是双轨冗余 |
+| 8 | D-1 doc 族 / archive 的 modify 场景补快照不做 | 凭证已有；modify 场景罕见（doc 产出基本 create），逐工具接线分散；逐文件回滚入口仍在 |
+| 9 | D-1 前端「撤回到此」挂助手气泡操作区（设计原文写用户气泡——用户气泡无操作区基建）；三态弹层照设计落地 | 入口语义等价：锚点=该回复向上最近的用户行 |
+| 10 | D-1 漂移分类按错误文本子串（is_drift_error）计数 | 分类错只影响 restored/skippedDrift 计数口径，fail 方向恒为「不回滚」；三支闸文案同文件维护 |
+| 11 | 批 3 教训：ChatPanel 传给 MsgBubble 的新回调必须 useCallback 且依赖不得含每 render 变化的普通函数（addHint）——否则 MsgBubble memo 全体失效，实机表现为点击后整区重渲染异常（MessageList 头注释的硬约束，testing-lib 全量测试逮住） | addHint 走 ref 间接化；后续加气泡回调先过这条 |

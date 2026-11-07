@@ -107,7 +107,11 @@ function FileChangeItem({
 }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  const canRollback = c.kind === "modify" && !!c.beforeRef;
+  // 三 kind 可回滚：modify/delete 靠 before 快照，create 撤销靠内容指纹
+  const canRollback =
+    c.kind === "modify" || c.kind === "delete"
+      ? !!c.beforeRef
+      : c.kind === "create" && !!c.afterSha;
   const rollback = async () => {
     if (busy) return;
     setBusy(true);
@@ -140,7 +144,7 @@ function FileChangeItem({
           <button
             className="nm-btn shrink-0 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] disabled:opacity-50"
             disabled={busy}
-            title="恢复此文件到本次 AI 修改前（文件被手动改过会被拒）"
+            title="modify/delete 恢复变更前内容；create 撤销新建（进回收站）。文件被手动改过会被拒"
             onClick={rollback}
           >
             回滚

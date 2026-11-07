@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::bot_history::turn_rollback_files_core;
 
 fn setup_conn() -> rusqlite::Connection {
     super::super::test_conn(&[EXEC_TRACE_DDL])
@@ -331,8 +332,8 @@ fn retire_traces_before_cascades_and_keeps_live_rows() {
     // ④ 活跃 running（started_at=8000）→ 留
     mk_trace(&conn, "s4", None, "Batch", 8000);
 
-    let removed = retire_traces_before(&conn, 5000).unwrap();
-    assert_eq!(removed, 2, "过期收尾 + 僵尸 running 各删一条");
+    let outcome = retire_traces_before(&conn, 5000).unwrap();
+    assert_eq!(outcome.traces, 2, "过期收尾 + 僵尸 running 各删一条");
 
     assert!(
         trace_get_row(&conn, old).unwrap().is_none(),
@@ -495,7 +496,7 @@ fn ensure_trace_tables_tolerates_concurrent_add_column() {
 fn retire_traces_before_noop_returns_zero() {
     let conn = setup_conn();
     mk_trace(&conn, "s1", None, "Manual", 8000);
-    assert_eq!(retire_traces_before(&conn, 5000).unwrap(), 0);
+    assert_eq!(retire_traces_before(&conn, 5000).unwrap().traces, 0);
     assert_eq!(trace_query(&conn, None, None, None, 100).unwrap().len(), 1);
 }
 
@@ -1163,17 +1164,201 @@ fn rollback_rejects_when_file_drifted_after_change() {
 }
 
 #[test]
-fn rollback_rejects_create_kind_and_missing_snapshot_ref() {
+fn rollback_create_kind_behaves_and_modify_without_snapshot_rejected() {
     let conn = setup_conn();
     let id = mk_trace(&conn, "s1", Some("t1"), "Manual", 1000);
     let dir = tmp_data_dir();
-    let create_row = mk_change(&conn, id, "/a/new.py", "create", None, None, None);
-    let err = file_rollback_core(&conn, dir.path(), create_row).unwrap_err();
-    assert!(err.contains("暂不支持 create 类型的回滚"), "实际：{err}");
+    // create 回滚：目标已不存在 = 期望状态已达成，按成功返回（不报错）
+    let gone = dir.path().join("gone.py");
+    let create_row = mk_change(
+        &conn,
+        id,
+        gone.to_str().unwrap(),
+        "create",
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        file_rollback_core(&conn, dir.path(), create_row).unwrap(),
+        gone.to_str().unwrap()
+    );
 
     let modify_no_ref = mk_change(&conn, id, "/a/x.py", "modify", None, None, None);
     let err = file_rollback_core(&conn, dir.path(), modify_no_ref).unwrap_err();
     assert!(err.contains("无 before 快照"), "实际：{err}");
+}
+
+/// delete 回滚：目标已存在 → 拒（防覆盖恢复吞掉重建内容）；目标已删 → 从快照
+/// 按字节恢复全文
+#[test]
+fn rollback_delete_restores_from_snapshot() {
+    let conn = setup_conn();
+    let id = mk_trace(&conn, "s1", Some("t1"), "Manual", 1000);
+    let dir = tmp_data_dir();
+    let target = dir.path().join("gone.txt");
+    let content = "被删前的内容\n";
+    let checkpoints = dir.path().join("checkpoints");
+    fs::create_dir_all(&checkpoints).unwrap();
+    fs::write(checkpoints.join("snap-del"), content).unwrap();
+    let change = mk_change(
+        &conn,
+        id,
+        target.to_str().unwrap(),
+        "delete",
+        Some("snap-del"),
+        Some(&crate::bot::sha256_hex(content)),
+        None,
+    );
+    // 先造「已被重建」的漂移态 → 拒
+    fs::write(&target, "重建的内容\n").unwrap();
+    let err = file_rollback_core(&conn, dir.path(), change).unwrap_err();
+    assert!(err.contains("拒绝覆盖恢复"), "实际：{err}");
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "重建的内容\n",
+        "被拒后重建内容必须原样保留"
+    );
+    // 真实删除场景（路径上无内容）→ 恢复
+    fs::remove_file(&target).unwrap();
+    file_rollback_core(&conn, dir.path(), change).unwrap();
+    assert_eq!(fs::read_to_string(&target).unwrap(), content);
+}
+
+/// create 撤销：未被动过的文件 → 移入回收站；被改过 → 拒。trash 行为平台
+/// 差异大（mac NSFileManager），主链测试钉 macOS；Windows 走实机卡兜底。
+#[cfg(target_os = "macos")]
+#[test]
+fn rollback_create_trashes_file_when_untouched() {
+    let conn = setup_conn();
+    let id = mk_trace(&conn, "s1", Some("t1"), "Manual", 1000);
+    let dir = tmp_data_dir();
+    let target = dir.path().join("made.txt");
+    let content = "AI 产出\n";
+    fs::write(&target, content).unwrap();
+    let change = mk_change(
+        &conn,
+        id,
+        target.to_str().unwrap(),
+        "create",
+        None,
+        None,
+        Some(&crate::bot::sha256_hex(content)),
+    );
+    file_rollback_core(&conn, dir.path(), change).unwrap();
+    assert!(!target.exists(), "撤销后文件应已离开原路径（进回收站）");
+
+    // 漂移：文件内容与 after_sha 不符 → 拒
+    fs::write(&target, "被人工改过\n").unwrap();
+    let drifted = mk_change(
+        &conn,
+        id,
+        target.to_str().unwrap(),
+        "create",
+        None,
+        None,
+        Some(&crate::bot::sha256_hex(content)),
+    );
+    let err = file_rollback_core(&conn, dir.path(), drifted).unwrap_err();
+    assert!(err.contains("指纹不符"), "实际：{err}");
+}
+
+/// 回合级聚合：modify+delete 恢复、create 漂移跳过且不中断整批
+#[test]
+fn turn_rollback_files_rolls_back_and_reports_drift() {
+    let conn = setup_conn();
+    let dir = tmp_data_dir();
+    let checkpoints = dir.path().join("checkpoints");
+    fs::create_dir_all(&checkpoints).unwrap();
+
+    // a.txt modify（快照齐）→ 恢复
+    let ta = mk_trace(&conn, "s-agg", Some("t1"), "Manual", 1000);
+    let a = dir.path().join("a.txt");
+    fs::write(&a, "a-after\n").unwrap();
+    fs::write(checkpoints.join("snap-a"), "a-before\n").unwrap();
+    mk_change(
+        &conn,
+        ta,
+        a.to_str().unwrap(),
+        "modify",
+        Some("snap-a"),
+        Some(&crate::bot::sha256_hex("a-before\n")),
+        Some(&crate::bot::sha256_hex("a-after\n")),
+    );
+
+    // b.txt create（当前内容与 after_sha 不符 → 漂移跳过）
+    let tb = mk_trace(&conn, "s-agg", Some("t1"), "Manual", 1000);
+    let b = dir.path().join("b.txt");
+    fs::write(&b, "被人改过\n").unwrap();
+    mk_change(
+        &conn,
+        tb,
+        b.to_str().unwrap(),
+        "create",
+        None,
+        None,
+        Some(&crate::bot::sha256_hex("b-ai 产出\n")),
+    );
+
+    // c.txt delete（快照齐，目标已不在）→ 恢复
+    let tc = mk_trace(&conn, "s-agg", Some("t1"), "Manual", 1000);
+    let c = dir.path().join("c.txt");
+    fs::write(checkpoints.join("snap-c"), "c 原文\n").unwrap();
+    mk_change(
+        &conn,
+        tc,
+        c.to_str().unwrap(),
+        "delete",
+        Some("snap-c"),
+        Some(&crate::bot::sha256_hex("c 原文\n")),
+        None,
+    );
+
+    let report = turn_rollback_files_core(&conn, dir.path(), "s-agg", 1000);
+    assert_eq!(report.restored, 2, "modify + delete 各恢复一件");
+    assert_eq!(report.skipped_drift, 1, "create 漂移跳过");
+    assert!(
+        report.failed.is_empty(),
+        "失败清单应为空：{:?}",
+        report.failed
+    );
+    assert_eq!(fs::read_to_string(&a).unwrap(), "a-before\n");
+    assert_eq!(fs::read_to_string(&c).unwrap(), "c 原文\n");
+    assert_eq!(
+        fs::read_to_string(&b).unwrap(),
+        "被人改过\n",
+        "漂移文件不动"
+    );
+}
+
+/// 孤儿快照清扫：无引用且超龄的删，被引用的与未超龄的都不动
+#[test]
+fn sweep_orphan_checkpoints_removes_unreferenced_aged_files() {
+    use std::time::{Duration, SystemTime};
+    let conn = setup_conn();
+    let id = mk_trace(&conn, "s1", Some("t1"), "Manual", 1000);
+    let dir = tmp_data_dir();
+    let ck = dir.path().join("checkpoints");
+    fs::create_dir_all(&ck).unwrap();
+    fs::write(ck.join("live"), "x").unwrap();
+    fs::write(ck.join("orphan-old"), "x").unwrap();
+    fs::write(ck.join("orphan-new"), "x").unwrap();
+    // live 有 change 行引用
+    mk_change(&conn, id, "/a/f.txt", "modify", Some("live"), None, None);
+    // orphan-old mtime 拨到 31 天前
+    let aged = SystemTime::now() - Duration::from_secs(31 * 86_400);
+    let f = fs::OpenOptions::new()
+        .write(true)
+        .open(ck.join("orphan-old"))
+        .unwrap();
+    f.set_times(std::fs::FileTimes::new().set_modified(aged))
+        .unwrap();
+
+    let removed = sweep_orphan_checkpoints(&conn, dir.path(), crate::db::now_ms());
+    assert_eq!(removed, 1, "只删无引用且超龄的那一个");
+    assert!(ck.join("live").exists(), "被引用的不动");
+    assert!(ck.join("orphan-new").exists(), "未超龄的不动");
+    assert!(!ck.join("orphan-old").exists(), "超龄孤儿应被删");
 }
 
 #[test]

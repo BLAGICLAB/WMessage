@@ -311,15 +311,20 @@ pub async fn tool_http_request(
                         .unwrap_or_default();
                     path = dir.join(format!("{stem}_{}{ext}", crate::db::now_ms()));
                 }
-                if let Err(e) = std::fs::write(&path, &reply.body) {
+                // 原子写：tmp+rename，防半截下载文件（原裸写无临时文件）
+                if let Err(e) = crate::db::atomic_write_bytes(&path, &reply.body) {
                     return ToolResult::error(format!("写入产物文件失败：{e}"), Vec::new());
                 }
+                // 落盘凭证：saveAs 重名不覆盖（追加时间戳），恒为 create——
+                // 无 before 快照可存，凭证的存在性是「这文件是工具产物」的凭据
                 out.push_str(&format!(
                     "\n[已保存] {}（{} 字节）\n数据文件交给 run_python / extract_document 按路径直读，不必经过对话上下文",
                     path.display(),
                     reply.body.len()
                 ));
-                return ToolResult::ok(out, Vec::new());
+                return ToolResult::ok(out, Vec::new()).with_file_change(
+                    crate::bot_fs::build_binary_file_receipt(&path.display().to_string()),
+                );
             }
             if method == "HEAD" || reply.body.is_empty() {
                 return ToolResult::ok(out, Vec::new());

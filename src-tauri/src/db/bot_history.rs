@@ -388,6 +388,130 @@ pub fn bot_history_drop_inner(
     Ok(n)
 }
 
+/// 回合级文件回滚聚合报告（serde camelCase 直出前端）
+#[derive(Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnRollbackReport {
+    /// 成功回滚的文件数
+    pub restored: usize,
+    /// 漂移跳过数：文件在变更之后又被改过（指纹不符/路径已有内容）——不中断
+    /// 整批，其余照回，跳过的如实报告
+    pub skipped_drift: usize,
+    /// 其余失败（快照缺失等），带路径与原因
+    pub failed: Vec<String>,
+}
+
+/// 回合级文件回滚聚合：把「锚行之后本会话产生的文件变更」逐条回滚到变更前。
+///
+/// 范围判定：`file_changes` 无 session 列，join `exec_traces` 取会话归属，
+/// `fc.created_at > 锚行 created_at`；同 path 取最新一条决定终态（旧条目的
+/// 效果已被最新条覆盖，重放旧条会吞掉中间状态）。逐条走
+/// `file_rollback_core`：漂移类失败（指纹不符/路径已有内容/已被改动）计入
+/// skipped_drift 不中断整批，其余进 failed。
+///
+/// 文件侧先于消息侧执行——锚行 created_at 是文件范围的键，消息删了就没了；
+/// 这个次序由命令壳保证（核心按调用序执行，锚查询在前天然满足）。
+pub fn turn_rollback_files_core(
+    conn: &rusqlite::Connection,
+    data_dir: &std::path::Path,
+    session_id: &str,
+    anchor_created_at: i64,
+) -> TurnRollbackReport {
+    let mut report = TurnRollbackReport::default();
+    let rows: Vec<i64> = {
+        let mut stmt = match conn
+            .prepare(
+                "SELECT fc.id FROM file_changes fc
+                 JOIN exec_traces t ON t.id = fc.trace_id
+                 WHERE t.session_id = ?1 AND fc.created_at > ?2
+                 ORDER BY fc.id DESC",
+            )
+            .map_err(|e| e.to_string())
+        {
+            Ok(s) => s,
+            Err(e) => {
+                report.failed.push(format!("查询变更记录失败：{e}"));
+                return report;
+            }
+        };
+        match stmt
+            .query_map([session_id, &anchor_created_at.to_string()], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map_err(|e| e.to_string())
+            .and_then(|mapped| {
+                mapped
+                    .collect::<Result<Vec<i64>, _>>()
+                    .map_err(|e| e.to_string())
+            }) {
+            Ok(rows) => rows,
+            Err(e) => {
+                report.failed.push(format!("读取变更记录失败：{e}"));
+                return report;
+            }
+        }
+    };
+    let mut seen = std::collections::HashSet::new();
+    for id in rows {
+        let Some(c) = crate::db::trace::file_change_get(conn, id).ok().flatten() else {
+            continue;
+        };
+        if !seen.insert(c.path.clone()) {
+            continue;
+        }
+        match crate::db::trace::file_rollback_core(conn, data_dir, id) {
+            Ok(_) => report.restored += 1,
+            Err(e) if is_drift_error(&e) => report.skipped_drift += 1,
+            Err(e) => report.failed.push(format!("{}：{e}", c.path)),
+        }
+    }
+    report
+}
+
+/// 漂移类错误判定：回滚闸拒绝的「文件已被改动/路径已有内容」族。按错误文本
+/// 子串分类是脆口径，但三支闸的错误文案都在本仓同一文件里维护（rollback_*），
+/// 分类错了也只是计数口径（restored/skipped 归类），fail 方向都是「不回滚」。
+fn is_drift_error(e: &str) -> bool {
+    e.contains("指纹不符") || e.contains("已有内容") || e.contains("已被改动")
+}
+
+/// 回合级回滚核心（三态恢复）：files = 撤锚行之后的文件改动；chat = 删锚行
+/// 之后的对话行；include_anchor_msg 连锚行（用户消息）一起删。文件侧先于
+/// 消息侧（锚行 created_at 是文件范围的键）。返回 (报告, 被删行身份清单)。
+pub fn turn_rollback_core(
+    conn: &mut rusqlite::Connection,
+    data_dir: &std::path::Path,
+    session_id: &str,
+    anchor_msg_id: &str,
+    files: bool,
+    chat: bool,
+    include_anchor_msg: bool,
+) -> Result<(TurnRollbackReport, Vec<String>), String> {
+    let anchor_created_at: i64 = conn
+        .query_row(
+            "SELECT created_at FROM bot_messages WHERE session_id = ?1 AND msg_id = ?2",
+            rusqlite::params![session_id, anchor_msg_id],
+            |r| r.get(0),
+        )
+        .map_err(|_| format!("锚消息不存在（可能已被删除）：{anchor_msg_id}"))?;
+    let report = if files {
+        turn_rollback_files_core(conn, data_dir, session_id, anchor_created_at)
+    } else {
+        TurnRollbackReport::default()
+    };
+    let mut dropped_ids = Vec::new();
+    if chat {
+        // 先截尾后删锚：锚行没了 drop_after 就找不到锚
+        let (mut ids, _) = bot_history_drop_after_inner(conn, session_id, anchor_msg_id)?;
+        dropped_ids.append(&mut ids);
+        if include_anchor_msg {
+            bot_history_drop_inner(conn, session_id, anchor_msg_id)?;
+            dropped_ids.push(anchor_msg_id.to_string());
+        }
+    }
+    Ok((report, dropped_ids))
+}
+
 /// 摘要行换血（compact 的真源侧操作）：把 msg_ids 集合的行删掉，换成一条
 /// 服务端身份的摘要行，位置取被删集合的最小 ord（摘要代表那一段历史，
 /// 不得挪到会话尾）。支持部分压缩：集合外的行 ord 不动。返回摘要行投影

@@ -294,3 +294,22 @@
 - **证据**：vitest / cargo 输出 + bot.log 审计行
 - **失败处置**：先查 data_dir 下 instructions.md 是否被外部占用（读错误按空指令处理、留 warn 日志）；再查 PromptSlot 槽序是否被人改动（槽位序测试会红）。
 - **缺口补验**：实机「设置页编辑→发消息→模型遵从指令」端到端未验；截断标注在真机 system 的呈现未验。
+
+### ACC-P-17 · 回合级快照回滚
+
+- **SPEC**：6-122
+- **层级**：L1（自动化；实机端到端随下一轮实机批次抽验）
+- **历史卡**：—
+- **前置**：无（纯本地文件、SQLite 与系统回收站）
+- **步骤**：
+  1. 后端面：跑 `cargo test --lib -- db::trace`（rollback 三支五例：modify 恢复/漂移拒/篡改快照拒 + delete 恢复与防覆盖 + create 撤销进回收站与漂移拒；回合聚合一例 modify+delete 恢复 create 漂移跳过；孤儿清扫一例 live/orphan-old/orphan-new 三态）。
+  2. 组件面：`grep -n "onTurnRollback" src/components/ChatPanel/ChatPanel.tsx src/components/ChatPanel/MessageList.tsx` 命中（弹层接线在案）；`grep -n 'c.kind === "delete"' src/components/TracePanel/TracePanel.tsx` 命中（三 kind 判定）。
+  3. 对拍：`grep -n "bot_turn_rollback" src-tauri/src/lib.rs` 命中（命令注册在案）。
+- **判据**：
+  1. 【可核对】delete 回滚：目标被重建 → 拒且重建内容原样保留；已删 → 快照按字节恢复全文。
+  2. 【可核对】create 撤销：内容与 after_sha 一致 → 移入系统回收站；漂移 → 拒。
+  3. 【可核对】回合级：files=true 时同 path 取最新条、漂移跳过不中断整批（restored/skippedDrift 报告）；忙时（在途回合）拒绝。
+  4. 【可观测】审计 `turn.rollback`（restored/skipped_drift/failed）与 `checkpoint.swept` 在 bot.log 可查。
+- **证据**：cargo/vitest 输出 + bot.log 审计行
+- **失败处置**：先查 checkpoints 目录是否被人为清空（快照缺失=不可恢复，按 deny 设计）；再查 ChatGuard 忙闸误判（`chat_guard_is_held` 转正后的锁表访问）。
+- **缺口补验**：实机三态弹层端到端（撤回复/连消息撤/只撤文件）未验；manage_file move 双凭证的实机回滚未验；Windows 回收站撤销（trash crate 平台差异）未验。

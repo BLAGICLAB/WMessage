@@ -89,7 +89,13 @@ pub(crate) fn sha256_hex_bytes(bytes: &[u8]) -> String {
 /// before 全文快照（`data_dir/checkpoints/<uuid>`，db::atomic_write 原子写）。
 /// 快照是回滚的 nice-to-have：失败降级 None + Error 审计，不阻断已成功的业务写盘
 /// ——工具结果不能因观测面失败而翻转。
-pub(super) fn write_before_snapshot(app: &AppHandle, before: &str) -> Option<String> {
+pub(crate) fn write_before_snapshot(app: &AppHandle, before: &str) -> Option<String> {
+    write_before_snapshot_bytes(app, before.as_bytes())
+}
+
+/// 字节版 before 快照：删除/移动场景被删的是任意文件（可能二进制），快照按
+/// 字节落盘，回滚校验与恢复同按字节（sha256_hex_bytes）。失败语义与文本版一致。
+pub(crate) fn write_before_snapshot_bytes(app: &AppHandle, before: &[u8]) -> Option<String> {
     let dir = crate::db::paths::data_dir(app).join("checkpoints");
     if let Err(e) = std::fs::create_dir_all(&dir) {
         crate::audit::write_event(
@@ -101,7 +107,7 @@ pub(super) fn write_before_snapshot(app: &AppHandle, before: &str) -> Option<Str
         return None;
     }
     let name = uuid::Uuid::new_v4().to_string();
-    match crate::db::atomic_write(&dir.join(&name), before) {
+    match crate::db::atomic_write_bytes(&dir.join(&name), before) {
         Ok(()) => Some(name),
         Err(e) => {
             crate::audit::write_event(

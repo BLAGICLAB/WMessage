@@ -517,10 +517,21 @@ pub(crate) fn file_change_from_row(r: &rusqlite::Row) -> rusqlite::Result<FileCh
     })
 }
 
+/// 保留期清理结果：traces = 删除的 trace 条数；snapshots = 随行的 before 快照
+/// 文件名清单（调用方在事务提交后删对应 checkpoints 文件——行没了快照就是孤儿）
+pub struct RetireOutcome {
+    pub traces: usize,
+    pub snapshots: Vec<String>,
+}
+
 /// 保留期清理：删除「已收尾且 finished_at 早于 before_ms」或「一直挂着 running 且
 /// started_at 早于 before_ms」（崩溃残留的僵尸 trace 永远等不到收尾）。
-/// 子表行按 trace_id 显式删除（无外键，事务内三删保原子）。返回删除的 trace 条数。
-pub fn retire_traces_before(conn: &rusqlite::Connection, before_ms: i64) -> Result<usize, String> {
+/// 子表行按 trace_id 显式删除（无外键，事务内三删保原子）。返回删除的 trace 条数
+/// 与随行孤儿快照名（事务内收集、调用方事务外删文件，失败不影响清理事实）。
+pub fn retire_traces_before(
+    conn: &rusqlite::Connection,
+    before_ms: i64,
+) -> Result<RetireOutcome, String> {
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let ids: Vec<i64> = {
         let mut stmt = tx
@@ -539,7 +550,22 @@ pub fn retire_traces_before(conn: &rusqlite::Connection, before_ms: i64) -> Resu
         }
         out
     };
+    let mut snapshots = Vec::new();
     for id in &ids {
+        {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT before_ref FROM file_changes
+                     WHERE trace_id = ?1 AND before_ref IS NOT NULL",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([id], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            for r in rows {
+                snapshots.push(r.map_err(|e| e.to_string())?);
+            }
+        }
         tx.execute("DELETE FROM exec_spans WHERE trace_id = ?1", [id])
             .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM file_changes WHERE trace_id = ?1", [id])
@@ -548,7 +574,60 @@ pub fn retire_traces_before(conn: &rusqlite::Connection, before_ms: i64) -> Resu
             .map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())?;
-    Ok(ids.len())
+    Ok(RetireOutcome {
+        traces: ids.len(),
+        snapshots,
+    })
+}
+
+/// checkpoints 快照保留期（天）：与痕迹保留期对齐——回滚入口随 change 行一起
+/// 消失，快照留着只是孤儿文件。
+pub const CHECKPOINT_RETENTION_DAYS: i64 = 30;
+
+/// 孤儿快照清扫：目录遍历 + 引用集比对。孤儿 = 目录里既无任何 change 行引用、
+/// mtime 又超保留期的文件；被引用的一个不动。目录不存在/读失败返回 0（无清扫面）。
+pub fn sweep_orphan_checkpoints(
+    conn: &rusqlite::Connection,
+    data_dir: &std::path::Path,
+    now_ms: i64,
+) -> usize {
+    let cutoff = now_ms - CHECKPOINT_RETENTION_DAYS * 86_400_000;
+    let mut referenced = std::collections::HashSet::new();
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT DISTINCT before_ref FROM file_changes WHERE before_ref IS NOT NULL")
+    {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for r in rows.flatten() {
+                referenced.insert(r);
+            }
+        }
+    }
+    let dir = data_dir.join("checkpoints");
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    let mut removed = 0usize;
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if referenced.contains(&name) {
+            continue;
+        }
+        let Ok(md) = entry.metadata() else {
+            continue;
+        };
+        let mtime = md
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64);
+        let Some(mtime) = mtime else {
+            continue;
+        };
+        if mtime < cutoff && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 // 前端查询命令
@@ -609,6 +688,9 @@ pub fn retention_cutoff_ms(days: i64, now_ms: i64) -> i64 {
 
 /// 保留期清理内核：设置页手动命令与自动清扫共用。
 /// `days = None` 走 `TRACE_RETENTION_DAYS`（设置页公示的那个值）。
+/// 随行收尾两件事：删掉本次清理行引用的 checkpoints 快照文件（best-effort，
+/// 删失败只留 debug 日志——孤儿文件下轮 sweep 兜底）；顺手跑孤儿快照清扫
+/// （无引用且超龄的存量文件——retire 漏删/崩溃残留的兜底）。
 pub fn retire_traces_before_days(
     app: &tauri::AppHandle,
     days: Option<i64>,
@@ -619,16 +701,35 @@ pub fn retire_traces_before_days(
     let conn = super::open_db(app)?;
     let days = days.unwrap_or(TRACE_RETENTION_DAYS);
     let before = retention_cutoff_ms(days, crate::db::now_ms());
-    let removed = retire_traces_before(&conn, before)?;
-    if removed > 0 {
+    let outcome = retire_traces_before(&conn, before)?;
+    let data_dir = crate::db::paths::data_dir(app);
+    for name in &outcome.snapshots {
+        let p = data_dir.join("checkpoints").join(name);
+        if let Err(e) = std::fs::remove_file(&p) {
+            log::debug!("快照清理失败（{}）：{e}，留待孤儿清扫兜底", p.display());
+        }
+    }
+    let swept = sweep_orphan_checkpoints(&conn, &data_dir, crate::db::now_ms());
+    if swept > 0 {
+        crate::audit::write_event(
+            app,
+            crate::audit::AuditLevel::Info,
+            "checkpoint.swept",
+            &[("removed", swept.to_string())],
+        );
+    }
+    if outcome.traces > 0 {
         crate::audit::write_event(
             app,
             crate::audit::AuditLevel::Info,
             "trace.retired",
-            &[("removed", removed.to_string()), ("days", days.to_string())],
+            &[
+                ("removed", outcome.traces.to_string()),
+                ("days", days.to_string()),
+            ],
         );
     }
-    Ok(removed)
+    Ok(outcome.traces)
 }
 
 /// 自动保留期清扫：启动即跑一次，此后每 24h 一次。
@@ -701,11 +802,13 @@ pub fn usage_stats_by_model(
 /// 回滚核心：conn + 数据目录齐全即可完成全部闸口判定与恢复写盘，成功返回
 /// 目标路径。命令壳只负责开库、拼用户消息与审计（审计仅在成功路径写，与
 /// 抽核前行为一致）。
-/// 双闸防吞改：
-/// 1. **漂移闸**——当前文件内容 sha 必须等于本变更落盘时的 after_sha，文件被
-///    （人/其他流程）动过即拒绝（覆盖会吞掉后续修改）；
-/// 2. **快照闸**——快照内容 sha 必须等于 before_sha（快照文件损坏/被换即拒绝）。
-/// 仅支持 modify：create 的撤销=删文件，属危险动作待立项（界面隐藏按钮兜底）。
+/// 双闸防吞改（三支共用）：
+/// 1. **漂移闸**——modify/create 撤销要求当前文件内容指纹与凭证一致，文件被
+///    （人/其他流程）动过即拒绝（覆盖会吞掉后续修改）；delete 恢复要求路径上
+///    已无内容，已存在即拒绝；
+/// 2. **快照闸**——快照内容 sha 必须与凭证记录一致（快照文件损坏/被换即拒绝）。
+/// 三支：modify = 恢复 before 全文；delete = 从快照恢复（删除场景按字节快照，
+/// 可能是二进制）；create = 撤销新建（当前内容与 after_sha 一致才移入回收站）。
 pub(crate) fn file_rollback_core(
     conn: &rusqlite::Connection,
     data_dir: &std::path::Path,
@@ -714,23 +817,25 @@ pub(crate) fn file_rollback_core(
     let Some(c) = file_change_get(conn, change_id)? else {
         return Err(format!("变更记录 {change_id} 不存在（可能已被保留期清理）"));
     };
-    if c.kind != "modify" {
-        return Err(format!(
-            "暂不支持 {} 类型的回滚（仅 modify；新建文件的撤销=删文件，属危险动作待立项）",
-            c.kind
-        ));
+    match c.kind.as_str() {
+        "modify" => rollback_modify(data_dir, &c),
+        "delete" => rollback_delete(data_dir, &c),
+        "create" => rollback_create(&c),
+        other => Err(format!(
+            "暂不支持 {other} 类型的回滚（支持 modify / delete / create）"
+        )),
     }
+}
+
+/// modify 回滚（既有口径）：目标存在 + 非 symlink + ≤64MB + 漂移闸 + 快照闸
+/// → 恢复 before 全文（modify 快照由文本写路径产生，按字符串读）
+fn rollback_modify(data_dir: &std::path::Path, c: &FileChangeRow) -> Result<String, String> {
     let Some(before_ref) = c.before_ref.clone() else {
         return Err("该变更无 before 快照（写盘时快照失败降级），无法回滚".into());
     };
     // 快照名由写入侧 uuid 发号（bot_fs）；带目录分隔符/父目录引用/绝对路径的
     // 一律视为被篡改的 DB 行，拒绝——防快照读取越界到任意文件
-    let snap_path = std::path::Path::new(&before_ref);
-    if before_ref.is_empty() || snap_path.file_name() != Some(snap_path.as_os_str()) {
-        return Err(format!(
-            "快照名非法（应为纯文件名），拒绝回滚：{before_ref}"
-        ));
-    }
+    check_snapshot_name(&before_ref)?;
     // 纵深防御：c.path 同样来自 DB 行，不直接信。回滚是覆盖写，目标若是
     // 符号链接会顺着链接打到任意文件，先拒绝；再给全文读取设硬上限防 OOM。
     // （残余窗口：检查与读写之间目标被换成符号链接，单机桌面场景可接受。）
@@ -747,11 +852,9 @@ pub(crate) fn file_rollback_core(
     if !meta.is_file() {
         return Err(format!("目标文件已不存在：{}", c.path));
     }
-    // 与 SPAN_TEXT_MAX 同思路：文本快照读写给个硬上限，防被指向超大文件拖爆内存
-    const FILE_ROLLBACK_MAX_BYTES: u64 = 64 * 1024 * 1024;
-    if meta.len() > FILE_ROLLBACK_MAX_BYTES {
+    if meta.len() > ROLLBACK_MAX_BYTES {
         return Err(format!(
-            "目标文件过大（{} 字节 > 上限 {FILE_ROLLBACK_MAX_BYTES}），拒绝回滚；请人工核对：{}",
+            "目标文件过大（{} 字节 > 上限 {ROLLBACK_MAX_BYTES}），拒绝回滚；请人工核对：{}",
             meta.len(),
             c.path
         ));
@@ -777,7 +880,106 @@ pub(crate) fn file_rollback_core(
         return Err("快照校验不符（before_sha），拒绝回滚".into());
     }
     crate::db::atomic_write(&path, &before)?;
-    Ok(c.path)
+    Ok(c.path.clone())
+}
+
+/// delete 回滚：路径上应无内容（已删状态）；目标已存在 → 拒（可能已被恢复或
+/// 重建，覆盖会吞掉它）；快照按字节校验（删除快照可能是二进制）后恢复。
+/// 无快照的删除（目录/超大/降级）提示走系统回收站。
+fn rollback_delete(data_dir: &std::path::Path, c: &FileChangeRow) -> Result<String, String> {
+    let Some(before_ref) = c.before_ref.clone() else {
+        return Err(
+            "该删除没有内容快照（目录/超大文件/快照降级），无法应用内恢复；\
+             请从系统回收站手动找回"
+                .into(),
+        );
+    };
+    check_snapshot_name(&before_ref)?;
+    let path = std::path::PathBuf::from(&c.path);
+    if let Ok(meta) = std::fs::symlink_metadata(&path) {
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "目标是符号链接，拒绝恢复（防止写到链接指向的路径）：{}",
+                c.path
+            ));
+        }
+        return Err(format!(
+            "目标路径已有内容，拒绝覆盖恢复（可能已被恢复或重建，请人工核对）：{}",
+            c.path
+        ));
+    }
+    let snapshot = data_dir.join("checkpoints").join(&before_ref);
+    let bytes = std::fs::read(&snapshot).map_err(|e| format!("快照不可读（{before_ref}）：{e}"))?;
+    if c.before_sha
+        .as_deref()
+        .is_none_or(|b| b != crate::bot::sha256_hex_bytes(&bytes))
+    {
+        return Err("快照校验不符（before_sha），拒绝恢复".into());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("重建父目录失败：{e}（请先手动创建目录）"))?;
+    }
+    crate::db::atomic_write_bytes(&path, &bytes)?;
+    Ok(c.path.clone())
+}
+
+/// create 回滚（撤销新建）：目标存在 + 非 symlink + 普通文件 + ≤64MB + 漂移闸
+/// （当前内容与 after_sha 一致）→ 移入系统回收站；回收站失败 = 撤销失败，
+/// 文件原样保留不吞错。目标已不存在 = 期望状态已达成，按成功返回。
+fn rollback_create(c: &FileChangeRow) -> Result<String, String> {
+    let path = std::path::PathBuf::from(&c.path);
+    let meta = match std::fs::symlink_metadata(&path) {
+        Ok(m) => m,
+        Err(_) => return Ok(c.path.clone()), // 已不存在 = 无需撤销
+    };
+    if meta.file_type().is_symlink() {
+        return Err(format!(
+            "目标是符号链接，拒绝撤销（防止误删链接指向的内容）：{}",
+            c.path
+        ));
+    }
+    if !meta.is_file() {
+        return Err(format!(
+            "目标不是普通文件（目录等无内容指纹），不支持自动撤销，请人工处理：{}",
+            c.path
+        ));
+    }
+    if meta.len() > ROLLBACK_MAX_BYTES {
+        return Err(format!(
+            "目标文件过大（{} 字节 > 上限 {ROLLBACK_MAX_BYTES}），拒绝撤销；请人工核对：{}",
+            meta.len(),
+            c.path
+        ));
+    }
+    let current = std::fs::read(&path).map_err(|e| format!("当前文件不可读（{}）：{e}", c.path))?;
+    if c.after_sha
+        .as_deref()
+        .is_none_or(|a| a != crate::bot::sha256_hex_bytes(&current))
+    {
+        return Err(format!(
+            "文件自创建后已被改动（指纹不符），拒绝撤销以免吞掉后续修改；请人工核对：{}",
+            c.path
+        ));
+    }
+    crate::bot_manage_file::trash_context()
+        .delete(&path)
+        .map_err(|e| format!("移入回收站失败，文件保留在原处：{e}（{}）", c.path))?;
+    Ok(c.path.clone())
+}
+
+/// 回滚侧快照名/体积守卫常量：快照读取硬上限防被指向超大文件拖爆内存
+const ROLLBACK_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+/// 快照名守卫：写入侧 uuid 发号，纯文件名之外一律视为被篡改的 DB 行
+fn check_snapshot_name(before_ref: &str) -> Result<(), String> {
+    let snap_path = std::path::Path::new(before_ref);
+    if before_ref.is_empty() || snap_path.file_name() != Some(snap_path.as_os_str()) {
+        return Err(format!(
+            "快照名非法（应为纯文件名），拒绝回滚：{before_ref}"
+        ));
+    }
+    Ok(())
 }
 
 #[tauri::command]

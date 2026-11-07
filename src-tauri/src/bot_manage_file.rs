@@ -24,6 +24,44 @@ use crate::bot::registry::ToolResult;
 const MAX_TREE_ENTRIES: usize = 5_000;
 /// 递归复制的总字节上限（单棵树）
 const MAX_TREE_BYTES: u64 = 1024 * 1024 * 1024;
+/// move/delete 源内容快照的体积上限（与回滚侧 FILE_ROLLBACK_MAX_BYTES 同口径：
+/// 存得下才谈得上恢复）
+const DELETE_SNAPSHOT_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+/// move/delete 的源内容快照：单文件、非软链、≤64MB 才存全文（目录/超大/软链/
+/// 读失败 → None——凭证照发、可观测但不可回滚，诚实降级）；快照落盘失败同样
+/// None（checkpoint.write_fail 审计）。返回 (快照名, 内容 sha)。
+fn snapshot_regular_file(app: &AppHandle, path: &Path) -> Option<(String, String)> {
+    let md = std::fs::symlink_metadata(path).ok()?;
+    if md.is_dir() || md.file_type().is_symlink() || md.len() > DELETE_SNAPSHOT_MAX_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let sha = crate::bot_fs::sha256_hex_bytes(&bytes);
+    let r = crate::bot_fs::write_before_snapshot_bytes(app, &bytes)?;
+    Some((r, sha))
+}
+
+/// kind=delete 的变更凭证：before 快照给「回滚=恢复」，after_sha=None 表示
+/// 路径上已无内容（与 create 凭证的 before 侧对称）
+fn delete_receipt(path: &str, snap: Option<(String, String)>) -> crate::bot_fs::FileChangeReceipt {
+    let (before_ref, before_sha) = match snap {
+        Some((r, sha)) => (Some(r), Some(sha)),
+        None => (None, None),
+    };
+    crate::bot_fs::FileChangeReceipt {
+        path: path.to_string(),
+        kind: "delete",
+        added: 0,
+        deleted: 0,
+        diff: None,
+        truncated: false,
+        before_ref,
+        before_sha,
+        after_sha: None,
+        replacements: 0,
+    }
+}
 
 /// macOS 选 NSFileManager.trashItemAtURL，不走 Finder AppleEvent：
 /// Finder 忙/无响应时 osascript 会阻塞到分钟级（实测首删静默挂起约 90 秒、
@@ -31,7 +69,8 @@ const MAX_TREE_BYTES: u64 = 1024 * 1024 * 1024;
 /// 也免去 Finder 自动化权限（TCC）弹窗。代价：废纸篓右键没有「放回原处」
 /// （macOS 上游 bug），文件仍在废纸篓可拖出恢复。Electron 的
 /// shell.trashItem 同走原生 NSWorkspace/NSFileManager 家族，不碰 AppleEvent。
-fn trash_context() -> trash::TrashContext {
+/// 回滚侧 create 撤销（db/trace.rs）复用同一上下文——删除语义全仓一套。
+pub(crate) fn trash_context() -> trash::TrashContext {
     #[cfg(target_os = "macos")]
     {
         use trash::macos::{DeleteMethod, TrashContextExtMacos};
@@ -130,22 +169,30 @@ async fn copy_or_move(
     let (src2, dst2) = (src.clone(), dst.clone());
     let app2 = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
+        // move 源内容快照：在移动前读+落 checkpoints（移动后源已不在原处）。
+        // copy 不动源，无快照可言。快照失败降级 None（delete_receipt 同口径）。
+        let src_snap = if is_move {
+            snapshot_regular_file(&app2, &src2)
+        } else {
+            None
+        };
         // 收口副本的「来自互联网」标记：复制会连带复制标记流，副本落在用户
         // 会双击打开的位置，不收口就会把「受保护视图 → 写文档缓存 → 杀软连坐」
         // 这条链原样搬过去。剥不掉只记审计，不中断复制。
         let mut audit = |m: &str| crate::bot::audit_log(&app2, m);
-        if is_move {
-            move_impl(&src2, &dst2, &mut audit)
+        let summary = if is_move {
+            move_impl(&src2, &dst2, &mut audit)?
         } else {
             copy_tree(&src2, &dst2, &mut audit)
-                .map(|(entries, bytes)| format!("已复制 {entries} 项 / {bytes} 字节"))
-        }
+                .map(|(entries, bytes)| format!("已复制 {entries} 项 / {bytes} 字节"))?
+        };
+        Ok((summary, src_snap))
     })
     .await
     .unwrap_or_else(|e| Err(format!("文件操作线程失败：{e}")));
 
     match outcome {
-        Ok(summary) => {
+        Ok((summary, src_snap)) => {
             crate::bot::audit_log(
                 app,
                 &format!(
@@ -155,11 +202,16 @@ async fn copy_or_move(
                 ),
             );
             let verb = if is_move { "移动" } else { "复制" };
-            ToolResult::ok(
+            // move 发两条凭证：源 delete（含 before 快照，回滚=恢复源文件）+
+            // 目标 create（落点凭据）；copy 只有目标 create
+            let mut result = ToolResult::ok(
                 format!("已{verb}：{src_s} → {dst_s}（{summary}）。目标路径：{dst_s}"),
                 Vec::new(),
-            )
-            .with_file_change(crate::bot_fs::build_binary_file_receipt(&dst_s))
+            );
+            if let Some(snap) = src_snap {
+                result = result.with_file_change(delete_receipt(&src_s, Some(snap)));
+            }
+            result.with_file_change(crate::bot_fs::build_binary_file_receipt(&dst_s))
         }
         Err(e) => ToolResult::error(format!("{action} 失败：{e}"), Vec::new()),
     }
@@ -282,13 +334,20 @@ async fn delete_to_trash(
         return ToolResult::denied("用户拒绝了删除，文件未删除");
     }
     let target2 = target.clone();
+    let app2 = app.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        trash_context().delete(&target2).map_err(|e| e.to_string())
+        // 删前快照（单文件 ≤64MB）：回滚=从 checkpoints 恢复全文；失败降级
+        // None 不阻断删除本身（凭证照发、可观测不可回滚）
+        let snap = snapshot_regular_file(&app2, &target2);
+        trash_context()
+            .delete(&target2)
+            .map_err(|e| e.to_string())?;
+        Ok(snap)
     })
     .await
     .unwrap_or_else(|e| Err(format!("删除线程失败：{e}")));
     match res {
-        Ok(()) => {
+        Ok(snap) => {
             crate::bot::audit_log(
                 app,
                 &format!(
@@ -307,6 +366,7 @@ async fn delete_to_trash(
                 format!("已删除：{shown}（已移入{where_}，可恢复）"),
                 Vec::new(),
             )
+            .with_file_change(delete_receipt(&shown, snap))
         }
         Err(e) => ToolResult::error(format!("删除失败：{e}"), Vec::new()),
     }

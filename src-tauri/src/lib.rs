@@ -844,6 +844,7 @@ pub fn run() {
             bot_chat::bot_history_drop,
             bot_chat::bot_history_drop_after,
             bot_chat::bot_history_replace_summary,
+            bot_chat::bot_turn_rollback,
             bot_chat::bot_execute_task,
             bot_orchestrator::cancel_subagent,
             bot_orchestrator::list_subagents,

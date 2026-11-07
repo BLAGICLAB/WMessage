@@ -17,6 +17,7 @@ import {
   Pin,
   Trash2,
   TriangleAlert,
+  Undo2,
   Wrench,
 } from "lucide-react";
 import { basename, formatMsShort } from "../../format";
@@ -47,6 +48,8 @@ type BubbleCallbacks = {
   onCopy: (idx: number, content: string) => void;
   /** 移除一条回复（不再作为上下文发给模型） */
   onRemove: (idx: number) => void;
+  /** 「撤回到此」：回退到该回复所属回合（文件改动 + 对话），弹层三态由父级处理 */
+  onTurnRollback?: (idx: number) => void;
   /** 点任务引用按钮：去主窗口打开该任务 */
   onOpenTask: (ref: TaskRef) => void;
   /** 「查看执行对话」跳转：切到该执行会话 */
@@ -96,6 +99,7 @@ function MsgBubbleBase({
   onShowFileChanges,
   onCopy,
   onRemove,
+  onTurnRollback,
   onOpenTask,
   onOpenExecSession,
   onOpenTrace,
@@ -301,6 +305,18 @@ function MsgBubbleBase({
                 移除
               </button>
             )}
+            {hasContent && onTurnRollback && (
+              <button
+                className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)]"
+                title="撤回到这条回复所在的回合（文件改动与对话一起回退，手动改过的文件自动跳过）"
+                onClick={() => onTurnRollback(idx)}
+                disabled={busy}
+              >
+                <Undo2 size={11} aria-hidden />
+                撤回到此
+              </button>
+            )}
+
             {m.traceId != null && onOpenTrace && (
               <button
                 className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)]"
@@ -626,6 +642,7 @@ function renderMessageList(
     onPickStarter,
     onCopy,
     onRemove,
+    onTurnRollback,
     onOpenTask,
     onOpenExecSession,
     onOpenTrace,
@@ -673,6 +690,7 @@ function renderMessageList(
                 onShowFileChanges={onShowFileChanges}
                 onCopy={onCopy}
                 onRemove={onRemove}
+                onTurnRollback={onTurnRollback}
                 onOpenTask={onOpenTask}
                 onOpenExecSession={onOpenExecSession}
                 onOpenTrace={onOpenTrace}

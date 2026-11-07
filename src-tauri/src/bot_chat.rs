@@ -506,6 +506,91 @@ pub async fn bot_history_drop_after(
     Ok(n)
 }
 
+/// 回合级回滚视图（serde camelCase 直出前端）
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnRollbackView {
+    pub restored: usize,
+    pub skipped_drift: usize,
+    pub failed: Vec<String>,
+    pub dropped_messages: usize,
+}
+
+/// 回合级回滚（差距收编方案 D-1 三态恢复）：把会话回退到 anchorMsgId 处——
+/// files = 撤该回合之后的文件改动（漂移的跳过并报告，不中断整批）；chat =
+/// 撤回复（删锚行之后的对话行，锚行保留，等同重试的前半）；chat +
+/// includeAnchorMsg = 连用户消息一起撤（回到提交前）。文件侧先于消息侧
+/// （锚行 created_at 是文件范围的键）。忙闸：会话有在途回合时拒绝。
+#[tauri::command]
+pub async fn bot_turn_rollback(
+    app: AppHandle,
+    session_id: String,
+    anchor_msg_id: String,
+    files: bool,
+    chat: bool,
+    include_anchor_msg: bool,
+) -> CommandResult<TurnRollbackView> {
+    if !files && !chat {
+        return Err(CommandError::InvalidArgument {
+            field: "files/chat".into(),
+            value: "false/false".into(),
+            reason: "回滚范围为空：至少选择撤文件改动或撤对话之一".into(),
+        });
+    }
+    if crate::bot_chat::flow::chat_guard_is_held(&app, &session_id) {
+        return Err(CommandError::InvalidArgument {
+            field: "session_id".into(),
+            value: session_id.chars().take(16).collect(),
+            reason: "会话有在途回合，等它结束后再撤".into(),
+        });
+    }
+    let data_dir = crate::db::paths::data_dir(&app);
+    let (report, dropped_ids) = {
+        let sid = session_id.clone();
+        let mid = anchor_msg_id.clone();
+        crate::db::lock::with_write_conn(&app, move |conn| {
+            crate::db::bot_history::turn_rollback_core(
+                conn,
+                &data_dir,
+                &sid,
+                &mid,
+                files,
+                chat,
+                include_anchor_msg,
+            )
+        })
+        .await
+        .map_err(CommandError::DbError)?
+    };
+    let dropped_messages = dropped_ids.len();
+    if !dropped_ids.is_empty() {
+        crate::bot::stream_log::emit_recorded(
+            &app,
+            Some(&session_id),
+            "bot-msg-dropped",
+            serde_json::json!({ "msgIds": dropped_ids }),
+        );
+    }
+    crate::audit_event!(
+        &app,
+        crate::audit::AuditLevel::Warn,
+        "turn.rollback",
+        "session" => crate::bot::truncate_for_log(&session_id, 64),
+        "files" => files,
+        "chat" => chat,
+        "include_anchor" => include_anchor_msg,
+        "restored" => report.restored,
+        "skipped_drift" => report.skipped_drift,
+        "failed" => report.failed.len(),
+    );
+    Ok(TurnRollbackView {
+        restored: report.restored,
+        skipped_drift: report.skipped_drift,
+        failed: report.failed,
+        dropped_messages,
+    })
+}
+
 /// 汇报轮的轮次说明：这一轮没有用户输入，模型唯一的新信息是末尾那段子任务回报。
 const REPORT_TURN_PROMPT: &str = "（本轮没有新的用户消息：这是子任务收尾后系统主动发起的汇报轮。）\
 请只依据末尾的「子任务回报」向用户说明情况：做了什么、结果如何、有没有需要用户决定的下一步。\

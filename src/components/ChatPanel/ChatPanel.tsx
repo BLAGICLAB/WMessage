@@ -740,6 +740,81 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
     setRefs,
     stopCurrent,
   });
+
+  // 回合级回滚（D-1 三态恢复）：锚点 = 该回复向上最近的用户行；弹层三态由
+  // 用户选，文件侧逐条漂移闸核对、消息侧走真源 drop（bot-msg-dropped 投影）
+  const [turnRollbackAnchor, setTurnRollbackAnchor] = useState<string | null>(
+    null,
+  );
+  const [turnRollbackBusy, setTurnRollbackBusy] = useState(false);
+  // addHint 是普通函数（每 render 新引用），进 useCallback 依赖会让 handler
+  // 跟着抖 → MsgBubble 的 memo 浅比较全体失效（MessageList 头注释的硬约束）。
+  // 用 ref 间接：handler 引用只随真实依赖变。
+  const addHintRef = useRef(addHint);
+  addHintRef.current = addHint;
+  const openTurnRollback = useCallback(
+    (idx: number) => {
+      const sid = sessionIdRef.current;
+      if (!sid || streamState.isInflight(sid)) return;
+      const list = messagesRef.current;
+      let anchor: string | undefined;
+      for (let i = Math.min(idx, list.length - 1); i >= 0; i--) {
+        if (list[i].role === "user" && list[i].id) {
+          anchor = list[i].id;
+          break;
+        }
+      }
+      if (!anchor) {
+        addHintRef.current("找不到这条回复所属的用户消息（旧数据），先刷新对话再撤");
+        return;
+      }
+      setTurnRollbackAnchor(anchor);
+    },
+    [messagesRef, sessionIdRef],
+  );
+  const runTurnRollback = useCallback(
+    async (files: boolean, chat: boolean, includeAnchorMsg: boolean) => {
+      const sid = sessionIdRef.current;
+      if (!sid || !turnRollbackAnchor || turnRollbackBusy) return;
+      setTurnRollbackBusy(true);
+      try {
+        const r = await invoke<{
+          restored: number;
+          skippedDrift: number;
+          failed: string[];
+          droppedMessages: number;
+        }>("bot_turn_rollback", {
+          sessionId: sid,
+          anchorMsgId: turnRollbackAnchor,
+          files,
+          chat,
+          includeAnchorMsg,
+        });
+        const parts = [
+          r.restored > 0 ? `恢复 ${r.restored} 个文件` : null,
+          r.skippedDrift > 0
+            ? `跳过 ${r.skippedDrift} 个手动改过的文件`
+            : null,
+          r.droppedMessages > 0 ? `删除 ${r.droppedMessages} 条消息` : null,
+        ].filter(Boolean);
+        addHintRef.current(
+          `已撤回${parts.length ? `：${parts.join("、")}` : "（无变更）"}${
+            r.failed.length
+              ? `；失败 ${r.failed.length} 项，详见执行痕迹`
+              : ""
+          }`,
+        );
+        setTurnRollbackAnchor(null);
+      } catch (e) {
+        addHintRef.current(
+          `撤回失败：${handleCommandError(e, "bot_turn_rollback")}`,
+        );
+      } finally {
+        setTurnRollbackBusy(false);
+      }
+    },
+    [sessionIdRef, turnRollbackAnchor, turnRollbackBusy],
+  );
   return (
     <div
       ref={rootRef}
@@ -853,6 +928,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
         onPickStarter={setInput}
         onCopy={copyMessage}
         onRemove={removeMessage}
+        onTurnRollback={openTurnRollback}
         onOpenTask={openTaskInMain}
         onOpenExecSession={switchSession}
         onOpenTrace={openTraceFor}
@@ -953,6 +1029,61 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
           sessionId={openTrace.sessionId ?? undefined}
           onClose={() => setOpenTrace(null)}
         />
+      )}
+      {/* 回合级回滚弹层：三态各是一颗按钮，全部含文件侧（逐条漂移闸核对） */}
+      {turnRollbackAnchor && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+          onClick={() => {
+            if (!turnRollbackBusy) setTurnRollbackAnchor(null);
+          }}
+        >
+          <div
+            className="nm-card w-[400px] p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-sm font-medium text-[var(--t1)]">
+              撤回到这条消息发出时？
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--t5)]">
+              文件回滚逐条核对：之后被你手动改过的文件自动跳过，不会吞掉你的修改。
+            </p>
+            <div className="mt-4 space-y-2">
+              <button
+                type="button"
+                disabled={turnRollbackBusy}
+                className="nm-btn w-full rounded-[var(--r-md)] px-3 py-2 text-left text-sm text-[var(--t1)] disabled:opacity-50"
+                onClick={() => runTurnRollback(true, true, false)}
+              >
+                撤回复 + 撤文件改动（保留我的消息，可重新生成）
+              </button>
+              <button
+                type="button"
+                disabled={turnRollbackBusy}
+                className="nm-btn w-full rounded-[var(--r-md)] px-3 py-2 text-left text-sm text-[var(--t1)] disabled:opacity-50"
+                onClick={() => runTurnRollback(true, true, true)}
+              >
+                连我的消息一起撤（含文件改动，回到发出前）
+              </button>
+              <button
+                type="button"
+                disabled={turnRollbackBusy}
+                className="nm-btn w-full rounded-[var(--r-md)] px-3 py-2 text-left text-sm text-[var(--t1)] disabled:opacity-50"
+                onClick={() => runTurnRollback(true, false, false)}
+              >
+                只撤文件改动（对话不动）
+              </button>
+              <button
+                type="button"
+                disabled={turnRollbackBusy}
+                className="nm-btn w-full rounded-[var(--r-md)] px-3 py-2 text-sm text-[var(--t3)] disabled:opacity-50"
+                onClick={() => setTurnRollbackAnchor(null)}
+              >
+                {turnRollbackBusy ? "撤回中…" : "取消"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

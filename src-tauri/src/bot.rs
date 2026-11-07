@@ -49,7 +49,7 @@ pub(crate) use crate::bot_slash::ConfirmReply;
 // 是幻觉守卫「这个路径是工具产物吗」那道判据的依据，测试得能造一个。
 pub use crate::bot_fs::{resolve_with_perm, FileChangeReceipt};
 // 文件读上限、内容哈希与 diff 生成：trace 侧与读盘类工具共用。
-pub(crate) use crate::bot_fs::{build_unified_diff, sha256_hex, READ_MAX_BYTES};
+pub(crate) use crate::bot_fs::{build_unified_diff, sha256_hex, sha256_hex_bytes, READ_MAX_BYTES};
 // 技能提示段与运行态：逐步执行要拼技能上下文，退出清理要判技能是不是还在跑。
 pub use crate::bot_skills::{build_skill_block, SkillRun, SkillState};
 // 技能运行态的测试夹具：退出清理用例要造一个「在跑的技能」再验它被终止。

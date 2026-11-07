@@ -60,6 +60,11 @@ pub fn rotate_log_if_large(path: &std::path::Path, size_limit: u64) {
 
 /// 原子写文件——先写同目录 tmp 再 rename 覆盖目标
 pub(crate) fn atomic_write(path: &std::path::Path, contents: &str) -> Result<(), String> {
+    atomic_write_bytes(path, contents.as_bytes())
+}
+
+/// 字节版原子写（二进制产物/删除快照用——文本版委托本函数，语义完全一致）
+pub(crate) fn atomic_write_bytes(path: &std::path::Path, contents: &[u8]) -> Result<(), String> {
     let file_name = path
         .file_name()
         .ok_or_else(|| format!("无效的目标路径：{}", path.display()))?;

@@ -500,7 +500,9 @@ pub use edit::{tool_edit_file, tool_write_file};
 pub use read::{tool_grep_files, tool_list_files, tool_read_text_file};
 pub(crate) use receipt::build_binary_file_receipt;
 pub use receipt::FileChangeReceipt;
-pub(crate) use receipt::{build_unified_diff, sha256_hex};
+pub(crate) use receipt::{
+    build_unified_diff, sha256_hex, sha256_hex_bytes, write_before_snapshot_bytes,
+};
 
 // 跨模块共用项：门面转出后由 bot_fs/ 各子模块经 `use super::*` 取用
 use read::read_capped_file_sync;
