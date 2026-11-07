@@ -20,6 +20,7 @@ fn echo_cfg(id: &str) -> McpServerConfig {
         headers: Default::default(),
         timeout_secs: Some(30),
         allow_elicitation: None,
+        oauth_client_id: None,
         enabled: true,
     }
 }

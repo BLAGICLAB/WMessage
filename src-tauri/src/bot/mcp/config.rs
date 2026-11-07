@@ -115,6 +115,11 @@ pub struct McpServerConfig {
     /// 零变化）。业界共识：对不可信 server 默认关。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub allow_elicitation: Option<bool>,
+    /// OAuth 手动客户端 id 档（D-6）：授权服务器不支持动态注册（DCR）时手填；
+    /// 未填则登录时走 DCR。client_secret 不做（PKCE public client 覆盖主流，
+    /// 方案 §十一偏离 12）。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub oauth_client_id: Option<String>,
     /// 启用开关：false = 该服务器工具立即从 agent 工具清单消失（不重连不调用）
     pub enabled: bool,
 }
@@ -588,6 +593,7 @@ mod tests {
             headers: BTreeMap::new(),
             timeout_secs: None,
             allow_elicitation: None,
+            oauth_client_id: None,
             enabled: true,
         }
     }

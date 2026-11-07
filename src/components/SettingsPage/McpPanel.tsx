@@ -467,8 +467,23 @@ export function McpPanel({ active = true }: { active?: boolean }) {
     }
   };
 
-  const toggle = async (s: McpServerStatus, enabled: boolean) => {
-    if (busy) return;
+  // OAuth 登录（D-6）：打开浏览器走授权码 + PKCE，命令在回调完成或超时后返回
+  const [oauthBusyId, setOauthBusyId] = useState<string | null>(null);
+  const oauthLogin = async (s: McpServerStatus) => {
+    if (busy || oauthBusyId !== null) return;
+    setOauthBusyId(s.id);
+    setError("");
+    try {
+      const msg = await invoke<string>("mcp_oauth_login", { serverId: s.id });
+      flashNotice(msg || "授权成功");
+    } catch (e) {
+      handleCommandError(e, "mcp_oauth_login");
+    } finally {
+      setOauthBusyId(null);
+    }
+  };
+
+  const toggle = async (s: McpServerStatus, enabled: boolean) => {    if (busy) return;
     setBusy(true);
     setError("");
     try {
@@ -610,6 +625,18 @@ export function McpPanel({ active = true }: { active?: boolean }) {
                 >
                   <Pencil size={13} aria-hidden />
                 </IconButton>
+                {/* OAuth 登录（D-6）：仅 HTTP 服务器——授权码 + PKCE 走系统浏览器，
+                    令牌存系统钥匙串。登录会打开浏览器并等待回调（至多 5 分钟）。 */}
+                {s.transport === "http" && (
+                  <button
+                    className="shrink-0 text-xs text-[var(--t5)] hover:text-[var(--t2)] disabled:opacity-50"
+                    disabled={busy || oauthBusyId !== null}
+                    title="OAuth 授权登录：打开浏览器完成授权，令牌存系统钥匙串（未配置 OAuth 的服务器不需要点这个）"
+                    onClick={() => void oauthLogin(s)}
+                  >
+                    {oauthBusyId === s.id ? "等待授权…" : "OAuth 登录"}
+                  </button>
+                )}
                 {/* 内置条目不给删除：启动时缺失会补写回来，删了等于没删 */}
                 {!s.builtin && (
                   <IconButton

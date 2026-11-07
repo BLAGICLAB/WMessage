@@ -20,6 +20,7 @@ pub mod config;
 pub mod elicit;
 pub mod manager;
 pub mod mount;
+pub mod oauth;
 pub mod secrets;
 pub mod stdio_transport;
 pub mod tool_cache;

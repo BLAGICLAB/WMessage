@@ -369,3 +369,23 @@
 - **证据**：cargo 输出 + bot.log 审计行
 - **失败处置**：先查 selfcheckModelId 是否可解析（decide_selfcheck 同款链路，厂商未验证回落 None）；再查连拦计数泄漏（allow 分支必须清零）。
 - **缺口补验**：实机端到端（开关开→真弹窗前分类器判定→allow 免弹窗/deny 拒）未验；无人值守路径未验；分类器误拦的实际体验未评估。
+
+### ACC-P-21 · MCP OAuth 授权
+
+- **SPEC**：6-126
+- **层级**：L1（自动化；实机全流程随下一轮实机批次抽验）
+- **历史卡**：—
+- **前置**：需要一个支持 OAuth 2.1（授权码 + PKCE）的 HTTP MCP 服务器；未配置 OAuth 的服务器行为零变化
+- **步骤**：
+  1. 后端面：跑 `cargo test --lib -- bot::mcp::oauth`（五例：PKCE 对合法性（S256 base64url + CSPRNG 两次不同）/ 回调解析三字段 + urldecode / TokenBlob roundtrip 与过期窗判定 / 授权服务器根推导（9728 → 根回退）/ token 响应解析含缺字段拒）。
+  2. 组件面：`grep -n "mcp_oauth_login" src-tauri/src/lib.rs src/components/SettingsPage/McpPanel.tsx` 命中（命令注册 + 登录按钮在案）。
+  3. 对拍：`grep -n "mcp-oauth:" src-tauri/src/bot/mcp/oauth.rs src-tauri/src/bot/mcp/secrets.rs` 命中（独立 keyring 条目在案）。
+- **判据**：
+  1. 【可核对】非 HTTP 传输调 mcp_oauth_login → 明确报错；state 不匹配的回调 → 拒（伪造防线）。
+  2. 【可核对】token/secret 不进审计/日志（mcp.oauth.login 只记 server id）；state/PKCE verifier 只在内存。
+  3. 【可核对】连接：keyring 有令牌 → 请求带 `Authorization: Bearer`（覆盖静态头同名项）；无令牌 → 静态头行为逐字节不变。
+  4. 【可核对】刷新双层：过期前 60s 主动刷新（retire 重建连接）；401/403 文本兜底 refresh 一次重连重试；refresh 失败 → 清 token 人话报错。
+  5. 【可核对】回调服务器只绑 127.0.0.1 随机端口、只收一个请求、5 分钟超时。
+- **证据**：cargo 输出 + 实机录屏（浏览器授权往返）
+- **失败处置**：先查授权服务器是否发布 /.well-known 元数据（无则报人话错误）；DCR 失败 → 配置 oauthClientId 手动档；refresh 401 → token 已清，重新登录。
+- **缺口补验**：实机全流程（浏览器授权 → 回调 → token → Bearer 调用 → 401 刷新重连）未验；client_secret 型 IdP 不支持（偏离 12）；Windows 回调端口防火墙提示未验。

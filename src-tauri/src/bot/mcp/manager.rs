@@ -229,10 +229,9 @@ fn truncate_tools(cfg: &McpServerConfig, tools: Vec<Tool>) -> Vec<Tool> {
 /// 不再二次解析。
 ///
 /// 头（鉴权头等）随每个请求发送：挂 reqwest 默认头。
-async fn http_client_for_mcp(
-    url: &str,
-    headers: &std::collections::BTreeMap<String, String>,
-) -> Result<reqwest::Client, String> {
+/// OAuth（D-6）：keyring 里有该服务器令牌 → `Authorization: Bearer` 覆盖
+/// 静态头（静态头里同名项被令牌取代）。
+async fn http_client_for_mcp(cfg: &McpServerConfig, url: &str) -> Result<reqwest::Client, String> {
     // 字面量级闸（与保存口同一判据）
     let parsed =
         super::config::http_url_is_public(url).map_err(|reason| format!("URL 安全闸：{reason}"))?;
@@ -241,13 +240,23 @@ async fn http_client_for_mcp(
         .await
         .map_err(|e| format!("URL 安全闸：{}", e.gate_message()))?;
     let host = parsed.host_str().unwrap_or_default().to_string();
-    http_client_pinned(&host, &addrs, headers)
+    let mut headers = cfg.headers.clone();
+    if let Some(app) = crate::bot::mcp::elicit::app_handle() {
+        if let Ok(Some(t)) = crate::bot::mcp::oauth::load_token(app, &cfg.id) {
+            headers.insert(
+                "Authorization".to_string(),
+                format!("Bearer {}", t.access_token),
+            );
+        }
+    }
+    build_pinned_client(&host, &addrs, &headers)
 }
 
 /// 钉住解析结果的 HTTP 客户端（DNS TOCTOU 防护）：host 固定解析到已校验过的
 /// 地址，reqwest 不再二次 DNS；TLS SNI / 证书校验仍按原域名。
 /// addrs 的端口必须是真实端口（`check_public_url` 已按 URL 端口重写）。
-fn http_client_pinned(
+/// OAuth 的 token 请求客户端（oauth.rs）共用本构建（同一禁重定向策略）。
+pub(crate) fn build_pinned_client(
     host: &str,
     addrs: &[std::net::SocketAddr],
     headers: &std::collections::BTreeMap<String, String>,
@@ -759,7 +768,7 @@ impl McpManager {
             //（保存口 validate_server 已把关，此处防手改配置文件绕过）
             McpTransport::Http => {
                 let url = cfg.url.as_deref().unwrap_or("").trim().to_string();
-                let client = http_client_for_mcp(&url, &cfg.headers).await?;
+                let client = http_client_for_mcp(cfg, &url).await?;
                 use rmcp::transport::streamable_http_client::{
                     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
                 };
@@ -1132,10 +1141,42 @@ impl McpManager {
     ) -> Result<CallToolResult, String> {
         let call_lock = self.call_lock(&cfg.id);
         let _serial = call_lock.lock().await;
+        // OAuth（D-6）：token 临近过期 → 主动刷新（刷新即 retire，下次调用
+        // 用新令牌重建连接；default_headers 建时定死，刷新不重连不生效）。
+        // app 取自 elicit 桥接的进程级注册（未注册 = 早期/测试路径，跳过 OAuth）。
+        let oauth_app = crate::bot::mcp::elicit::app_handle();
+        if let Some(app) = oauth_app {
+            match crate::bot::mcp::oauth::ensure_fresh_token(app, cfg).await {
+                Ok(true) => {
+                    let fp = fingerprint(cfg);
+                    self.retire(&cfg.id, fp).await;
+                }
+                Ok(false) => {}
+                Err(e) => return Err(e),
+            }
+        }
         let fp = fingerprint(cfg);
         self.ensure_connected(cfg).await?;
         let service = self.connected_service(&cfg.id, fp)?;
-        let result = self.invoke_tool(&service, cfg, tool, args).await;
+        let result = self.invoke_tool(&service, cfg, tool, &args).await;
+        // 401/403 文本兜底（D-6）：主动刷新漏网时 refresh 一次并重连重试；
+        // refresh 也失败 → 清 token 要求重登（fail-closed）
+        let result = match (&result, oauth_app) {
+            (Err(text), Some(app)) if text.contains("401") || text.contains("403") => {
+                if crate::bot::mcp::oauth::maybe_refresh_on_auth_error(app, cfg, text).await {
+                    let fp = fingerprint(cfg);
+                    self.retire(&cfg.id, fp).await;
+                    self.ensure_connected(cfg).await?;
+                    match self.connected_service(&cfg.id, fp) {
+                        Ok(service) => self.invoke_tool(&service, cfg, tool, &args).await,
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    result
+                }
+            }
+            _ => result,
+        };
         // 调用完即回收：子进程不跨调用存活（下一次调用重新拉起）
         self.retire(&cfg.id, fp).await;
         result
@@ -1147,7 +1188,7 @@ impl McpManager {
         service: &Arc<ClientService>,
         cfg: &McpServerConfig,
         tool: &str,
-        args: serde_json::Value,
+        args: &serde_json::Value,
     ) -> Result<CallToolResult, String> {
         let mut params = CallToolRequestParams::new(tool.to_string());
         params.arguments = args.as_object().cloned();

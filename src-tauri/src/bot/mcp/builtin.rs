@@ -249,6 +249,7 @@ pub fn build_playwright_server(pkg_dir: &Path) -> McpServerConfig {
         headers: BTreeMap::new(),
         timeout_secs: None,
         allow_elicitation: None,
+        oauth_client_id: None,
         enabled: false,
     }
 }

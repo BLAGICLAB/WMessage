@@ -296,6 +296,98 @@ fn delete_backend(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
     delete_backend_at(backend, &file, id)
 }
 
+// ── OAuth token 的 raw 存取（bot/mcp/oauth.rs 专用；独立条目 + 独立降级
+// 文件——blob 形状是不透明字符串，与 McpSecrets 结构不同，不共文件）────────
+
+fn oauth_fallback_file(app: &tauri::AppHandle) -> PathBuf {
+    paths::data_dir(app).join("bot-mcp-oauth.json")
+}
+
+fn raw_entry(user: &str) -> Result<::keyring::Entry, String> {
+    ::keyring::Entry::new(KEYRING_SERVICE, user).map_err(|e| format!("系统凭据存储不可用：{e}"))
+}
+
+/// 读 raw blob（Ok(None) = 无值；后端故障 → Err 不吞）
+pub(crate) fn raw_read(app: &tauri::AppHandle, user: &str) -> Result<Option<String>, String> {
+    match crate::bot::config::keyring::key_backend() {
+        KeyBackend::System => match raw_entry(user)?.get_password() {
+            Ok(s) => Ok(Some(s)),
+            Err(::keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(format!("读取凭据失败：{e}")),
+        },
+        KeyBackend::PlaintextFile => {
+            let file = oauth_fallback_file(app);
+            let _g = fallback_lock_guard();
+            let raw = match std::fs::read_to_string(&file) {
+                Ok(s) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(format!("读取降级凭据文件失败：{e}")),
+            };
+            let map: std::collections::HashMap<String, String> =
+                serde_json::from_str(&raw).map_err(|e| format!("降级凭据文件解析失败：{e}"))?;
+            Ok(map.get(user).cloned())
+        }
+    }
+}
+
+/// 写 raw blob（写后读回比对——与 secrets 写路径同一安全不变式）
+pub(crate) fn raw_write(app: &tauri::AppHandle, user: &str, blob: &str) -> Result<(), String> {
+    match crate::bot::config::keyring::key_backend() {
+        KeyBackend::System => {
+            let entry = raw_entry(user)?;
+            entry
+                .set_password(blob)
+                .map_err(|e| format!("写入凭据失败：{e}"))?;
+            let back = raw_entry(user)?.get_password().map_err(|e| e.to_string());
+            match back {
+                Ok(s) if s == blob => Ok(()),
+                Ok(_) => Err("写入凭据后读回不一致".to_string()),
+                Err(e) => Err(format!("写后读回失败：{e}")),
+            }
+        }
+        KeyBackend::PlaintextFile => {
+            let file = oauth_fallback_file(app);
+            let _g = fallback_lock_guard();
+            let mut map: std::collections::HashMap<String, String> = std::fs::read_to_string(&file)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            map.insert(user.to_string(), blob.to_string());
+            let body = serde_json::to_string(&map).map_err(|e| e.to_string())?;
+            crate::db::atomic_write(&file, &body).map_err(|e| format!("写入降级凭据文件失败：{e}"))
+        }
+    }
+}
+
+/// 删 raw blob（幂等：条目不存在 = Ok）
+pub(crate) fn raw_delete(app: &tauri::AppHandle, user: &str) -> Result<(), String> {
+    match crate::bot::config::keyring::key_backend() {
+        KeyBackend::System => match raw_entry(user) {
+            Ok(entry) => match entry.delete_credential() {
+                Ok(()) | Err(::keyring::Error::NoEntry) => Ok(()),
+                Err(e) => Err(format!("清除凭据失败：{e}")),
+            },
+            Err(e) => Err(e),
+        },
+        KeyBackend::PlaintextFile => {
+            let file = oauth_fallback_file(app);
+            let _g = fallback_lock_guard();
+            let mut map: std::collections::HashMap<String, String> =
+                match std::fs::read_to_string(&file) {
+                    Ok(s) => serde_json::from_str(&s)
+                        .map_err(|e| format!("降级凭据文件解析失败：{e}"))?,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                    Err(e) => return Err(format!("读取降级凭据文件失败：{e}")),
+                };
+            if map.remove(user).is_none() {
+                return Ok(());
+            }
+            let body = serde_json::to_string(&map).map_err(|e| e.to_string())?;
+            crate::db::atomic_write(&file, &body).map_err(|e| format!("写入降级凭据文件失败：{e}"))
+        }
+    }
+}
+
 /// 后端注入内核（幂等：条目不存在 = Ok）
 fn delete_backend_at(backend: KeyBackend, file: &std::path::Path, id: &str) -> Result<(), String> {
     match backend {

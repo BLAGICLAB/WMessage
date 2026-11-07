@@ -16,7 +16,11 @@ async fn private_literal_url_is_rejected_before_any_request() {
         "http://localhost:3000/mcp",
         "http://10.0.0.5/mcp",
     ] {
-        let err = http_client_for_mcp(u, &no_headers())
+        let cfg = McpServerConfig {
+            url: Some(u.to_string()),
+            ..Default::default()
+        };
+        let err = http_client_for_mcp(&cfg, u)
             .await
             .expect_err("内网 URL 必须被 URL 安全闸拒掉");
         assert!(err.contains("URL 安全闸"), "{err}");
@@ -27,8 +31,12 @@ async fn private_literal_url_is_rejected_before_any_request() {
 /// IP 字面量的解析由 getaddrinfo 本地完成（不查外网 DNS）。
 #[tokio::test]
 async fn public_literal_ip_passes_both_gates() {
+    let cfg = McpServerConfig {
+        url: Some("http://93.184.216.34/mcp".to_string()),
+        ..Default::default()
+    };
     assert!(
-        http_client_for_mcp("http://93.184.216.34/mcp", &no_headers())
+        http_client_for_mcp(&cfg, "http://93.184.216.34/mcp")
             .await
             .is_ok(),
         "公网 IP 字面量应通过两道闸"
@@ -62,7 +70,7 @@ async fn pinned_client_does_not_resolve_again() {
     });
     let url = url::Url::parse(&format!("http://mcp-pinned.invalid:{port}/")).unwrap();
     let pinned = [std::net::SocketAddr::from(([127, 0, 0, 1], 80))];
-    let client = http_client_pinned("mcp-pinned.invalid", &pinned, &no_headers())
+    let client = build_pinned_client("mcp-pinned.invalid", &pinned, &no_headers())
         .expect("钉住 client 构建失败");
     let resp = client
         .get(url)
@@ -98,8 +106,8 @@ fn http_branch_goes_through_the_two_gate_client() {
         .next()
         .expect("HTTP 分支应能截取");
     assert!(
-        body.contains("http_client_for_mcp(&url, &cfg.headers)"),
-        "HTTP 分支必须走两道闸的客户端构造"
+        body.contains("http_client_for_mcp(cfg, &url)"),
+        "HTTP 分支必须走两道闸的客户端构造（OAuth Bearer 挂载在其内）"
     );
     assert!(
         !body.contains("http_url_is_public"),
