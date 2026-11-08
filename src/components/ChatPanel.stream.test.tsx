@@ -324,8 +324,8 @@ describe("ChatPanel", () => {
     expect(await screen.findByText(/思考过程/)).toBeInTheDocument();
     expect(await screen.findByText(/调用工具 1\/1/)).toBeInTheDocument();
     expect(screen.queryByText("search")).not.toBeInTheDocument();
-    // 展开工具块才看到 mono pill 徽章行（名称 + ✓ 状态）；详细档下同一工具
-    // 在详情区还会再出现一次（徽章 + 入参行头），故用 findAll
+    // 展开工具块才看到 mono pill 徽章行（名称 + ✓ 状态）；同一工具在
+    // 详情区还会再出现一次（徽章 + 入参行头），故用 findAll
     await userEvent.setup().click(screen.getByText(/调用工具 1\/1/));
     expect((await screen.findAllByText("search")).length).toBeGreaterThan(0);
     // 点击思考 toggle，展开内容

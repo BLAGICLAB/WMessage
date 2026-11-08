@@ -516,7 +516,7 @@ src-tauri/src/
 │   │                             allowedDirs；白名单外 perm_mode 三分支/覆盖确认）
 │   ├── bot_fs/read.rs (750)      读取面：glob / 目录遍历 / 二进制判定 / inode 复核 +
 │   │                             只读工具 read_text_file/grep_files/list_files
-│   ├── bot_fs/receipt.rs (175)   文件变更凭证面：unified diff / sha256 / before 快照 / 回执
+│   ├── bot_fs/receipt.rs (176)   文件变更凭证面：unified diff / sha256 / before 快照 / 回执
 │   ├── bot_fs/tests.rs (845)     读写闸与编辑内核单测
 │   ├── bot_fs/file_change_tests.rs (180) 变更凭证单测
 │   ├── bot_fs/read_path_single_open_tests.rs (70) 读路径只开一次 fd 的源码守卫
@@ -527,7 +527,7 @@ src-tauri/src/
 │                        64MB、整包 256MB、条目 5000 条上限（超限报「疑似压缩炸弹」），放大比
 │                        200:1 封顶；已存在的文件不覆盖（跳过并列出）；解包只认源在读白名单、
 │                        落点在写白名单
-├── bot_manage_file.rs (504) 文件复制/移动/删除 manage_file：copy 复制（源保留）/
+├── bot_manage_file.rs (535) 文件复制/移动/删除 manage_file：copy 复制（源保留）/
 │                        move 移动（同卷 rename、跨卷复制后源入回收站）/ delete 删除
 │                        （进系统回收站，删前弹窗确认、60s 无响应默认拒）；源走读
 │                        白名单、目标走写白名单；目标已存在一律不覆盖；目录树里的
