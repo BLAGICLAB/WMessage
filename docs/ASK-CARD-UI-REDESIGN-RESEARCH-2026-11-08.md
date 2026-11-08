@@ -1,8 +1,8 @@
-# ask_user 选择卡 UI 重设计 —— 大厂 UI 调研与方案（待拍板）
+# ask_user 选择卡 UI 重设计 —— 大厂 UI 调研与方案（已落地）
 
 > 2026-11-08。用户诉求原文：「ask user 工具聊天窗口弹出的选择窗口 ui 要重新设计，调研一下大厂的 ui 设计」。
-> 本文只做 UI 层调研与方案对比，**待拍板后动手**；机制层调研见
-> `docs/ASK-USER-CHAT-MULTICHOICE-RESEARCH-2026-10-30.md`（方案 B 已落地，本文是其 UI 后续）。
+> 本文先做 UI 层调研与方案对比；**U1–U9 已于同日按推荐拍板并落地**，见 §十 落地结果。
+> 机制层调研见 `docs/ASK-USER-CHAT-MULTICHOICE-RESEARCH-2026-10-30.md`（方案 B 已落地，本文是其 UI 后续）。
 
 ## 一、结论先行
 
@@ -378,3 +378,51 @@ B 之上加 `options → {label, description?}[]`、`multiSelect`、（可选）
   [sunpeak inline 卡规则](https://sunpeak.ai/blogs/chatgpt-app-display-mode-reference)
 - VS Code elicitation：[den.dev 实装记](https://den.dev/blog/vscode-mcp-elicitations-stop-guessing/) ·
   [VS Code 1.102](https://code.visualstudio.com/updates/v1_102)
+
+## 十、落地结果（同日实施）
+
+U1–U9 按推荐执行，纯前端改造，后端与数据面零改动；落地提交即调研文档之后的下一笔。
+前端 1226 例全绿（`AskCard.test.tsx` 8→14 例、`NotificationsPage.test.tsx` +1 例）；
+tsc 干净、oxlint 0 错误（改动文件 0 警告）；行数 / 验收对拍 / 文档对拍 / 桥接门禁 35 例绿。
+
+**落地形态**：
+
+- 共用作答区 `src/components/AskAnswerFields.tsx`（`useAskAnswer` 状态钩子 +
+  `AskAnswerFields` 组件）：选项为 `role=radio` 单选行（radiogroup，整行可点、圆点指示器、
+  长文本换行）；末行「其他回答」输入行（铅笔图标，有字即亮起并取消点选，Enter 提交、
+  输入法组词中不触发，聚焦显示焦点环）。选中 `nm-inset` + 品牌色描边、未选
+  `nm-outset`（自带 hover）——设计系统「凹陷=选中」语义回正。
+- 聊天提问卡 `AskCard.tsx`：卡头来源标识（问号图标「需要你决定」/ 插头图标「MCP 输入
+  请求」）+ 多卡时「第 n 问」；问题加粗并保留换行；主按钮 `nm-btn-brand` + 提交中
+  `Loader2` 转圈；入场复用 `popover-in` 关键帧（从底部长出）；终态收成两行「图标 +
+  问题（最多两行，悬停看全文）/ → 答案」，作答绿色对勾、按假设 SkipForward、超时 Clock。
+- 通知页问题卡 `TaskQuestionCard` 改用同一作答区（同款选中态反转随之修掉）。
+
+**验收锚点对照**（§八）：①②③④⑤⑦⑧ 由 `AskCard.test.tsx` 钉住（选中态类名断言、
+输入取消点选、Enter 提交、组词中 Enter 不提交、终态文本、MCP 来源标识、多卡序号）；
+⑥ 转圈与 hover / 动画属视觉项，用无头 Chrome 渲染编译后的 Tailwind + main.css 亮暗两套
+核对过，**未在 Tauri 实机（WKWebView）里看过**。
+
+**偏离登记**（对照 §四 / §六）：
+
+1. U7「问题 n/N」改为「第 n 问」：模型在预算内还可能再问，总数 N 事先不可知，写成
+   n/N 会暗示「这是最后一问」。
+2. U6 卡头文案：§4.1 草图的「需要你决定 · Chat 提问」只留「需要你决定」（AskCard 聊天
+   与任务执行会话共用，「Chat 提问」在执行会话里是错的）；MCP 来源写「MCP 输入请求」而非
+   「MCP · elicitation」，与现有文案「应答 MCP 输入请求」「拒绝该输入请求」一致。
+3. U8 通知页主按钮保持中性 `nm-btn`、不加转圈：该页每张卡都有主操作，`nm-btn-brand`
+   按设计系统约定留给页面唯一主操作；两张卡只共用作答区。
+4. 计划外修正（MCP 输入请求的终态语义）：原卡把拒绝 / 超时显示成「已按假设继续」、
+   作答显示后端占位串「[MCP 应答，值不落日志]」；elicitation 没有假设兜底（未答即
+   Decline），改为「已拒绝该输入请求」「未获应答，已按拒绝处理」「已提交（应答值不回显）」。
+5. 计划外修正（未定义的颜色变量）：旧卡 `border-[var(--border)]` 引用的 `--border`
+   全仓库没有定义（计算期无效，边框色退回 currentColor——旧卡边框其实是文字色）；新卡改用
+   `nm-inset` 自带的 `--edge` 边框。同一未定义变量还在 `Toggle.tsx:48`（未开启态底色）与
+   `InputArea.tsx:276`（附件预览边框）使用，不在本次范围，登记不修。
+6. 问题文本加 `whitespace-pre-line`：MCP 问题里后端拼的「\n（字段：…；类型：…）」原先
+   被折成一行。
+7. 聊天视图左栏「新对话」也是 `nm-btn-brand`，提问卡挂起期间同屏两枚品牌色按钮；取提问卡
+   强调（它是当下唯一要推进的动作），实机若嫌抢眼，退回中性只改 AskCard 一处类名。
+
+**实机待验**：亮暗主题观感、hover 与焦点环、入场动画、中文输入法下的 Enter（判据与聊天
+输入框同为 `nativeEvent.isComposing`）、一轮多问时停靠区高度。

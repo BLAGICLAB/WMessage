@@ -143,6 +143,41 @@ describe("NotificationsPage", () => {
     );
   });
 
+  it("任务提问卡：选项按单选行呈现、选中凹陷；回答并继续 → ask_respond(answer)", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "notifications_list")
+        return [
+          mkItem({
+            id: "q1",
+            kind: "task_question",
+            title: "任务「周报」提问",
+            body: "投放哪个平台？",
+            payload: {
+              questionId: "wfq-1",
+              question: "投放哪个平台？",
+              options: ["公众号", "知乎"],
+              assumption: "公众号",
+            },
+          }),
+        ];
+      return null;
+    });
+    render(<NotificationsPage />);
+    const zhihu = await screen.findByRole("radio", { name: "知乎" });
+    expect(zhihu.className).toContain("nm-outset");
+    await userEvent.click(zhihu);
+    expect(zhihu.getAttribute("aria-checked")).toBe("true");
+    expect(zhihu.className).toContain("nm-inset");
+    await userEvent.click(screen.getByRole("button", { name: "回答并继续" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("ask_respond", {
+        questionId: "wfq-1",
+        action: "answer",
+        answer: "知乎",
+      }),
+    );
+  });
+
   it("服务告警卡：只告知不决策——「知道了」→ notifications_resolve(id, dismissed)", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "notifications_list")

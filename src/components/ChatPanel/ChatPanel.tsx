@@ -929,11 +929,15 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
         onOpenExecSession={switchSession}
         onOpenTrace={openTraceFor}
       />
-      {/* 提问卡（ask_user）：贴输入区上方，答完保留终态到回合收尾 */}
+      {/* 提问卡（ask_user）：贴输入区上方，答完收成两行留到回合收尾；一轮多问时标序号 */}
       {askCards.length > 0 && (
         <div className="shrink-0 space-y-2 px-1 pb-1">
-          {askCards.map((a) => (
-            <AskCard key={a.questionId} ask={a} />
+          {askCards.map((a, i) => (
+            <AskCard
+              key={a.questionId}
+              ask={a}
+              order={askCards.length > 1 ? i + 1 : undefined}
+            />
           ))}
         </div>
       )}

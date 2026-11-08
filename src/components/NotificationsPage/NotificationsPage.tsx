@@ -7,6 +7,7 @@ import {
   HelpCircle,
 } from "lucide-react";
 import type { ReactNode } from "react";
+import { AskAnswerFields, useAskAnswer } from "../AskAnswerFields";
 import { EmptyState } from "../EmptyState";
 import { formatMonthDayTime } from "../../format";
 import { handleCommandError } from "../../lib/errorHandler";
@@ -241,19 +242,18 @@ function taskQuestion(n: NotificationItem): TaskQuestionPayload | null {
   return p as unknown as TaskQuestionPayload;
 }
 
-/** 任务提问卡：选项 chips + 自由输入 + 按假设继续——
+/** 任务提问卡：选项行 + 其他回答行 + 按假设继续（作答区与聊天提问卡共用）——
  *  红线：忽略问题执行也能走（assume 返回问题自带假设） */
 function TaskQuestionCard({ item }: { item: NotificationItem }) {
   const q = taskQuestion(item);
-  const [picked, setPicked] = useState<string | null>(null);
-  const [text, setText] = useState("");
+  const answer = useAskAnswer();
   const [busy, setBusy] = useState(false);
   if (!q)
     return (
       <p className="mt-2 text-xs text-[var(--t4)]">消息数据不完整，可忽略</p>
     );
   const options = Array.isArray(q.options) ? q.options : [];
-  const answerText = text.trim() || picked;
+  const answerText = answer.answerText;
   const respond = async (action: "answer" | "assume") => {
     setBusy(true);
     try {
@@ -278,39 +278,11 @@ function TaskQuestionCard({ item }: { item: NotificationItem }) {
           提问节点：{q.nodeTitle}
         </p>
       )}
-      {options.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {options.map((opt) => (
-            <button
-              key={opt}
-              aria-pressed={picked === opt}
-              className={`rounded-full px-3 py-1 text-xs ${
-                picked === opt
-                  ? "nm-outset text-[var(--t1)]"
-                  : "nm-inset text-[var(--t3)]"
-              }`}
-              disabled={busy}
-              onClick={() => {
-                setPicked(opt);
-                setText("");
-              }}
-            >
-              {opt}
-            </button>
-          ))}
-        </div>
-      )}
-      <input
-        aria-label="自定义回答"
-        className="mt-2 w-full rounded-[var(--r-sm)] px-3 py-1.5 text-xs nm-inset text-[var(--t1)] outline-none placeholder:text-[var(--t5)]"
-        maxLength={200}
-        placeholder={options.length ? "或输入其他回答" : "输入你的回答"}
-        value={text}
-        disabled={busy}
-        onChange={(e) => {
-          setText(e.target.value);
-          setPicked(null);
-        }}
+      <AskAnswerFields
+        options={options}
+        answer={answer}
+        busy={busy}
+        onSubmit={() => void respond("answer")}
       />
       <CardActions>
         <button
