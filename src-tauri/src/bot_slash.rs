@@ -183,6 +183,43 @@ pub fn bot_stop(app: AppHandle, session_id: Option<String>) -> Result<usize, Str
             map.remove(&k);
         }
     }
+    // 级联取消本会话在跑子 agent：/stop 只置位交互标志的话，后台子 agent
+    // 会继续跑完并经汇报轮自动续上主会话——用户视角就是「停了还在跑」。
+    // cancel_subagent_async 自带终态复核、审计与 runner 令牌停机；行留库
+    // （与删会话级联同口径，runner 收尾还要读行）。后台执行，不阻塞命令返回。
+    if let Some(sid) = session_id.as_deref() {
+        let app2 = app.clone();
+        let sid = sid.to_string();
+        tauri::async_runtime::spawn(async move {
+            let conn = match crate::db::open_db(&app2) {
+                Ok(c) => c,
+                Err(e) => {
+                    crate::bot::audit_log(&app2, &format!("bot_stop 级联查询失败（开库）：{}", e));
+                    return;
+                }
+            };
+            let rows = match crate::db::subagents::load_live_subagents_by_session(&conn, &sid) {
+                Ok(r) => r,
+                Err(e) => {
+                    crate::bot::audit_log(
+                        &app2,
+                        &format!("bot_stop 级联查询失败：sid={} | {}", sid, e),
+                    );
+                    return;
+                }
+            };
+            for row in rows {
+                if let Err(e) =
+                    crate::bot_orchestrator::cancel_subagent_async(&app2, &row.id, "用户停止").await
+                {
+                    crate::bot::audit_log(
+                        &app2,
+                        &format!("bot_stop 级联取消失败：{} | {}", row.id, e.message()),
+                    );
+                }
+            }
+        });
+    }
     // 置位数量原样带回前端（0 = 本会话没有可停的交互实例）
     stopped
 }
@@ -635,6 +672,30 @@ mod command_result_tests {
                 "String>"
             )),
             "bot_stop 的返回类型必须是置位数量"
+        );
+    }
+
+    /// /stop 级联守卫：置位交互标志之外，本会话在跑子 agent 必须一并取消——
+    /// 否则主回合停在 check 等待里时后台活继续跑完，还会经汇报轮自动续上
+    /// 主会话（用户视角「停了还在跑」）。命令绑定 Wry AppHandle 没法直接单测，
+    /// 故钉源码：级联路径必须走 load_live_subagents_by_session + cancel_subagent_async。
+    /// 匹配串用 `concat!` 拆分防自匹配（本测试自身的源码不算命中）。
+    #[test]
+    fn bot_stop_cascades_cancel_to_live_subagents() {
+        let src = include_str!("bot_slash.rs");
+        assert!(
+            src.contains(concat!(
+                "crate::db::subagents::load_live_subagents_by_",
+                "session(&conn, &sid)"
+            )),
+            "级联必须按会话查在跑子 agent"
+        );
+        assert!(
+            src.contains(concat!(
+                "cancel_subagent_",
+                "async(&app2, &row.id, \"用户停止\")"
+            )),
+            "在跑子 agent 必须逐个取消"
         );
     }
 
