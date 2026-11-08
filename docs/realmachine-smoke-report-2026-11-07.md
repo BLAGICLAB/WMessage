@@ -50,16 +50,40 @@
 - **F-7（P3，外部桩局限）**：elicitation 桩的服务端→客户端请求（POST 响应 SSE 流内载 elicitation/create）未被 rmcp 客户端处理——本测桩接法与 rmcp 期望不匹配，ask 卡未弹出。不排除真服务器按标准接法可通，下轮用 mcp SDK 官方服务器复验。
 - **F-2（设计行为确认）**：围观 exec 会话发送被拦（「执行进行中，围观模式暂不能发送」）——与 useChatSend 注释一致，非缺陷。
 
-## 二、变异注入台账（V158–V171）
+## 二、变异注入台账（V158–V171）——2026-11-08 补跑
 
-**本轮 14 条变异全部未跑。** 主卡执行（含两处临时补丁的 A/B 验证与三处闸的实测）耗尽了时间预算；已跑出的行为面给下轮变异提供了精确对照：
+**14 条全部处置：11 KILLED（10 L1 + V170 实机双态）+ 3 受限登记（V160/V165/V168）。**
+跑法按 11-04 变异链手册：单编辑 → 靶向测试（预期杀）/ 全量 lib（预期幸存取证）→ `git checkout` 还原；L1 批全程约 40 分钟（含 6 次增量编译）。
 
-- V163（漂移闸恒放行，**必须 KILLED**）：pristine 行为已钉 `skipped_drift=1` + 手动内容保留——变异后该数字消失且手动内容被吞即逮住。
-- V168（分类器 fail-open，**必须 KILLED**）：pristine 三分支审计行已钉（Unsure/Unsure/unsure_no_model）——变异后 deny 被放行、unsure_no_model 消失即逮住。
-- V170（OAuth state 校验删除，**必须 KILLED**）：happy path 已通两次，变异态需伪造回调（改 state 重放 302）——跑法参照 11-04 复验手册。
-- V158/V159/V160/V161/V162/V164/V165/V166/V167/V169/V171：对应卡的 pristine 判据均已在本报告 §〇 落库可查；V160 因 exec 完整终稿行素材缺失暂不可激活（先补 M169 素材）。
+| 锚点 | 层 | 判定 | 杀手 / 证据 |
+|---|---|---|---|
+| V158 用户行闸后移 | L1 | **KILLED** | `guard_check_precedes_user_row_write_in_chat_entry`：结构守卫逮住顺序倒置（guard=583 晚于 write=401 即红） |
+| V159 终稿丢 tools | L1 | **KILLED** | `tool_events_merge_into_full_rows_in_emission_order`（`tools_json=None` 即 unwrap None panic） |
+| V160 重建身份随机 | — | 未激活 | 同 11-07 口径：需任务卡执行完整终稿素材。全量 lib 2314 绿实证**无 L1 覆盖**（结构性测试只钉「预生成+广播成对」，不钉载荷 id==库行 id） |
+| V161 drop_after 误删锚行 | L1 | **KILLED** | `drop_after_truncates_rows_after_anchor_and_keeps_it`（`>=` 把删 2 变删 3） |
+| V162 回滚范围颠倒 | L1 | **KILLED** | `turn_rollback_files_rolls_back_and_reports_drift`（比较反向后 restored=0） |
+| V163 漂移闸恒放行 | L1 | **KILLED** | `rollback_rejects_when_file_drifted_after_change`（删 after_sha 检查后漂移文件被回滚成 Ok——手动修改被吞的形态） |
+| V164 delete 覆盖恢复 | L1 | **KILLED** | `rollback_delete_restores_from_snapshot`（目标已存在断言 Err、变异后 Ok）。盘点时预判「无 L1」、全量跑当场逮住——预判修正 |
+| V165 move 源凭证丢失 | L1 | 幸存（无牙） | 全量 2314 绿：双凭证 recording 侧无任何 L1 闸。牙齿=实机卡 M174（11-07 PASS：restored=4 双凭证各回各位）；注入态复跑需真模型驱动 move，待 key |
+| V166 激活不生效 | L1 | **KILLED** | `activate_then_session_json_includes_group`（读点丢弃 active 集后「激活后组工具挂载」红） |
+| V167 休眠闸失效 | L1 | **KILLED** | `deferred_gate_blocks_only_when_enabled_and_inactive`（拒绝分支恒 None 后「开关开且未激活=拒」红） |
+| V168 分类器 fail-open | L1 | **幸存（本轮最重发现）** | deny→allow 全量 2314 绿：`verdict_parsing` 是镜像闭包不执行生产行（auto_classifier.rs:153-157），消费点（bot_fs.rs:386 / edit.rs:171）无测试——**fail-safe 假设当前零自动化闸**。唯一牙齿=M177 实机判据（deny 被放行/unsure_no_model 消失即逮）；实机复跑需 selfcheck 真模型，且 MiniMax 判性偏 Unsure、真 deny 难构造（M177/M178 同因） |
+| V169 elicit 超时 24h | L1 | 幸存（无牙） | 60s→86400 全量绿：3 例测试全在超时点前 decline，无一走 expired 路径。牙齿=M179 实机（60s expired 卡）——但 F-7 桩协议面未通前 expired 不可构造，双缺口在案 |
+| V170 OAuth state 删除 | 实机 | **KILLED（双态对照）** | 见下节 |
+| V171 截断静默 | L1 | **KILLED** | `warn_predicate_fires_exactly_when_raw_exceeds_max`（69cae9b6 回归测试当场逮住 F-4 原形态） |
 
-**建议**：变异轮单独安排（约 2–2.5h：14 次单编辑单重建复跑），环境操作台账见 §三。
+### V170 实机双态（2026-11-08 上午）
+
+跑法：OAuth 桩（监听 127.0.0.1:18901；`/.well-known` 元数据 + DCR + `/authorize` 故意 stall 防浏览器自动完成 + `/token` 只认自签发 code）+ 三处临时补丁（keyring 读点 WM_TEST_* 回退、config URL 闸与 bot_web DNS 闸 loopback 加白）+ env 模式全程零钥匙串读。伪造回调 = 从桩日志取 redirect_uri 端口与真实 state，curl 打「合法 code + 错 state」：
+
+- **pristine**：错误弹窗「内部错误：回调 state 不匹配，已拒绝（可能是伪造回调）」；桩 `/token` 零命中、无 `mcp.oauth.login` 审计——防线在。
+- **变异态**（`login_impl` guard 删 state 比较）：同参数伪造回调 → `/token` 换码成功 + `mcp.oauth.login` 落审计 + `mcp.tools_discovered tools=1` + UI 行变「1 个工具 · 待机待命」——**伪造回调换 token 成功，判据有牙齿实证**。
+- L1 面无覆盖：state 分支在 `login_impl` 内无测试执行（oauth.rs:657 注释陈旧，实为 TokenBundle 序列化测试）；伪造回调面 = loopback 随机端口 + path 不校验 + 服务器先无条件回 200，curl 判据只能看 UI 文案。
+
+### 跑法备注（给下一轮）
+
+- 钥匙串弹窗战争：重建后的 debug 无签名二进制对既有条目（wmessage.bot.v1 service 族）反复弹授权框——env 补丁盖住全部 `get_password` 读点后，settings 页仍触发个别读点弹窗（未定位到行）；逐条「允许/拒绝」可过但污染节奏。下一轮实机要么请用户本人点一次「始终允许」（需钥匙串密码），要么先定位那只漏网读点再补 env 回退。
+- 环境台账（本轮全部已还原）：config 备份还原 ✓ / env 文件已删 ✓ / 桩+vite 已停 ✓ / keyring `mcp-oauth:smoke-oauth-stub-0001` 已删 ✓ / 源码 5 文件 git checkout ✓ / pristine 重建 ✓；Chrome 有 4 个回调 tab 残留（用户手动关即可）。
 
 ## 三、环境操作台账
 
