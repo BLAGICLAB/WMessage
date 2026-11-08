@@ -98,7 +98,7 @@
 
 | 工具 | 跑位 | 数据边界 | 闸 | 强制层 |
 |---|---|---|---|---|
-| `web_search` | 宿主进程内（reqwest） | **产品自有出口**：Tavily / Brave API，或 Bing + 百度网页抓取 | 结果体 2MB 线；输出 6000 字 | 无（目的地是产品/用户配的 provider） |
+| `web_search` | 宿主进程内（reqwest） | **产品自有出口**：DeepSeek / Tavily / Brave API（三选一互斥，双开报 Conflict），或 Bing + 百度网页抓取 | 结果体 2MB 线；输出 6000 字 | 无（目的地是产品/用户配的 provider） |
 | `fetch_url` | 宿主进程内（reqwest） | **任意公网 http/https** | ① 公网闸 `check_public_url`（协议 + 主机 + DNS 全部 IP 都要公网，含环回/私网/链路本地 `169.254.x`）；② 钉 IP 防 DNS TOCTOU；③ 不跟随自动重定向、手动逐跳校验 Location；④ 内容类型闸（只收 html/xml/text，**JSON/PDF 被拒**）；⑤ 10MB 传输闸（流式封顶，不信 Content-Length）；⑥ 30K 字切片 + offset 续读 | **无目的地白名单（2026-10-31 拍板 D1 不做）**——GET 查询串外传是已知缺口，靠提示词防线 + 在场可见性兜底；Jina 兜底采用时记 `web.jina_fallback` |
 | `http_request` | 宿主进程内（reqwest，`bot_web/http.rs` + `bot/tools/http.rs`） | 任意公网 http/https（POST/PUT/PATCH/DELETE/HEAD + 请求体 + 自定义头）；`saveAs` 写 AI_Gen_Files | ① 公网闸（同 fetch_url）；② **目的地闸每跳都判**（`bot_web/destination.rs`：产品自有出口 / allowedDomains 白名单 + provider + MCP 端点 → 放行；白名单外 ask 弹窗、批准仅本会话；子 agent 与无人值守直接拒）；③ 重定向手动逐跳 + https→http 降级拒；④ 响应头凭据类（set-cookie 等）只回名；⑤ `keyring:`/`env:` 凭据引用真值不过模型；⑥ args_preview 特例裁 method+host+path | 弹窗授权是 UI 层强制；审计 `bot.http_request` 只记 host/method/status/bytes/dest |
 

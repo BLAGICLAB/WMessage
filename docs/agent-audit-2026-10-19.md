@@ -306,6 +306,7 @@ head+tail 的文本本就没得压，而这道守卫又是 `total - head_keep - 
 subtract with overflow @ compaction.rs:158）。
 
 **U5 父会话 `/stop` 不级联取消子 agent**（`c98fb6e`）：分两半处理。
+> **勘误（2026-11-09）**：U5 的「/stop 那半不改」已反转——实机暴露收编自动续轮会让「停了还在跑」直接可感，`/stop` 现已级联取消本会话在跑子 agent（提交 `721cb075`，SPEC 同步）；删会话那半维持不变。下文原判据按当时口径保留。
 `/stop` 那半**不改**——`spawn_subagent` 是非阻塞派发，结果由后台汇报轮回灌父
 会话；`/stop` 的语义是「停本会话当前这次交互执行」（`check_subagent` 等待期响应
 `/stop` 就是这个意思：停了等待不等于杀了后台活），子 agent 行在聊天内嵌区与右侧栏

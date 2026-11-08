@@ -271,6 +271,7 @@ Anthropic Tool Search Tool（工具 defer_loading，只留 ~500 token 搜索器�
 - ask 卡全链现成：`ask_engine.rs` 的 `engine_ask_user`（`bot-ask` 事件 + `question_waiters`
   oneshot + `wait_ask_reply` 24h 上限）→ 前端 AskCard → `ask_respond` 回程；
   无人值守/汇报轮不注册（`ask_registered` 闸）；前端看门狗对未答 ask 豁免。
+> **勘误（2026-11-09）**：汇报轮已从不注册改为注册（`matches!(origin, User | Report)`，提交 `485b5887`）——此处「汇报轮不注册」作废；无人值守（定时/批量）仍不注册。
 - MCP 机密走 keyring：`keyring_entry(id)` = service `wmessage.bot.v1` + user `mcp:{id}`。
 
 ### 5.2 业界口径
@@ -292,8 +293,9 @@ MCP elicitation（服务器向用户反问）规范已稳定（2026-07-28 版含
   现有 AskCard 结构（message=问题、enum→选项、bool→确认/拒绝）；多字段表单登记不做。
   卡面必显示来源 server 名（不可信内容提示）+ 字段名，内容按纯文本渲染。
 - **等待**：60s 超时（对齐 ConfirmMap 默认拒节奏，不等 ask 的 24h——elicitation 是工具调用
-  内同步等待，长等占住 `call_locks`）；`/stop` → 立即 Decline；无人值守（会话非
-  TurnOrigin::User）或主窗口不可见 → 立即 Decline；等待期间 `retire` 语义核对：等待在
+  内同步等待，长等占住 `call_locks`）；`/stop` → 立即 Decline；无人值守（定时/批量链路，不经 bot_chat
+  注册路径）或主窗口不可见 → 立即 Decline（汇报轮现可提问，见上勘误；
+  elicit 的实际闸是 `elicit.rs` 的主窗口可见性检查，与本句口径的出入系本文写作时的预判，实现以代码为准）；等待期间 `retire` 语义核对：等待在
   `invoke_tool` 之前完成（elicitation 是服务器在工具执行中发来的请求，宿主侧等待发生在
   call_tool 的 future 内部）——实现时验证 rmcp 长等待不断连，若断连按现有 Down 标记
   报错重试路径走。

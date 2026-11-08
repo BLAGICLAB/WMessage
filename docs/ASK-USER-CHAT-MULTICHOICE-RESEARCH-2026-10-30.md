@@ -270,6 +270,7 @@
 - 事件成对：`bot-ask`（提问）+ `bot-ask-resolved`（终态，action ∈ answer/assume/dismiss/expired）都经 `emit_recorded` 进回放缓冲——重开会话问题卡还原含终态，不依赖通知状态查询。
 - waiter 回执从纯文本改为 `AskReply{action, text}`：单靠回灌文本区分不了「用户答了」与「按假设继续」（用户可以照抄假设文案当回答），动作必须随行。
 - 聊天注册包在 `bot_chat_inner` 的 `run_model_loop` 前后（工具调用只发生在循环内，比「会话建立时」更精确）；`app` 按值消费进模型循环，注销用提前克隆的句柄。汇报轮（TurnOrigin::Report）不注册。
+> **勘误（2026-11-09）**：汇报轮不注册的口径已反转——实机中用户要求提问而模型在汇报轮连试三次被拒，`ask_registered` 现覆盖 `TurnOrigin::User | TurnOrigin::Report`（提交 `485b5887`，SPEC 同步）；定时/批量等无人值守链路维持不注册。
 - 通知标题按来源分叉：任务卡带卡名，聊天固定「聊天提问」。
 
 **偏离登记**（对照 §九）：`SCHEMA_ASK_USER` 在基线前缀外的预判成立，fixture 未动、`BUILTIN_TOOL_COUNT` 不变；无其他偏离。

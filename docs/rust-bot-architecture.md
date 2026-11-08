@@ -127,7 +127,7 @@ src-tauri/src/
 │─ Bot 核心（编排 → 决策 → 工具分发）
 ├── bot_chat.rs (830)    入口编排门面：bot_chat / bot_compact / bot_execute_task 命令 + 公共类型
 │                        （ChatMsg/TaskRef/BotChatResult）+ 子模块转出（旧路径 1:1 保持）
-│   ├── bot_chat/flow.rs (838)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
+│   ├── bot_chat/flow.rs (839)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
 │   ├── bot_chat/exec.rs (574)   任务执行面：批量执行 + ExecGuard + run_task_in_chat 全链路
 │   ├── bot_chat/media.rs (152)  多模态图片组装：base64 入模 + 扩展名白名单 + 附件索引
 │   ├── bot_chat/summary.rs (322) 历史摘要面：截断点选择 + 摘要请求 + 压缩
@@ -439,7 +439,7 @@ src-tauri/src/
 │                        global 3，闸满排队）
 ├── bot/subagent_tools.rs (424) 子 agent 的五个 LLM 工具：tool_spawn_subagent / tool_check_subagent /
 │                        tool_cancel_subagent / tool_write_artifact_file / tool_read_own_card
-├── bot_orchestrator.rs (717) 子 Agent 编排器门面（方案 B，SUBA 设计 2026-09-27）：类型与生命周期
+├── bot_orchestrator.rs (756) 子 Agent 编排器门面（方案 B，SUBA 设计 2026-09-27）：类型与生命周期
 │                        核心 + 子模块 re-export；受管子 agent 的
 │                        spawn/check/cancel 生命周期状态机 + 无任务卡（子 agent 不再建卡，行上
 │                        只存 parent_session_id 指向派发会话，遗留可空 task_id 不再写入）+ acceptance
@@ -453,7 +453,7 @@ src-tauri/src/
 │   └── orchestrator_tests/  编排器测试模块（门面只留生产码，测试按职责拆三份）
 │       ├── orchestrator_tests.rs (114) 共享夹具：orch_prod_src（源码全景）/ test_conn /
 │       │                          parent_card / fake_state / digest_row / req / OK_RESULT
-│       ├── orchestrator_tests/lifecycle.rs (554) 生命周期与接线守卫：panic 隔离 / 收尾事件唤醒 /
+│       ├── orchestrator_tests/lifecycle.rs (631) 生命周期与接线守卫：panic 隔离 / 收尾事件唤醒 /
 │       │                          wait 策略 / 摘要注入位置
 │       ├── orchestrator_tests/outcome.rs (601) 收尾契约与摘要：机器判据 / digest 幂等 / 汇报轮顺序 /
 │       │                          包装渲染
