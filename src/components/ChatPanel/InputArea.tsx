@@ -1,14 +1,17 @@
 // ChatPanel 子模块：斜杠命令 picker + 输入卡（ 拆分自 ChatPanel.tsx，JSX 逐字搬移）。
 // 上多行输入区（自动增高）、附件 chips（图片悬停缩略图）、下工具栏
-// （＋ 附件 / 🧠 模型下拉 / ⚡ 推理强度 / 发送-停止一体键）。
+// （＋ 附件 / 🛡 授权模式 / 🔍 详细度 / 🧠 模型下拉 / ⚡ 推理强度 / 发送-停止一体键；
+// 窄宽度按 useComposerTier 三档降级——compact 图标化、mini 收进 ⋯ 菜单）。
 // 发送/停止的调用语义由父级闭包提供，本组件不做任何数据流决策。
 
+import { useRef, useState } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   Brain,
   Image as ImageIcon,
   ListTodo,
+  MoreHorizontal,
   Paperclip,
   Plus,
   Search,
@@ -17,8 +20,10 @@ import {
   Zap,
 } from "lucide-react";
 import { basename, isImagePath } from "../../format";
+import { useDismissable } from "../../lib/useDismissable";
 import {
   EFFORT_LABELS,
+  EFFORT_ORDER,
   PERM_HINTS,
   PERM_LABELS,
   PERM_ORDER,
@@ -26,6 +31,7 @@ import {
   SLASH_COMMANDS,
   VERBOSE_LABELS,
 } from "./constants";
+import { useComposerTier } from "./useComposerTier";
 import type {
   ModelItem,
   PermMode,
@@ -44,6 +50,14 @@ function placeholderOf(viewedBusy: boolean, hasFiles: boolean): string {
 /** 当前输入命中的斜杠命令（picker 渲染与键盘导航共用同一份匹配结果） */
 function slashMatches(input: string) {
   return SLASH_COMMANDS.filter((c) => c.cmd.startsWith(input));
+}
+
+/** 详细度循环的下一档（简洁→详细→调试→简洁）：主行 pill 与 ⋯ 菜单两个
+ *  入口共用，循环顺序不得漂移 */
+function nextVerboseLevel(level: VerboseLevel): VerboseLevel {
+  if (level === "concise") return "detailed";
+  if (level === "detailed") return "debug";
+  return "concise";
 }
 
 type InputAreaProps = {
@@ -129,6 +143,29 @@ export function InputArea({
   model,
   effort,
 }: InputAreaProps) {
+  // 底栏降级分档量的是输入卡内容盒（底栏 flex 行的实际可用宽），
+  // 不是窗口——左右侧栏开合改变的是卡片宽，窗口断点量不出这个落差
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const tier = useComposerTier(cardRef);
+  // ⋯ 菜单只是详细度/推理强度的第二入口、不碰数据流，开合态留在本地。
+  // 底栏所有浮层都是 absolute bottom-full 从卡内向上弹出：输入卡不得加
+  // overflow-hidden 兜底，裁剪会连浮层一起裁掉（防溢出靠分档降级）。
+  const overflowBtnRef = useRef<HTMLButtonElement | null>(null);
+  const overflowDropdownRef = useRef<HTMLDivElement | null>(null);
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  useDismissable(
+    overflowOpen,
+    () => setOverflowOpen(false),
+    [overflowBtnRef, overflowDropdownRef],
+    () => setOverflowOpen(false),
+  );
+  // 拖窗跨回宽档时 ⋯ 钮随档位卸载：开着的状态就地收掉（渲染期随档位调整），
+  // 免得再回窄档时菜单凭空开着
+  const [prevTier, setPrevTier] = useState(tier);
+  if (prevTier !== tier) {
+    setPrevTier(tier);
+    if (tier !== "mini") setOverflowOpen(false);
+  }
   return (
     <>
       {/* 斜杠 picker 与输入卡共用 760px 限宽：与消息区同一条阅读带，
@@ -170,7 +207,10 @@ export function InputArea({
       {/* 输入卡（换肤版）：大圆角（20px）卡片一体式——上多行输入区（placeholder 左上、
           自动增高到 max-h-40 后内部滚动）、下工具栏（左 ➕ 附件，中 🛡 授权模式 +
           🧠 模型下拉 + ⚡ 推理强度，右圆形发送键）；斜杠 picker 仍浮在卡片上方 */}
-      <div className="nm-card rounded-[20px] border border-[var(--edge)] p-2.5 shrink-0">
+      <div
+        ref={cardRef}
+        className="nm-card rounded-[20px] border border-[var(--edge)] p-2.5 shrink-0"
+      >
         {/* 待发任务引用：与附件同形态，但语义是「把卡摆进对话让机器人看着办」 */}
         {taskRefs.length > 0 && (
           <div className="mb-1.5 flex flex-wrap gap-1">
@@ -335,6 +375,11 @@ export function InputArea({
               ref={permBtnRef}
               aria-haspopup="listbox"
               aria-expanded={perm.menuOpen}
+              aria-label={
+                tier === "mini"
+                  ? `授权模式 ${PERM_LABELS[perm.mode]}`
+                  : undefined
+              }
               className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] leading-4 transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97] ${
                 perm.mode === "yolo"
                   ? "border-[var(--danger)] text-[var(--danger)] hover:bg-[var(--hover-bg)]"
@@ -344,7 +389,9 @@ export function InputArea({
               onClick={() => perm.setMenuOpen((v) => !v)}
             >
               <Shield size={10} aria-hidden />
-              {PERM_LABELS[perm.mode]}
+              {/* mini 档只留盾牌图标：档位语义靠红边色编码（yolo）与 tooltip，
+                  图标化省下的宽是极窄档主行放得下的关键一环 */}
+              {tier !== "mini" && PERM_LABELS[perm.mode]}
               <span aria-hidden className="text-[9px]">
                 {perm.menuOpen ? "▴" : "▾"}
               </span>
@@ -379,23 +426,25 @@ export function InputArea({
             )}
           </div>
           {/* 🔍 执行过程详细度（P2-b verbose 三档）：点击循环 简洁→详细→调试，
-              localStorage 持久化；控制工具徽章默认展开级别与耗时/结果列示 */}
-          <button
-            type="button"
-            className="shrink-0 inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 text-[10px] leading-4 text-[var(--t4)] hover:text-[var(--t2)]"
-            title={`执行过程详细度：${verbose.level}（点击切换 简洁→详细→调试）`}
-            onClick={() =>
-              verbose.setLevel(
-                verbose.level === "concise"
-                  ? "detailed"
-                  : verbose.level === "detailed"
-                    ? "debug"
-                    : "concise",
-              )
-            }
-          >
-            <Search size={10} aria-hidden /> {VERBOSE_LABELS[verbose.level]}
-          </button>
+              localStorage 持久化；控制工具徽章默认展开级别与耗时/结果列示。
+              compact 档只留图标（现值退到 tooltip/aria-label），mini 档整个
+              撤出主行、收进 ⋯ 菜单 */}
+          {tier !== "mini" && (
+            <button
+              type="button"
+              aria-label={
+                tier !== "full"
+                  ? `执行过程详细度：${VERBOSE_LABELS[verbose.level]}（点击切换）`
+                  : undefined
+              }
+              className="shrink-0 inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 text-[10px] leading-4 text-[var(--t4)] hover:text-[var(--t2)]"
+              title={`执行过程详细度：${verbose.level}（点击切换 简洁→详细→调试）`}
+              onClick={() => verbose.setLevel(nextVerboseLevel(verbose.level))}
+            >
+              <Search size={10} aria-hidden />
+              {tier === "full" && <span>{VERBOSE_LABELS[verbose.level]}</span>}
+            </button>
+          )}
           {/* 🧠 模型下拉（UI-1 从顶栏移入输入卡底栏；按钮/列表/切换逻辑不变，
               相对按钮向上弹出，免 JS 测量定位）。标签宽度上限 150px；本 chip 是
               底栏唯一可收缩项（min-w-0）：窄窗下其余芯片都 shrink-0，空间不够时
@@ -465,59 +514,155 @@ export function InputArea({
           </div>
           {/* ⚡ 推理强度（RE-1）：会话级覆盖下拉——未覆盖时按钮就叫「默认」
               （跟随后台档位这一层解释放下拉首项的悬停提示里），
-              选档只存本会话内存、不回写设置；向上弹出，交互镜像模型下拉 */}
-          <div className="relative shrink-0">
-            <button
-              type="button"
-              ref={effortBtnRef}
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]"
-              title="推理强度：只影响当前会话的发送，不写入设置"
-              onClick={() => effort.setMenuOpen((v) => !v)}
-            >
-              <span className="flex items-center gap-1">
-                <Zap size={13} aria-hidden className="shrink-0" />
-                <span>
-                  {effort.isOverridden
-                    ? EFFORT_LABELS[effort.effective]
-                    : "默认"}
-                </span>
-              </span>
-              <span className="shrink-0 text-[10px]">
-                {effort.menuOpen ? "▴" : "▾"}
-              </span>
-            </button>
-            {effort.menuOpen && (
-              <div
-                ref={effortDropdownRef}
-                className="absolute bottom-full right-0 mb-2 w-44 nm-card p-1 rounded-xl z-50"
+              选档只存本会话内存、不回写设置；向上弹出，交互镜像模型下拉。
+              compact 档只留图标（会话覆盖时缀一枚小圆点，保住「是否覆盖」
+              这个信号）；mini 档撤出主行、收进 ⋯ 菜单 */}
+          {tier !== "mini" && (
+            <div className="relative shrink-0">
+              <button
+                type="button"
+                ref={effortBtnRef}
+                aria-label={
+                  tier !== "full"
+                    ? `推理强度：${effort.isOverridden ? EFFORT_LABELS[effort.effective] : "默认"}（只影响当前会话）`
+                    : undefined
+                }
+                className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]"
+                title="推理强度：只影响当前会话的发送，不写入设置"
+                onClick={() => effort.setMenuOpen((v) => !v)}
               >
-                <button
-                  className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
-                    !effort.isOverridden
-                      ? "nm-inset text-[var(--t1)] font-medium"
-                      : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                  }`}
-                  onClick={() => effort.setForSession(null)}
-                  title={`清掉本会话覆盖，跟随后台默认（当前：${EFFORT_LABELS[effort.base]}）`}
+                <span className="flex items-center gap-1">
+                  <Zap size={13} aria-hidden className="shrink-0" />
+                  {tier === "full" ? (
+                    <span>
+                      {effort.isOverridden
+                        ? EFFORT_LABELS[effort.effective]
+                        : "默认"}
+                    </span>
+                  ) : (
+                    effort.isOverridden && (
+                      <span
+                        aria-hidden
+                        className="h-1 w-1 rounded-full bg-[var(--brand)]"
+                      />
+                    )
+                  )}
+                </span>
+                <span className="shrink-0 text-[10px]">
+                  {effort.menuOpen ? "▴" : "▾"}
+                </span>
+              </button>
+              {effort.menuOpen && (
+                <div
+                  ref={effortDropdownRef}
+                  className="absolute bottom-full right-0 mb-2 w-44 nm-card p-1 rounded-xl z-50"
                 >
-                  默认
-                </button>
-                {(["off", "low", "medium", "high"] as const).map((lv) => (
                   <button
-                    key={lv}
                     className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
-                      effort.effective === lv && effort.isOverridden
+                      !effort.isOverridden
                         ? "nm-inset text-[var(--t1)] font-medium"
                         : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
                     }`}
-                    onClick={() => effort.setForSession(lv)}
+                    onClick={() => effort.setForSession(null)}
+                    title={`清掉本会话覆盖，跟随后台默认（当前：${EFFORT_LABELS[effort.base]}）`}
                   >
-                    {EFFORT_LABELS[lv]}
+                    默认
                   </button>
-                ))}
-              </div>
-            )}
-          </div>
+                  {EFFORT_ORDER.map((lv) => (
+                    <button
+                      key={lv}
+                      className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
+                        effort.effective === lv && effort.isOverridden
+                          ? "nm-inset text-[var(--t1)] font-medium"
+                          : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                      }`}
+                      onClick={() => effort.setForSession(lv)}
+                    >
+                      {EFFORT_LABELS[lv]}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {/* ⋯ 收纳菜单（mini 档）：详细度与推理强度两枚次要控件撤出主行后的
+              唯一入口，行内仍留 + / 🛡 / 🧠 / 发送。与三下拉同款浮层（向上弹出，
+              免 JS 测量定位）；详细度点击循环、菜单保持开着（看得到值在变），
+              推理强度选档即收（单选语义） */}
+          {tier === "mini" && (
+            <div className="relative shrink-0">
+              <button
+                type="button"
+                ref={overflowBtnRef}
+                aria-haspopup="menu"
+                aria-expanded={overflowOpen}
+                className="shrink-0 h-7 px-1.5 flex items-center justify-center rounded-lg text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]"
+                title="更多输入选项"
+                onClick={() => setOverflowOpen((v) => !v)}
+              >
+                <MoreHorizontal size={15} aria-hidden />
+              </button>
+              {overflowOpen && (
+                <div
+                  ref={overflowDropdownRef}
+                  role="menu"
+                  className="absolute bottom-full right-0 mb-2 w-44 nm-card p-1 rounded-xl z-50"
+                >
+                  <button
+                    role="menuitem"
+                    className="w-full text-left px-2 py-1 rounded-lg text-xs text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                    title="点击循环 简洁→详细→调试"
+                    onClick={() => verbose.setLevel(nextVerboseLevel(verbose.level))}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <Search size={12} aria-hidden className="shrink-0" />
+                      <span className="font-medium text-[var(--t2)]">
+                        执行过程详细度
+                      </span>
+                      <span className="text-[10px] text-[var(--t5)]">
+                        {VERBOSE_LABELS[verbose.level]}
+                      </span>
+                    </span>
+                  </button>
+                  <p className="px-2 pt-1.5 pb-0.5 text-[10px] text-[var(--t5)]">
+                    推理强度（只影响当前会话）
+                  </p>
+                  <button
+                    role="menuitem"
+                    className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
+                      !effort.isOverridden
+                        ? "nm-inset text-[var(--t1)] font-medium"
+                        : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                    }`}
+                    onClick={() => {
+                      effort.setForSession(null);
+                      setOverflowOpen(false);
+                    }}
+                    title={`清掉本会话覆盖，跟随后台默认（当前：${EFFORT_LABELS[effort.base]}）`}
+                  >
+                    默认
+                  </button>
+                  {EFFORT_ORDER.map((lv) => (
+                    <button
+                      key={lv}
+                      role="menuitem"
+                      className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
+                        effort.effective === lv && effort.isOverridden
+                          ? "nm-inset text-[var(--t1)] font-medium"
+                          : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                      }`}
+                      onClick={() => {
+                        effort.setForSession(lv);
+                        setOverflowOpen(false);
+                      }}
+                    >
+                      {EFFORT_LABELS[lv]}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           {/* 发送/停止一体键：回复中变为红描边圆形停止键，
               点击即 bot_stop 中断本次运行；中断/回答结束自动变回发送键 */}
           {viewedBusy ? (

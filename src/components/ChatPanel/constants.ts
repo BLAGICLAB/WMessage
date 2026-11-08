@@ -71,6 +71,10 @@ export const EFFORT_LABELS: Record<ReasoningLevel, string> = {
   high: "高",
 };
 
+/** 推理强度档位顺序（由弱到强）：会话覆盖下拉与底栏 ⋯ 收纳菜单共用一份，
+ *  两处入口列出的档位不得漂移 */
+export const EFFORT_ORDER: readonly ReasoningLevel[] = ["off", "low", "medium", "high"] as const;
+
 /** 模型协议分组展示文案（双协议同列） */
 export const PROVIDER_LABELS: Record<ModelItem["provider"], string> = {
   openai: "OpenAI 兼容",

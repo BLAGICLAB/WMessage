@@ -206,10 +206,12 @@ describe("聊天窗滚动（流式期）", () => {
   });
 
   it("切走再切回聊天页：视口回到底部（display:none 会清零滚动口）", async () => {
-    // jsdom 没有 ResizeObserver：补一个可控替身，模拟「容器从隐藏变可见」
-    const observers: Array<() => void> = [];
+    // jsdom 没有 ResizeObserver：补一个可控替身，模拟「容器从隐藏变可见」。
+    // 回调按真实契约收 entries 数组（真 ResizeObserver 从不零参调用）：
+    // 这里只模拟显隐事件，给空数组即可
+    const observers: Array<(entries: unknown[]) => void> = [];
     class FakeResizeObserver {
-      constructor(cb: () => void) {
+      constructor(cb: (entries: unknown[]) => void) {
         observers.push(cb);
       }
       observe() {}
@@ -225,11 +227,11 @@ describe("聊天窗滚动（流式期）", () => {
       scrollTo.mockClear();
       // 聊天页切走：容器 display:none → 没有滚动口，浏览器把滚动位置清零
       stubGeometry(list, { height: 0, view: 0 });
-      observers.forEach((cb) => cb());
+      observers.forEach((cb) => cb([]));
       // 切回来：容器重新有高度 → 视口必须回到底部（否则停在历史开头，
       // 再来一帧流式增量又被拽下去，看着像吞内容）
       stubGeometry(list);
-      observers.forEach((cb) => cb());
+      observers.forEach((cb) => cb([]));
       expect(scrollTo).toHaveBeenCalledWith({ top: 1000 });
       scrollTo.mockRestore();
     } finally {
