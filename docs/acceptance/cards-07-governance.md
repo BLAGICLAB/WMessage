@@ -33,34 +33,31 @@
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（`memory.consolidate` / `memory.consolidate_failed` / `memory.consolidate_now` 三个都 grep 得到才算名还在）
 - **缺口补验**：「记忆整理」全库无命中：ops 同事务直写、四条 lesson 渠道、cos≥0.92 合并即替换未验
 
-### ACC-G-02 · 文件治理：授权四档 + per-tool 权限规则表
+### ACC-G-02 · 文件治理：授权两档 + per-tool 权限规则表
 
 - **SPEC**：5-104
 - **层级**：L1+L2（L1 自动化 + L2 实机）
 - **历史卡**：M43（`docs/realmachine-mutation-test-2026-10-24.md`）、M83（`docs/realmachine-smoke-test-2026-10-25.md`）、W05（`docs/realmachine-mutation-test-2026-10-24.md`）
 - **前置**：应用已启动；机器人总开关已打开；模型可用；准备一个**白名单外**的路径（例如 `/tmp/wmessage-acceptance-probe.txt`，先自己写好）
 - **步骤**：
-  1. 进「聊天」，看输入卡底栏 🛡 授权模式 pill 与点开后的下拉（记下四档文案）。
-  2. 切到 `strict`，让机器人读上面那个白名单外文件。
-  3. 切到 `ask`，让机器人读同一个文件；弹出授权窗后分别试「拒绝」与「始终允许该目录」。
-  4. 切到 `auto`，让机器人读同一个文件。
-  5. 切到 `yolo`，让机器人读同一个文件；观察 pill 颜色。
-  6. 设置页 → 「机器人」分区 → 「工具权限规则（按工具覆盖授权模式）」→ `+ 添加规则`，加一条 `deny` 某工具（如 `read_text_file`）的规则并保存；回聊天让机器人调该工具。
-  7. 再加一条 `ask` 某工具的规则并保存，重试该工具。
+  1. 进「聊天」，看输入卡底栏 🛡 授权模式 pill 与点开后的下拉（记下两档文案）。
+  2. 确认在 `ask`，先让机器人读一个**白名单内**文件（如桌面），再读白名单外文件；弹出授权窗后分别试「拒绝」与「始终允许该目录」。
+  3. 切到 `yolo`，让机器人读同一个白名单外文件；观察 pill 颜色。
+  4. 设置页 → 「机器人」分区 → 「工具权限规则（按工具覆盖授权模式）」→ `+ 添加规则`，加一条 `deny` 某工具（如 `read_text_file`）的规则并保存；回聊天让机器人调该工具。
+  5. 再加一条 `ask` 某工具的规则并保存，重试该工具。
 - **判据**：
-  1. 【可观测】授权模式下拉由严到宽四档：`strict` / `ask` / `auto` / `yolo`，每档右侧给一句完整语义——ask=「白名单外弹授权窗」、strict=「白名单外直接拒绝，不弹窗」、auto=「白名单内自动放行，白名单外仍弹窗」、yolo=「全部放行不弹窗（仍记审计）」。
-  2. 【可观测】`strict` 档读白名单外文件：被硬拒，**不弹授权窗**，工具返回明确的拒绝说明。
-  3. 【可观测】`ask` 档读同一个文件：弹授权窗，窗内含 60s 倒计时、「拒绝 / 确认」两个出口，白名单外路径另给三选一（含「始终允许该目录」）；点「始终允许该目录」后该目录进入白名单。
-  4. 【可观测】`auto` 档读同一个白名单外文件：**仍然弹授权窗**（auto 只放行白名单内）。
-  5. 【可观测】`yolo` 档读同一个文件：不弹窗、直接放行；pill 同时转成警示色（设置页里给出「⚠️ 不弹任何授权」的整段说明）。
-  6. 【可审计】`<data_dir>/bot.log` 中按档位出现对应事件（检索命令：`grep -F "bot_fs.denied" "<data_dir>/bot.log" | tail -20`）：strict → `bot_fs.denied`；ask 放行 → `bot_fs.ask_allow_once` 或 `bot_fs.ask_allow_always`；ask 拒绝 → `bot_fs.ask_denied`；yolo → `bot_fs.yolo_allow`。
-  7. 【可审计】切档后 `<data_dir>/bot.log` 中出现 `bot.perm_mode_set`（检索命令：`grep -F "bot.perm_mode_set" "<data_dir>/bot.log" | tail -20`）。
-  8. 【可审计】步骤 6/7 命中 per-tool 规则时 `<data_dir>/bot.log` 中出现 `tool_rule.hit`（检索命令：`grep -F "tool_rule.hit" "<data_dir>/bot.log" | tail -20`）；`deny` 规则命中时该工具被硬拒，**规则优先于全局授权模式**。
-  9. 【可核对】`grep -n "bot_set_perm_mode" src-tauri/src/bot/config/commands.rs` 命中——写盘走窄命令只动 `perm_mode`，不整份替换写（不抹掉设置页并发改的白名单与开关）。
-  10. 【可核对】`grep -n "PermMode::Strict\|PermMode::Ask\|PermMode::Auto\|PermMode::Yolo" src-tauri/src/bot/config/types.rs` 命中四档枚举；`grep -n "tool_rules" src-tauri/src/bot/config/types.rs` 命中 per-tool 规则表字段（deny/ask/allow 首中即停，无命中走全局档）。
-- **证据**：截图（四档下拉 + 每档的弹窗/放行结果 + 设置页规则表）+ `<data_dir>/bot.log` 片段
-- **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（`bot.perm_mode_set` / `tool_rule.hit` / `bot_fs.denied` 三者任一 grep 不到 = 卡片过期；grep 得到但机器上没有对应事件 = 应用侧回归）
-- **缺口补验**：授权四档与 per-tool 规则表未验；精确命中与软链逃逸已验
+  1. 【可观测】授权模式下拉由严到宽两档：`ask` / `yolo`，每档右侧给一句完整语义——ask=「白名单内静默放行，白名单外弹授权窗」、yolo=「全部放行（覆盖已存在文件仍确认，仍记审计）」。
+  2. 【可核对】退役档不复活：直接调 `bot_set_perm_mode` 传 `mode="strict"` 或 `mode="auto"`，读回 `bot-config.json` 的 `perm_mode` 应为 `ask`（退役值与非法值同口径归一，绝不落 `yolo`）。
+  3. 【可观测】`ask` 档读白名单内文件：**不弹窗直接放行**（白名单判定在档位之前）；读白名单外文件：弹授权窗，窗内含 60s 倒计时、「拒绝 / 确认」两个出口，白名单外路径另给三选一（含「始终允许该目录」）；点「始终允许该目录」后该目录进入白名单。
+  4. 【可观测】`yolo` 档读白名单外文件：不弹窗、直接放行；pill 同时转成警示色（设置页里给出「⚠️ 不弹任何授权」的整段说明）。
+  5. 【可审计】`<data_dir>/bot.log` 中按档位出现对应事件（检索命令：`grep -F "bot_fs.ask_denied" "<data_dir>/bot.log" | tail -20`）：ask 放行 → `bot_fs.ask_allow_once` 或 `bot_fs.ask_allow_always`；ask 拒绝 → `bot_fs.ask_denied`；yolo → `bot_fs.yolo_allow`。
+  6. 【可审计】切档后 `<data_dir>/bot.log` 中出现 `bot.perm_mode_set`（检索命令：`grep -F "bot.perm_mode_set" "<data_dir>/bot.log" | tail -20`）。
+  7. 【可审计】步骤 4/5 命中 per-tool 规则时 `<data_dir>/bot.log` 中出现 `tool_rule.hit`（检索命令：`grep -F "tool_rule.hit" "<data_dir>/bot.log" | tail -20`）；`deny` 规则命中时该工具被硬拒，**规则优先于全局授权模式**。
+  8. 【可核对】`grep -n "bot_set_perm_mode" src-tauri/src/bot/config/commands.rs` 命中——写盘走窄命令只动 `perm_mode`，不整份替换写（不抹掉设置页并发改的白名单与开关）。
+  9. 【可核对】`grep -n "PermMode::Ask\|PermMode::Yolo" src-tauri/src/bot/config/types.rs` 命中两档枚举且 `grep -n "PermMode::Strict\|PermMode::Auto" src-tauri/src` 无命中；`grep -n "tool_rules" src-tauri/src/bot/config/types.rs` 命中 per-tool 规则表字段（deny/ask/allow 首中即停，无命中走全局档）。
+- **证据**：截图（两档下拉 + 每档的弹窗/放行结果 + 设置页规则表）+ `<data_dir>/bot.log` 片段
+- **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（`bot.perm_mode_set` / `tool_rule.hit` / `bot_fs.ask_denied` 三者任一 grep 不到 = 卡片过期；grep 得到但机器上没有对应事件 = 应用侧回归）
+- **缺口补验**：授权两档与 per-tool 规则表未验；精确命中与软链逃逸已验
 
 ### ACC-G-03 · 密钥纪律：key 不落明文配置 + 厂商用自己的 key
 

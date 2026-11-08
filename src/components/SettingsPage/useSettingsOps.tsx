@@ -97,7 +97,7 @@ export function useSettingsOps(params: SettingsOpsParams) {
     setConfig(next);
     await saveConfig(next);
   };
-  const setPermMode = async (mode: "strict" | "ask" | "auto" | "yolo") => {
+  const setPermMode = async (mode: "ask" | "yolo") => {
     if (configBusy || config.permMode === mode) return;
     const next = { ...config, permMode: mode };
     setConfig(next);

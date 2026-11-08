@@ -372,10 +372,19 @@ mod tests {
 
     #[test]
     fn perm_mode_parses_known_values_and_falls_back() {
-        assert_eq!(PermMode::from_cfg(Some("strict")), PermMode::Strict);
         assert_eq!(PermMode::from_cfg(Some("ask")), PermMode::Ask);
         assert_eq!(PermMode::from_cfg(Some("yolo")), PermMode::Yolo);
-        // 非法值/空白回退 Ask（安全默认偏严一侧的可用形态）
+        // 退役值（strict/auto）与非法值/空白一律回退 Ask（安全默认偏严一侧的可用形态）
+        assert_eq!(
+            PermMode::from_cfg(Some("strict")),
+            PermMode::Ask,
+            "退役档回落 Ask"
+        );
+        assert_eq!(
+            PermMode::from_cfg(Some("auto")),
+            PermMode::Ask,
+            "退役档回落 Ask"
+        );
         assert_eq!(
             PermMode::from_cfg(Some("YOLO ")),
             PermMode::Ask,
@@ -384,7 +393,6 @@ mod tests {
         assert_eq!(PermMode::from_cfg(Some("garbage")), PermMode::Ask);
         assert_eq!(PermMode::from_cfg(Some("")), PermMode::Ask);
         // as_str 往返
-        assert_eq!(PermMode::Strict.as_str(), "strict");
         assert_eq!(PermMode::Ask.as_str(), "ask");
         assert_eq!(PermMode::Yolo.as_str(), "yolo");
     }

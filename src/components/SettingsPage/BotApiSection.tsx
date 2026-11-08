@@ -8,7 +8,7 @@ import type { SettingsConfig } from "./types";
 
 export type BotApiSectionProps = {
   config: SettingsConfig;
-  setPermMode: (mode: "strict" | "ask" | "auto" | "yolo") => Promise<void>;
+  setPermMode: (mode: "ask" | "yolo") => Promise<void>;
   configBusy: boolean;
   setConfig: Dispatch<SetStateAction<SettingsConfig>>;
   renderSaveButton: (cls: string) => JSX.Element;
@@ -32,10 +32,8 @@ export function BotApiSection({
           <div className="flex gap-2">
             {(
               [
-                ["strict", "严格白名单"],
-                ["ask", "询问后放行"],
-                ["auto", "白名单内自动"],
-                ["yolo", "yolo 全放行"],
+                ["ask", "弹授权"],
+                ["yolo", "全放行"],
               ] as const
             ).map(([mode, label]) => (
               <button
@@ -51,14 +49,10 @@ export function BotApiSection({
             ))}
           </div>
           <p className="text-xs text-[var(--t6)] leading-snug">
-            {config.permMode === "strict" &&
-              "白名单外的文件访问一律拒绝。"}
             {config.permMode === "ask" &&
-              "白名单内的文件直接读；白名单外弹窗请你授权（允许一次 / 始终允许该目录 / 拒绝）。"}
-            {config.permMode === "auto" &&
-              "白名单内的文件操作全自动（含覆盖写免确认）——定时/工作流无人值守写文件不再失败；白名单外仍弹窗授权。"}
+              "白名单内的文件操作静默放行；白名单外弹窗请你授权（允许一次 / 始终允许该目录 / 拒绝）。"}
             {config.permMode === "yolo" &&
-              "⚠️ 不弹任何授权：机器人可读本机任意文件，且 Python 编程免开关直接执行（以本机用户权限；Python 不联网）。仅在你完全信任所用模型时开启。"}
+              "⚠️ 不弹任何授权：机器人可读本机任意文件，且 Python 编程免开关直接执行（以本机用户权限；Python 不联网）。覆盖已存在文件仍会单独确认一次。仅在你完全信任所用模型时开启。"}
           </p>
         </div>
         {/* per-tool 权限规则表（deny/ask/allow 首中即停；无命中走授权模式） */}

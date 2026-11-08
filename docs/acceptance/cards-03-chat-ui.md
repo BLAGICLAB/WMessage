@@ -420,7 +420,7 @@
 - **前置**：机器人总开关已开；已配至少一个可用模型；已配至少两个可用模型条目（便于验快切）
 - **步骤**：
   1. 看输入卡底栏，依次点三个控件：🧠 模型下拉、⚡ 推理强度、🛡 授权模式。
-  2. 展开 🛡 授权模式，看四档顺序与每档说明。
+  2. 展开 🛡 授权模式，看两档顺序与每档说明。
   3. 选「全放行」（yolo），看 pill 颜色；再切回「弹授权」。
   4. 发一句触发白名单外写盘的请求，核对授权档位确实生效。
   5. 在设置页并发改动白名单后，回到聊天窗改授权档位，再回设置页看白名单是否被覆盖。
@@ -428,18 +428,18 @@
   7. 两侧栏都展开，把窗口拖到最窄，再慢慢拉宽；中途切到一个名字很长的模型再拖一次。
 - **判据**：
   1. 【可观测】输入卡底栏三件套齐全：🧠 模型下拉、⚡ 推理强度（会话级覆盖，不回写）、🛡 授权模式；不再有「🔍 执行过程详细度」控件（已退役，工具明细恒单档呈现，见 ACC-I-09）。
-  2. 【可观测】🛡 下拉四档**由严到宽**排列：硬拒（strict）/ 弹授权（ask）/ 自动（auto）/ 全放行（yolo）。
-  3. 【可观测】每档都带一句完整语义；「自动」档必须写全「白名单内自动放行，白名单外仍弹窗」，不是只写前半句。
+  2. 【可观测】🛡 下拉两档**由严到宽**排列：弹授权（ask）/ 全放行（yolo）。
+  3. 【可观测】每档都带一句完整语义；「弹授权」档必须写全「白名单内静默放行，白名单外弹授权窗」——白名单判定在档位之前，只写「白名单外弹窗」会让人以为它什么都弹。
   4. 【可观测】选中「全放行」时 pill 转警示色（danger 描边与文字），其余档位为普通描边。
   5. 【可审计】改档位后 `"~/Library/Application Support/com.renshi.wmessage/bot.log"` 出现 `bot.perm_mode_set`（带 `mode` 字段）；写盘走窄命令 `bot_set_perm_mode`，不是整份替换的 `bot_set_config`。
-  6. 【可核对】非法档位值按 `ask` 归一，不得当成 `yolo` 落盘（直接调 `bot_set_perm_mode` 传 `mode="bogus"`，随后读回 `bot-config.json` 的 `perm_mode` 应为 `ask`）。
+  6. 【可核对】退役值（`strict`/`auto`）与非法档位值按 `ask` 归一，不得当成 `yolo` 落盘（直接调 `bot_set_perm_mode` 传 `mode="strict"` 与 `mode="bogus"`，随后读回 `bot-config.json` 的 `perm_mode` 应为 `ask`）。
   7. 【可核对】第 5 步并发改白名单后，聊天窗改授权档位**不覆盖**设置页的白名单与开关（设置页的白名单条目仍在）。
   8. 【可观测】🧠 下拉可切模型：切换后 pill 上的模型名跟着变，下一轮回复由新模型作答（协议分组标注为「OpenAI 兼容」/「Anthropic 兼容」）。
   9. 【可观测】窗口拖不到 950px 以下；最窄时底栏是一行全图标（＋ / 🛡 / 🧠 / ⚡ / 发送），互不重叠、不换行、没有 ⋯ 菜单；拉宽过程中文字按 推理强度 → 授权 → 模型 的顺序依次回来；长模型名会比短模型名更早图标化。
   10. 【可观测】图标态悬停：🧠 显示「切换模型（当前：<全名>）」，🛡 显示档位全称与说明；推理强度被会话覆盖时 ⚡ 右上角有小圆点。
-- **证据**：截图（底栏三件套 + 🛡 四档下拉 + yolo 警示色 pill）+ `"~/Library/Application Support/com.renshi.wmessage/bot.log"` 片段（检索命令：`grep -F "bot.perm_mode_set" "~/Library/Application Support/com.renshi.wmessage/bot.log" | tail -20`）
-- **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "bot.perm_mode_set" src-tauri/src` 确认事件名还在源码里；四档语义文案看 `src/components/ChatPanel/constants.ts` 的 PERM_LABELS / PERM_HINTS / PERM_ORDER。
-- **缺口补验**：授权模式四档在输入卡内直接改、乐观更新失败回滚未验 —— 补验点：乐观更新失败回滚要在**落盘失败**时验（把 `"~/Library/Application Support/com.renshi.wmessage/bot-config.json"` 临时改成只读或用不可写路径逼 invoke 失败），此时 pill 必须弹错并**回滚**到旧档位，不许留在假绿状态。
+- **证据**：截图（底栏三件套 + 🛡 两档下拉 + yolo 警示色 pill）+ `"~/Library/Application Support/com.renshi.wmessage/bot.log"` 片段（检索命令：`grep -F "bot.perm_mode_set" "~/Library/Application Support/com.renshi.wmessage/bot.log" | tail -20`）
+- **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "bot.perm_mode_set" src-tauri/src` 确认事件名还在源码里；两档语义文案看 `src/components/ChatPanel/constants.ts` 的 PERM_LABELS / PERM_HINTS / PERM_ORDER。
+- **缺口补验**：授权模式两档在输入卡内直接改、乐观更新失败回滚未验 —— 补验点：乐观更新失败回滚要在**落盘失败**时验（把 `"~/Library/Application Support/com.renshi.wmessage/bot-config.json"` 临时改成只读或用不可写路径逼 invoke 失败），此时 pill 必须弹错并**回滚**到旧档位，不许留在假绿状态。
 
 ### ACC-I-21 · 输入区草稿按会话隔离且跨卸载存活
 

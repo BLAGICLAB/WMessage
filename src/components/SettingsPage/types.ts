@@ -347,7 +347,7 @@ export type SettingsConfig = {
   deepseekFetchEnabled: boolean;
   pythonTimeoutSecs: string;
   archiveAfterDays: string;
-  permMode: "strict" | "ask" | "auto" | "yolo";
+  permMode: "ask" | "yolo";
   toolRules: Array<{ tool: string; action: "allow" | "ask" | "deny" }>;
   memoryConsolidation: {
     enabled: boolean;

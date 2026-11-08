@@ -7,8 +7,8 @@ use super::*;
 /// 提取文档文本：path 给定则直读（任务卡绑定文件），否则弹框选文件；返回路径 + 文本供模型阅读/润色
 /// extract_document path 白名单：任务卡绑定文件 / AI_Gen_Files 目录内文件静默放行。
 /// 规范化路径比较，防 ../ 绕过。无 path 时走弹框（用户亲手选，不受此限）。
-/// 授权分流：其余路径不硬拒，走 bot_fs::resolve_with_perm 分流
-///（strict 硬拒 / ask 弹授权窗 / yolo 放行），拒绝文案透传给模型。
+/// 授权分流：其余路径走 bot_fs::resolve_with_perm 分流
+///（ask 弹授权窗 / yolo 放行），拒绝文案透传给模型。
 /// interactive/session_id 透传给授权弹窗：后台执行（interactive=false）不弹窗直接拒。
 /// 路径校验的同步内核（**非 async**）：存在性 + 真实落点 + gen 目录真实落点。
 ///

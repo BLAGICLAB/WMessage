@@ -283,7 +283,7 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
               ? Math.min(MAX_ARCHIVE_DAYS, n)
               : null;
           })(),
-          // 授权模式（strict/ask/yolo）
+          // 授权模式（ask/yolo）
           permMode: c.permMode,
           // API 协议（openai/anthropic）
           apiProvider: c.apiProvider,

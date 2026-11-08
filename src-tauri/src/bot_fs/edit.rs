@@ -6,7 +6,7 @@ use super::*;
 //
 // 写白名单 ≠ 读白名单（设计决策，spec ）：可写根 = AI_Gen_Files + 任务卡绑定文件夹
 // + 设置页 allowedDirs；桌面/下载/文档默认项**只读不可写**——用户没显式授权改家目录
-// 文件。白名单外走 perm_mode 三分支：strict 拒 / ask 弹 danger 确认（每次，不持久化）/
+// 文件。白名单外走 perm_mode 两分支：ask 弹 danger 确认（每次，不持久化）/
 // yolo 放行+审计。
 
 /// 可写根的原始集合（纯内核，可测）：gen + 任务卡绑定文件夹 + cfg.allowedDirs。
@@ -145,10 +145,11 @@ pub(crate) async fn resolve_writable(
             );
             Ok(strip_verbatim(expanded))
         }
-        //  auto 档：白名单外降级 ask（写确认每次不持久化；无人值守拒）——与 Ask 同分支
-        crate::bot::PermMode::Ask | crate::bot::PermMode::Auto => {
-            // D-4 分类器兜底（同读路径口径：allow 免弹窗 / deny 拒 / unsure 落回弹窗）
-            if crate::bot::perm_mode(app) == crate::bot::PermMode::Auto && interactive {
+        // 白名单外：写确认每次不持久化；无人值守直接拒（见 ask_user_confirm）
+        crate::bot::PermMode::Ask => {
+            // 分类器兜底（灰度开关 autoGateClassifier，同读路径口径：
+            // allow 免弹窗 / deny 拒 / unsure 落回弹窗）
+            if interactive {
                 use crate::bot::gate::auto_classifier::Decision;
                 match crate::bot::gate::auto_classifier::auto_gate_decide(
                     app,
@@ -205,18 +206,6 @@ pub(crate) async fn resolve_writable(
                     "用户未授权写入该路径：{p}（可在设置页把目录加入白名单；后台执行时确认窗不可用，一律拒绝）"
                 ))
             }
-        }
-        crate::bot::PermMode::Strict => {
-            crate::audit_event!(
-                app,
-                crate::audit::AuditLevel::Warn,
-                "bot_fs.denied_write",
-                "path" => p,
-                "reason" => "不在可写目录内",
-            );
-            Err(format!(
-                "路径不在可写目录内：{p}（可写目录：AI_Gen_Files + 任务卡绑定文件夹 + 设置页 allowedDirs）"
-            ))
         }
     }
 }
@@ -606,20 +595,16 @@ pub async fn tool_write_file(
         .await
         .unwrap_or(false);
     if existed {
-        // auto 档白名单内的覆盖写自动接受（resolve_writable 已过白名单闸；
-        // acceptEdits 核心语义——白名单内的「文件编辑类操作」不再人工确认）。
-        // yolo 档维持既有弹窗行为（默认行为零变更约束）；白名单外写入在
-        // resolve_writable 已按 ask 弹过窗，此处不重复确认。
-        let skip_confirm = crate::bot::perm_mode(app) == crate::bot::PermMode::Auto;
-        let approved = skip_confirm
-            || crate::bot_slash::ask_user_confirm(
-                app,
-                "write_file",
-                &format!("覆盖已存在文件：{}", canonical.display()),
-                interactive,
-                session_id,
-            )
-            .await;
+        // 覆盖已存在文件不可逆，任何档（含 yolo）都单独确认一次；白名单外
+        // 写入在 resolve_writable 已按 ask 弹过窗，此处不重复确认。
+        let approved = crate::bot_slash::ask_user_confirm(
+            app,
+            "write_file",
+            &format!("覆盖已存在文件：{}", canonical.display()),
+            interactive,
+            session_id,
+        )
+        .await;
         if !approved {
             // 非交互（子 agent）确认窗不可用自动拒——覆盖走 edit_file 精确修改
             return ToolResult::denied("覆盖未获确认，文件未修改。修改已有文件请用 edit_file（精确替换，无需确认）；新建文件请换一个文件名");

@@ -144,7 +144,7 @@ fn user_configured_hosts(app: &tauri::AppHandle) -> Vec<String> {
 }
 
 /// 判定主体（纯函数）：参数由调用方收集，弹窗不在其中。
-/// 判定顺序即信任顺序：产品出口 → 用户配置 → 会话授权 → 上下文硬分支 → perm 三档。
+/// 判定顺序即信任顺序：产品出口 → 用户配置 → 会话授权 → 上下文硬分支 → perm 两档。
 fn classify(
     host: &str,
     user_hosts: &[String],
@@ -182,13 +182,8 @@ fn classify(
     }
     match perm {
         PermMode::Yolo => Classified::Allowed("yolo"),
-        PermMode::Strict => Classified::Denied {
-            dest: "strict",
-            reason: format!("strict 模式不放行白名单外目的地（{host}）；可在设置页加入白名单"),
-        },
-        // auto 档在目的地维度没有「白名单内自动」可言（上面已判过白名单），
-        // 与 ask 同分支——和 bot_fs 的降级口径一致。
-        PermMode::Ask | PermMode::Auto => Classified::NeedConfirm(host.to_string()),
+        // 白名单/会话授权在上面已判过：走到这里的都是信任域外，弹窗按次授权
+        PermMode::Ask => Classified::NeedConfirm(host.to_string()),
     }
 }
 
@@ -204,7 +199,7 @@ pub async fn check_destination(
     let host = host.trim().to_ascii_lowercase();
     if host.is_empty() {
         return DestOutcome::Denied {
-            dest: "strict",
+            dest: "no_host",
             reason: "URL 无主机名".to_string(),
         };
     }
@@ -296,33 +291,20 @@ mod tests {
     /// 锚点：产品自有出口不经弹窗直接放行。
     #[test]
     fn product_egress_bypasses_user_gate() {
-        let out = classify("r.jina.ai", &[], false, false, true, PermMode::Strict);
+        let out = classify("r.jina.ai", &[], false, false, true, PermMode::Ask);
         assert_eq!(out, Classified::Allowed("product"));
     }
 
-    /// 锚点：白名单命中放行；未命中 strict 拒；未命中 ask 走确认。
+    /// 锚点：白名单命中放行；未命中 ask 走确认。
     #[test]
-    fn whitelist_hit_and_strict_deny_and_ask() {
+    fn whitelist_hit_and_ask_fallback() {
         let wl = vec!["api.example.com".to_string()];
         assert_eq!(
-            classify("api.example.com", &wl, false, false, true, PermMode::Strict),
+            classify("api.example.com", &wl, false, false, true, PermMode::Ask),
             Classified::Allowed("whitelist")
         );
         assert_eq!(
-            classify("other.com", &wl, false, false, true, PermMode::Strict),
-            Classified::Denied {
-                dest: "strict",
-                reason: "strict 模式不放行白名单外目的地（other.com）；可在设置页加入白名单"
-                    .to_string()
-            }
-        );
-        assert_eq!(
             classify("other.com", &wl, false, false, true, PermMode::Ask),
-            Classified::NeedConfirm("other.com".to_string())
-        );
-        // auto 档白名单外与 ask 同分支
-        assert_eq!(
-            classify("other.com", &wl, false, false, true, PermMode::Auto),
             Classified::NeedConfirm("other.com".to_string())
         );
     }
@@ -343,7 +325,7 @@ mod tests {
                 false,
                 true,
                 true,
-                PermMode::Strict
+                PermMode::Ask
             ),
             Classified::Allowed("whitelist")
         );

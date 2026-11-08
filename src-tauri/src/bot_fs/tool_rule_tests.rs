@@ -36,12 +36,13 @@ fn lookup_miss_and_dirty_data() {
     assert_eq!(lookup_tool_rule(Some(&rules), "edit_file"), None);
 }
 
-/// auto 档解析：显式 "auto" → Auto；非法/缺省回退 Ask（安全默认不变）
+/// 退役档解析："strict"/"auto" 与非法/缺省一律回退 Ask（安全默认不变）
 #[test]
-fn perm_mode_auto_from_cfg() {
-    assert_eq!(PermMode::from_cfg(Some("auto")), PermMode::Auto);
-    assert_eq!(PermMode::from_cfg(Some(" auto ")), PermMode::Auto);
+fn perm_mode_retired_values_fall_back_to_ask() {
+    assert_eq!(PermMode::from_cfg(Some("strict")), PermMode::Ask);
+    assert_eq!(PermMode::from_cfg(Some("auto")), PermMode::Ask);
+    assert_eq!(PermMode::from_cfg(Some(" auto ")), PermMode::Ask);
     assert_eq!(PermMode::from_cfg(Some("bogus")), PermMode::Ask);
     assert_eq!(PermMode::from_cfg(None), PermMode::Ask);
-    assert_eq!(PermMode::Auto.as_str(), "auto");
+    assert_eq!(PermMode::Ask.as_str(), "ask");
 }

@@ -84,8 +84,8 @@ export function useSettingsActions(params: SettingsActionsParams) {
     // 任务卡归档天数（数据管理卡）：完成满 N 天自动归档；后端 migration 兜底归档同源
     // 显示为字符串输入；"7" = 默认（后端 None 亦回 7）
     archiveAfterDays: String(DEFAULT_ARCHIVE_DAYS),
-    // 授权模式：strict=白名单外硬拒 / ask=白名单外弹授权（默认）/ yolo=全放行
-    permMode: "ask" as "strict" | "ask" | "auto" | "yolo",
+    // 授权模式：ask=白名单内静默放行、白名单外弹授权（默认）/ yolo=全放行
+    permMode: "ask" as "ask" | "yolo",
     //  per-tool 权限规则表（deny/ask/allow 首中即停；空表 = 无规则）
     toolRules: [] as Array<{ tool: string; action: "allow" | "ask" | "deny" }>,
     // 推理强度后台默认已常量化为 medium（无设置页入口）；聊天输入栏 ⚡ 的按会话覆盖保留——
@@ -298,13 +298,8 @@ export function useSettingsActions(params: SettingsActionsParams) {
           c.archiveAfterDays != null
             ? String(c.archiveAfterDays)
             : String(DEFAULT_ARCHIVE_DAYS),
-        // 老配置缺字段/非法值 → ask（与后端 PermMode::from_cfg 回退一致）
-        permMode:
-          c.permMode === "strict" ||
-          c.permMode === "yolo" ||
-          c.permMode === "auto"
-            ? c.permMode
-            : "ask",
+        // 老配置缺字段/退役值/非法值 → ask（与后端 PermMode::from_cfg 回退一致）
+        permMode: c.permMode === "yolo" ? "yolo" : "ask",
         // 记忆整理：缺字段/老后端 → 默认（启用 + daily）；非法 interval 回退 daily
         memoryConsolidation: {
           enabled: c.memoryConsolidation?.enabled ?? true,

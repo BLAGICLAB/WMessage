@@ -506,8 +506,9 @@ pub fn bot_set_active_model(app: AppHandle, model_id: String) -> CommandResult<B
     bot_get_config(app)
 }
 
-/// 授权模式落盘的纯函数：只认四个合法值，非法值按 Ask 归一（与
-/// `PermMode::from_cfg` 同口径——安全默认偏严，不因为前端传了脏值就放宽成 yolo）。
+/// 授权模式落盘的纯函数：只认 ask/yolo 两个合法值，退役值（strict/auto）与
+/// 非法值按 Ask 归一（与 `PermMode::from_cfg` 同口径——安全默认偏严，
+/// 不因为前端传了脏值就放宽成 yolo）。
 pub fn apply_perm_mode(cfg: &mut BotConfig, mode: &str) -> PermMode {
     let m = PermMode::from_cfg(Some(mode));
     cfg.perm_mode = Some(m.as_str().to_string());
@@ -527,7 +528,7 @@ pub fn bot_set_perm_mode(app: AppHandle, mode: String) -> CommandResult<BotConfi
     let mut cfg = io::load_config(&app);
     let applied = apply_perm_mode(&mut cfg, &mode);
     io::write_bot_config_file_locked(&crate::db::data_dir(&app), cfg)?;
-    // 授权档变化直接改变目的地判定行为（yolo↔ask↔strict），会话授权不再可信
+    // 授权档变化直接改变目的地判定行为（yolo↔ask），会话授权不再可信
     crate::bot_web::invalidate_grants();
     crate::audit::write_event(
         &app,
@@ -1020,7 +1021,7 @@ mod perm_mode_tests {
         }
     }
 
-    /// 授权档位落盘：四档原样写，非法值按 ask 归一。
+    /// 授权档位落盘：两档原样写，退役值/非法值按 ask 归一。
     ///
     /// 非法值必须落到 **ask**（弹窗）而不是 yolo（全放行）：这里是唯一一处
     /// 「用户在前端点了某个东西」直接变成「机器人放行多大」的边界，
@@ -1028,11 +1029,12 @@ mod perm_mode_tests {
     #[test]
     fn apply_perm_mode_normalizes_illegal_to_ask() {
         for (input, want) in [
-            ("strict", PermMode::Strict),
             ("ask", PermMode::Ask),
-            ("auto", PermMode::Auto),
             ("yolo", PermMode::Yolo),
             (" yolo ", PermMode::Yolo),
+            // 退役档与非法值同口径：一律落 ask，绝不落 yolo
+            ("strict", PermMode::Ask),
+            ("auto", PermMode::Ask),
             ("YOlo", PermMode::Ask),
             ("bogus", PermMode::Ask),
             ("", PermMode::Ask),

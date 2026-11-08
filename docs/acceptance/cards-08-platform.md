@@ -351,17 +351,17 @@
 - **失败处置**：先查在途登记（execute_mcp_direct 的 ActiveCallGuard 是否泄漏——panic 路径由 RAII 兜底）；再查 rmcp SEP-2260 关联校验（协议 ≥2026-07-28 时无在途关联的请求 rmcp 内部直接 invalid_params，属预期）。
 - **缺口补验**：实机端到端（真 server elicitation → 卡 → 应答回传）未验；stdio 服务器 elicitation 未接（范围外）；URL 模式未接（范围外）。
 
-### ACC-P-20 · auto 档分类器兜底
+### ACC-P-20 · ask 档分类器兜底
 
 - **SPEC**：6-125
 - **层级**：L1（自动化；实机端到端随下一轮实机批次抽验）
 - **历史卡**：—
 - **前置**：灰度开关 `autoGateClassifier` 默认 false（行为零变化）；判定模型复用 selfcheckModelId 槽位（需已配置且厂商已验证）
 - **步骤**：
-  1. 后端面：跑 `cargo test --lib -- bot::gate`（三例：开关关短路 unsure / 连拦达限停用与清零恢复 / 判定解析 fail-safe（非 allow/deny 词一律 unsure））。
+  1. 后端面：跑 `cargo test --lib -- bot::gate`（两例：开关关与连拦达限两条短路路径 / 判定解析 fail-safe（非 allow/deny 词一律 unsure））。
   2. 对拍：`grep -n "auto_gate_decide" src-tauri/src/bot_fs.rs src-tauri/src/bot_fs/edit.rs` 命中（读/写两闸点接线在案）；`grep -n "sync_from_cfg" src-tauri/src/bot/config/io.rs` 命中（开关两处同步）。
 - **判据**：
-  1. 【可核对】开关关 / 非 auto 档 / 非交互 → 行为与现状一致（不调模型）。
+  1. 【可核对】开关关 / 非 ask 档（即 yolo）/ 非交互 → 行为与现状一致（不调模型）。
   2. 【可核对】unsure 三来源（模型不可用 / 超时 8s / 输出不可解析）一律落回原弹窗，**绝不放行**。
   3. 【可核对】连续 3 次 deny → 本会话停用分类器（auto_gate.classifier_disabled 审计）回归全弹窗；allow 清零。
   4. 【可观测】auto_gate.classifier {decision, tool, latency_ms} 在 bot.log 可查；不出现在 llm.usage。

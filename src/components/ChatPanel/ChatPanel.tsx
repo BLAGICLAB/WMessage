@@ -444,10 +444,9 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
           );
           // RE-1 推理强度后台默认已常量化（medium）：这里只把会话基线拉回
           // medium——已选过覆盖的会话保持覆盖（验收 3）。
-          // 授权模式：非法/缺省回 ask（与后端 PermMode::from_cfg 一致）
+          // 授权模式：退役值/非法/缺省回 ask（与后端 PermMode::from_cfg 一致）
           const pm = c.permMode;
-          const next: PermMode =
-            pm === "strict" || pm === "yolo" || pm === "auto" ? pm : "ask";
+          const next: PermMode = pm === "yolo" ? pm : "ask";
           permModeRef.current = next;
           setPermMode(next);
         })

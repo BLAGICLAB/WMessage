@@ -79,24 +79,20 @@ export const PROVIDER_LABELS: Record<ModelItem["provider"], string> = {
 /** 授权模式短标签：进 pill 与下拉行首 */
 export const PERM_LABELS: Record<PermMode, string> = {
   ask: "弹授权",
-  strict: "硬拒",
-  auto: "自动",
   yolo: "全放行",
 };
 
 /** 授权模式一行完整语义（下拉右侧说明 + pill 的 title 共用一处）。
- *  「自动」档的两面必须写全：白名单内自动放行、白名单外降级弹窗——
- *  只写前半句会让人以为它就是全放行。 */
+ *  两档都吃白名单快车道——白名单判断排在档位之前，ask 的白名单内同样静默放行，
+ *  说明必须把这一面前半句写出来，不然 ask 看起来像「什么都弹」。 */
 export const PERM_HINTS: Record<PermMode, string> = {
-  ask: "白名单外弹授权窗",
-  strict: "白名单外直接拒绝，不弹窗",
-  auto: "白名单内自动放行，白名单外仍弹窗",
-  yolo: "全部放行不弹窗（仍记审计）",
+  ask: "白名单内静默放行，白名单外弹授权窗",
+  yolo: "全部放行（覆盖已存在文件仍确认，仍记审计）",
 };
 
 /** 下拉档位顺序：由严到宽。用户在这排里挑的是「放行多宽」，
  *  按宽度排比按枚举顺序更好比较——这是安全档，不做记忆化排序。 */
-export const PERM_ORDER: readonly PermMode[] = ["strict", "ask", "auto", "yolo"] as const;
+export const PERM_ORDER: readonly PermMode[] = ["ask", "yolo"] as const;
 
 /** 子 agent 六态 → 中文标签 + 徽标色（右侧栏徽标与收尾提示共用一份）。
  *  取消/预算耗尽各有自己的说法：都写成「失败」等于把用户的选择说成系统出错 */

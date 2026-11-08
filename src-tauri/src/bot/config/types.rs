@@ -133,9 +133,11 @@ pub struct BotConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub python_timeout_secs: Option<u64>,
     /// 文件/代码执行授权模式（Kimi CLI 风格）：
-    /// "strict" = 白名单外硬拒（旧行为）；
-    /// "ask"    = 白名单外弹授权窗（允许一次/始终允许该目录/拒绝）——默认；
-    /// "yolo"   = 全放行不弹窗（文件工具 + run_python 免开关），仍记审计。
+    /// "ask"  = 白名单内静默放行，白名单外弹授权窗（允许一次/始终允许该目录/
+    ///          拒绝）——默认；
+    /// "yolo" = 全放行不弹窗（文件工具 + run_python 免开关；write_file 覆盖
+    ///          已存在文件仍确认），仍记审计。
+    /// 退役值 "strict"/"auto" 与非法值一律按 from_cfg 回落 ask。
     /// None（老配置文件缺字段）= "ask"。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub perm_mode: Option<String>,
@@ -182,7 +184,7 @@ pub struct BotConfig {
     /// 的两处调用（load_config / update_config_file）。无设置页 UI，手改 config。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub deferred_tool_groups: Option<bool>,
-    /// auto 档分类器兜底开关（D-4 灰度）：true = auto 档白名单外弹窗前先过
+    /// ask 档分类器兜底开关（灰度）：true = ask 档白名单外弹窗前先过
     /// 一次轻量模型判定（allow 免弹窗 / deny 直接拒 / unsure 落回弹窗）；
     /// false/未配置 = 行为零变化。判定模型复用 selfcheckModelId 槽位。
     /// 同步进进程级开关见 gate::auto_classifier::sync_from_cfg 的两处调用。
@@ -338,7 +340,7 @@ impl Default for BotConfig {
             verifier_retry_max: None,   // 未配置 = 1 默认 verifier 拒绝重试上限（0 = 不重试）
             archive_after_days: None,   // 未配置 = 7 天默认（前端设置页数据管理可改）
             deferred_tool_groups: None, // 未配置 = 全量挂载（D-3 灰度开关默认关）
-            auto_gate_classifier: None, // 未配置 = 无分类器兜底（D-4 灰度开关默认关）
+            auto_gate_classifier: None, // 未配置 = 无分类器兜底（灰度开关默认关）
             disabled_vendors: Vec::new(), // 未配置 = 无厂商被禁用
             verified_vendors: Vec::new(), // 未配置 = 无厂商通过连接测试
             schema_version: BOT_CONFIG_SCHEMA_VERSION, // 新建配置即当前版本
@@ -373,32 +375,24 @@ impl ApiProvider {
 }
 
 /// 授权模式枚举：配置字符串归一化，非法值回退 Ask（安全默认偏严一侧的可用形态）。
-///  增第 4 档 **Auto**（Claude Code acceptEdits 语义）：白名单内的文件操作
-/// 自动放行（含 write_file 覆盖确认的跳过），白名单外降级 Ask（弹窗，后台无人
-/// 值守时照旧拒绝）——解法定时/工作流后台执行「写文件类任务因确认窗无人应答必失败」。
+/// 白名单判定排在档位之前（各档通用），所以 ask 即「白名单内静默放行、
+/// 白名单外弹窗」。退役值 "strict"/"auto" 走同一兜底回落 Ask。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermMode {
-    Strict,
     Ask,
-    /// 白名单内自动（含覆盖写免确认）；白名单外 = Ask 行为
-    Auto,
     Yolo,
 }
 
 impl PermMode {
     pub fn from_cfg(s: Option<&str>) -> Self {
         match s.map(|v| v.trim()) {
-            Some("strict") => PermMode::Strict,
-            Some("auto") => PermMode::Auto,
             Some("yolo") => PermMode::Yolo,
             _ => PermMode::Ask,
         }
     }
     pub fn as_str(&self) -> &'static str {
         match self {
-            PermMode::Strict => "strict",
             PermMode::Ask => "ask",
-            PermMode::Auto => "auto",
             PermMode::Yolo => "yolo",
         }
     }

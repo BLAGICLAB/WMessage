@@ -449,14 +449,14 @@ describe("ChatPanel", () => {
     await screen.findAllByText("默认会话");
     const pill = await screen.findByRole("button", { name: /弹授权/ });
     await user.click(pill);
-    await user.click(await screen.findByRole("option", { name: /自动/ }));
-    const next = await screen.findByRole("button", { name: /自动/ });
+    await user.click(await screen.findByRole("option", { name: /全放行/ }));
+    const next = await screen.findByRole("button", { name: /全放行/ });
     expect(mocks.invokeMock).toHaveBeenCalledWith("bot_set_perm_mode", {
-      mode: "auto",
+      mode: "yolo",
     });
     // 下拉选完自动收起（选完还开着会挡住下一次点发送）
     await waitFor(() =>
-      expect(screen.queryByRole("option", { name: /全放行/ })).toBeNull(),
+      expect(screen.queryByRole("option", { name: /弹授权/ })).toBeNull(),
     );
     expect(next).toBeInTheDocument();
   });

@@ -35,7 +35,7 @@ export interface BotConfigView {
   guardClaimDefaultKeywords?: string[];
   /** 任务卡归档天数（None = 后端默认 7） */
   archiveAfterDays?: number | null;
-  /** 授权模式：strict/ask/auto/yolo（None = ask） */
+  /** 授权模式：ask/yolo（None = ask；退役值 strict/auto 后端按非法值回落 ask） */
   permMode?: string | null;
   apiProvider?: string | null;
   modelsByProvider?: {

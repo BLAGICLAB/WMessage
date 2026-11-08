@@ -1,6 +1,6 @@
-//! auto 档分类器兜底（差距收编方案 D-4）。
+//! ask 档分类器兜底（灰度）。
 //!
-//! 触发条件四条全满足才实际调模型（方案 §六）：perm_mode==Auto（调用点判）+
+//! 触发条件四条全满足才实际调模型：perm_mode==Ask（调用点判）+
 //! interactive（调用点判）+ 灰度开关 `autoGateClassifier`（bot-config，默认
 //! false=行为零变化）+ selfcheckModelId 可解析且厂商已验证。
 //!
@@ -294,18 +294,16 @@ mod tests {
             .clear();
     }
 
-    /// 开关关 → 短路 unsure（调用点走原弹窗，行为零变化）
+    /// 两条短路路径合并单测串行跑：共用进程级 ENABLED / deny_streaks 全局态，
+    /// 拆成两个 #[test] 会并行互踩——开关窗口期把对方的 unsure 短路断言踩成 None。
     #[test]
-    fn disabled_short_circuits() {
+    fn short_circuit_paths() {
+        // 开关关 → 短路 unsure（调用点走原弹窗，行为零变化）
         reset();
         assert_eq!(short_circuit(Some("s1")), Some(Decision::Unsure));
         assert_eq!(short_circuit(None), Some(Decision::Unsure));
-    }
 
-    /// 连拦计数状态机：deny 累计到限后短路停用；清零后恢复判定
-    #[test]
-    fn deny_streak_limits() {
-        reset();
+        // 连拦计数状态机：deny 累计到限后短路停用；清零后恢复判定
         set_enabled(true);
         let sid = "s-streak";
         assert_eq!(short_circuit(Some(sid)), None, "未达限继续判定");

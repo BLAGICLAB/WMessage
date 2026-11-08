@@ -3,7 +3,7 @@
 //! 安全设计（Kimi CLI 风格「执行前授权」）：
 //! - 白名单（= 静默放行区）：内置默认（~/Desktop ~/Downloads ~/Documents + 任务卡绑定文件夹）
 //!   ∪ bot-config.json `allowedDirs`（追加语义，不整体替换默认）
-//! - 白名单外按 perm_mode 分流：strict=硬拒 / ask=弹授权窗
+//! - 白名单外按 perm_mode 分流：ask=弹授权窗
 //!   （允许一次/始终允许该目录/拒绝，始终允许自动写进 allowedDirs）/ yolo=直接放行
 //! - resolve_with_perm：展开 ~ → canonicalize（不存在即拒绝）→ 白名单或授权放行；
 //!   `..` 与软链逃逸在 canonicalize 后无处遁形；命中/授权/拒绝都记审计
@@ -271,7 +271,7 @@ fn append_session_read_dirs<R: tauri::Runtime>(
 
 /// 路径守卫（Kimi CLI 风格「执行前授权」）：
 /// ~ 展开 → canonicalize（不存在即拒）→ 白名单命中直接放行；
-/// 白名单外按 perm_mode 分流：strict 硬拒 / ask 弹授权窗（允许一次 /
+/// 白名单外按 perm_mode 分流：ask 弹授权窗（允许一次 /
 /// 始终允许该目录自动写入 allowedDirs / 拒绝）/ yolo 直接放行。全程记审计。
 /// interactive/session_id（会话隔离）：后台执行（interactive=false）
 /// 不弹授权窗直接拒；弹窗事件带 sessionId 供前端按会话过滤。
@@ -357,13 +357,13 @@ pub async fn resolve_with_perm(
             );
             Ok(strip_verbatim(canonical))
         }
-        //  auto 档：白名单外降级 ask（弹窗/无人值守拒）——与 Ask 同分支
-        crate::bot::PermMode::Ask | crate::bot::PermMode::Auto => {
-            // D-4 分类器兜底：auto 档 + 交互会话 + 灰度开关开时，弹窗前先过
+        // 白名单外：弹授权窗（无人值守直接拒，见 ask_path_confirm）
+        crate::bot::PermMode::Ask => {
+            // 分类器兜底（灰度开关 autoGateClassifier）：交互会话弹窗前先过
             // 一次轻量模型判定——allow 免弹窗、deny 直接拒、unsure 落回弹窗
             //（fail-safe：异常绝不变成放行）。无人值守（!interactive）不启用，
-            // 保持快速拒现状（方案 §六范围收窄）。
-            if crate::bot::perm_mode(app) == crate::bot::PermMode::Auto && interactive {
+            // 保持快速拒现状。
+            if interactive {
                 use crate::bot::gate::auto_classifier::Decision;
                 match crate::bot::gate::auto_classifier::auto_gate_decide(
                     app,
@@ -469,18 +469,6 @@ pub async fn resolve_with_perm(
                     ))
                 }
             }
-        }
-        crate::bot::PermMode::Strict => {
-            crate::audit_event!(
-                app,
-                crate::audit::AuditLevel::Warn,
-                "bot_fs.denied",
-                "path" => p,
-                "reason" => "不在白名单目录内",
-            );
-            Err(format!(
-                "路径不在白名单目录内：{p}（白名单：设置页 allowedDirs，默认 桌面/下载/文档 + 任务卡绑定文件夹）"
-            ))
         }
     }
 }
