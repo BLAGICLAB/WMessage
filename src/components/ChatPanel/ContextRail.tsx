@@ -41,6 +41,7 @@ import {
   SubagentElapsed,
 } from "./SubagentRowLine";
 import { SUBAGENT_STATUS } from "./constants";
+import { CONTEXT_RAIL_MIN_W } from "./chatLayout";
 import { SubagentDetailPanel } from "./SubagentDetailPanel";
 import type { SubagentActivityItem } from "../../lib/subagentActivity";
 
@@ -390,8 +391,10 @@ export function ContextRail({
       id="chat-context-rail"
       aria-label="上下文侧栏"
       // flex-1 与聊天主体的 flex-[2] 按 1:2 分剩余空间 → 侧栏 = 聊天区的 1/3；
-      // min/max 只在极端窗口兜底（窄窗不让侧栏挤成缝，宽窗不让正文消失）
-      className="flex min-w-[240px] max-w-[420px] flex-1 flex-col overflow-y-auto pl-3"
+      // min/max 只在极端窗口兜底（窄窗不让侧栏挤成缝，宽窗不让正文消失）。
+      // 最小宽度（CONTEXT_RAIL_MIN_W）是窗口最小宽度推导链的一环（chatLayout）
+      className="flex max-w-[420px] flex-1 flex-col overflow-y-auto pl-3"
+      style={{ minWidth: CONTEXT_RAIL_MIN_W }}
     >
       {/* 类别切换：切类别不打断对话（工作面在侧栏，主对话留在原位） */}
       <div className="mb-2 flex shrink-0 gap-1">

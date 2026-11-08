@@ -1,17 +1,16 @@
 // ChatPanel 子模块：斜杠命令 picker + 输入卡（ 拆分自 ChatPanel.tsx，JSX 逐字搬移）。
 // 上多行输入区（自动增高）、附件 chips（图片悬停缩略图）、下工具栏
 // （＋ 附件 / 🛡 授权模式 / 🧠 模型下拉 / ⚡ 推理强度 / 发送-停止一体键；
-// 窄宽度按 useComposerTier 三档降级——compact 图标化、mini 收进 ⋯ 菜单）。
+// 放不下时按 useComposerIconLevel 逐级图标化——推理强度 → 授权 → 模型，单行不换行）。
 // 发送/停止的调用语义由父级闭包提供，本组件不做任何数据流决策。
 
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   Brain,
   Image as ImageIcon,
   ListTodo,
-  MoreHorizontal,
   Paperclip,
   Plus,
   Shield,
@@ -19,17 +18,21 @@ import {
   Zap,
 } from "lucide-react";
 import { basename, isImagePath } from "../../format";
-import { useDismissable } from "../../lib/useDismissable";
+import {
+  COMPOSER_CHIP_ICON_W,
+  COMPOSER_GAP,
+  COMPOSER_PLUS_W,
+  COMPOSER_SEND_W,
+} from "./chatLayout";
 import {
   EFFORT_LABELS,
-  EFFORT_ORDER,
   PERM_HINTS,
   PERM_LABELS,
   PERM_ORDER,
   PROVIDER_LABELS,
   SLASH_COMMANDS,
 } from "./constants";
-import { useComposerTier } from "./useComposerTier";
+import { useComposerIconLevel } from "./useComposerIconLevel";
 import type {
   ModelItem,
   PermMode,
@@ -129,29 +132,25 @@ export function InputArea({
   model,
   effort,
 }: InputAreaProps) {
-  // 底栏降级分档量的是输入卡内容盒（底栏 flex 行的实际可用宽），
-  // 不是窗口——左右侧栏开合改变的是卡片宽，窗口断点量不出这个落差
+  // 底栏放不下时逐级图标化：推理强度 → 授权 → 模型，模型名信息量最大、最后才让。
+  // 图标态宽度是 chatLayout 里的常量，全图标行宽即聊天中栏的最小宽度——单行、
+  // 不换行、互不压住。底栏浮层都从卡内 absolute bottom-full 向上弹出：输入卡不得
+  // 加 overflow-hidden，裁剪会连浮层一起裁掉（防溢出靠定档与中栏下限）。
   const cardRef = useRef<HTMLDivElement | null>(null);
-  const tier = useComposerTier(cardRef);
-  // ⋯ 菜单只是推理强度的第二入口、不碰数据流，开合态留在本地。
-  // 底栏所有浮层都是 absolute bottom-full 从卡内向上弹出：输入卡不得加
-  // overflow-hidden 兜底，裁剪会连浮层一起裁掉（防溢出靠分档降级）。
-  const overflowBtnRef = useRef<HTMLButtonElement | null>(null);
-  const overflowDropdownRef = useRef<HTMLDivElement | null>(null);
-  const [overflowOpen, setOverflowOpen] = useState(false);
-  useDismissable(
-    overflowOpen,
-    () => setOverflowOpen(false),
-    [overflowBtnRef, overflowDropdownRef],
-    () => setOverflowOpen(false),
+  const effortText = effort.isOverridden
+    ? EFFORT_LABELS[effort.effective]
+    : "默认";
+  const permText = PERM_LABELS[perm.mode];
+  const level = useComposerIconLevel(
+    cardRef,
+    effortBtnRef,
+    permBtnRef,
+    modelBtnRef,
+    { effort: effortText, perm: permText, model: model.label },
   );
-  // 拖窗跨回宽档时 ⋯ 钮随档位卸载：开着的状态就地收掉（渲染期随档位调整），
-  // 免得再回窄档时菜单凭空开着
-  const [prevTier, setPrevTier] = useState(tier);
-  if (prevTier !== tier) {
-    setPrevTier(tier);
-    if (tier !== "mini") setOverflowOpen(false);
-  }
+  const effortIcon = level >= 1;
+  const permIcon = level >= 2;
+  const modelIcon = level >= 3;
   return (
     <>
       {/* 斜杠 picker 与输入卡共用 760px 限宽：与消息区同一条阅读带，
@@ -339,11 +338,12 @@ export function InputArea({
           rows={1}
           className="w-full min-h-[48px] max-h-40 overflow-y-auto resize-none bg-transparent outline-none text-xs text-[var(--t2)] leading-relaxed placeholder:text-[var(--t4)]"
         />
-        <div className="mt-1 flex items-center gap-1">
+        <div className="mt-1 flex items-center" style={{ gap: COMPOSER_GAP }}>
           <button
             type="button"
             aria-label="添加文件或图片"
-            className="shrink-0 h-7 px-1.5 flex items-center justify-center rounded-lg text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]"
+            className="shrink-0 h-7 flex items-center justify-center rounded-lg text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]"
+            style={{ width: COMPOSER_PLUS_W }}
             title="添加文件或图片，和消息一起发送（如：添加 Word 后输入「润色」；图片发给机器人识别：png / jpg / jpeg / webp / gif / bmp，最大 3MB/张、最多 4 张/消息）"
             onClick={pickFiles}
             disabled={viewedBusy}
@@ -361,23 +361,21 @@ export function InputArea({
               ref={permBtnRef}
               aria-haspopup="listbox"
               aria-expanded={perm.menuOpen}
-              aria-label={
-                tier === "mini"
-                  ? `授权模式 ${PERM_LABELS[perm.mode]}`
-                  : undefined
-              }
-              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] leading-4 transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97] ${
+              aria-label={permIcon ? `授权模式 ${permText}` : undefined}
+              className={`inline-flex items-center gap-1 rounded-full border py-0.5 text-[10px] leading-4 transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97] ${
+                permIcon ? "justify-center px-1.5" : "px-2"
+              } ${
                 perm.mode === "yolo"
                   ? "border-[var(--danger)] text-[var(--danger)] hover:bg-[var(--hover-bg)]"
                   : "border-[var(--edge)] text-[var(--t4)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
               }`}
-              title={`授权模式 ${PERM_LABELS[perm.mode]}：${PERM_HINTS[perm.mode]}（点击切换）`}
+              style={permIcon ? { width: COMPOSER_CHIP_ICON_W } : undefined}
+              title={`授权模式 ${permText}：${PERM_HINTS[perm.mode]}（点击切换）`}
               onClick={() => perm.setMenuOpen((v) => !v)}
             >
               <Shield size={10} aria-hidden />
-              {/* mini 档只留盾牌图标：档位语义靠红边色编码（yolo）与 tooltip，
-                  图标化省下的宽是极窄档主行放得下的关键一环 */}
-              {tier !== "mini" && PERM_LABELS[perm.mode]}
+              {/* 图标态只留盾牌：档位语义靠红边色编码（yolo）与 tooltip 保住 */}
+              {!permIcon && permText}
               <span aria-hidden className="text-[9px]">
                 {perm.menuOpen ? "▴" : "▾"}
               </span>
@@ -412,20 +410,26 @@ export function InputArea({
             )}
           </div>
           {/* 🧠 模型下拉（UI-1 从顶栏移入输入卡底栏；按钮/列表/切换逻辑不变，
-              相对按钮向上弹出，免 JS 测量定位）。标签宽度上限 150px；本 chip 是
-              底栏唯一可收缩项（min-w-0）：窄窗下其余芯片都 shrink-0，空间不够时
-              由它先压标签，发送/停止键才不会被顶出输入卡右缘 */}
-          <div className="relative min-w-0">
+              相对按钮向上弹出，免 JS 测量定位）。文字态标签上限 150px，模型名是
+              底栏信息量最大的一枚，定档时最后才图标化；文字态保留可收缩
+              （min-w-0 + truncate）兜住字体度量的一两像素偏差，图标态钉死宽度 */}
+          <div className={modelIcon ? "relative shrink-0" : "relative min-w-0"}>
             <button
               type="button"
               ref={modelBtnRef}
-              className="flex min-w-0 items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]"
-              title="切换模型"
+              aria-label={modelIcon ? `切换模型（当前：${model.label}）` : undefined}
+              className={`flex min-w-0 items-center gap-1 rounded-lg py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97] ${
+                modelIcon ? "justify-center px-1.5" : "px-2"
+              }`}
+              style={modelIcon ? { width: COMPOSER_CHIP_ICON_W } : undefined}
+              title={modelIcon ? `切换模型（当前：${model.label}）` : "切换模型"}
               onClick={() => model.setMenuOpen((v) => !v)}
             >
               <span className="flex min-w-0 items-center gap-1">
                 <Brain size={13} aria-hidden className="shrink-0" />
-                <span className="min-w-0 truncate max-w-[150px]">{model.label}</span>
+                {!modelIcon && (
+                  <span className="min-w-0 truncate max-w-[150px]">{model.label}</span>
+                )}
               </span>
               <span className="shrink-0 text-[10px]">
                 {model.menuOpen ? "▴" : "▾"}
@@ -481,144 +485,79 @@ export function InputArea({
           {/* ⚡ 推理强度（RE-1）：会话级覆盖下拉——未覆盖时按钮就叫「默认」
               （跟随后台档位这一层解释放下拉首项的悬停提示里），
               选档只存本会话内存、不回写设置；向上弹出，交互镜像模型下拉。
-              compact 档只留图标（会话覆盖时缀一枚小圆点，保住「是否覆盖」
-              这个信号）；mini 档撤出主行、收进 ⋯ 菜单 */}
-          {tier !== "mini" && (
-            <div className="relative shrink-0">
-              <button
-                type="button"
-                ref={effortBtnRef}
-                aria-label={
-                  tier !== "full"
-                    ? `推理强度：${effort.isOverridden ? EFFORT_LABELS[effort.effective] : "默认"}（只影响当前会话）`
-                    : undefined
-                }
-                className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]"
-                title="推理强度：只影响当前会话的发送，不写入设置"
-                onClick={() => effort.setMenuOpen((v) => !v)}
-              >
-                <span className="flex items-center gap-1">
-                  <Zap size={13} aria-hidden className="shrink-0" />
-                  {tier === "full" ? (
-                    <span>
-                      {effort.isOverridden
-                        ? EFFORT_LABELS[effort.effective]
-                        : "默认"}
-                    </span>
-                  ) : (
-                    effort.isOverridden && (
-                      <span
-                        aria-hidden
-                        className="h-1 w-1 rounded-full bg-[var(--brand)]"
-                      />
-                    )
+              底栏放不下时第一个图标化；会话覆盖时 ⚡ 右上角挂角标保住「是否
+              覆盖」这个信号（绝对定位，不占图标态的宽度） */}
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              ref={effortBtnRef}
+              aria-label={
+                effortIcon ? `推理强度：${effortText}（只影响当前会话）` : undefined
+              }
+              className={`flex items-center gap-1 rounded-lg py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97] ${
+                effortIcon ? "justify-center px-1.5" : "px-2"
+              }`}
+              style={effortIcon ? { width: COMPOSER_CHIP_ICON_W } : undefined}
+              title="推理强度：只影响当前会话的发送，不写入设置"
+              onClick={() => effort.setMenuOpen((v) => !v)}
+            >
+              <span className="flex items-center gap-1">
+                <span className="relative inline-flex shrink-0">
+                  <Zap size={13} aria-hidden />
+                  {effortIcon && effort.isOverridden && (
+                    <span
+                      aria-hidden
+                      data-testid="effort-override-dot"
+                      className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--brand)]"
+                    />
                   )}
                 </span>
-                <span className="shrink-0 text-[10px]">
-                  {effort.menuOpen ? "▴" : "▾"}
-                </span>
-              </button>
-              {effort.menuOpen && (
-                <div
-                  ref={effortDropdownRef}
-                  className="absolute bottom-full right-0 mb-2 w-44 nm-card p-1 rounded-xl z-50"
-                >
-                  <button
-                    className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
-                      !effort.isOverridden
-                        ? "nm-inset text-[var(--t1)] font-medium"
-                        : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                    }`}
-                    onClick={() => effort.setForSession(null)}
-                    title={`清掉本会话覆盖，跟随后台默认（当前：${EFFORT_LABELS[effort.base]}）`}
-                  >
-                    默认
-                  </button>
-                  {EFFORT_ORDER.map((lv) => (
-                    <button
-                      key={lv}
-                      className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
-                        effort.effective === lv && effort.isOverridden
-                          ? "nm-inset text-[var(--t1)] font-medium"
-                          : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                      }`}
-                      onClick={() => effort.setForSession(lv)}
-                    >
-                      {EFFORT_LABELS[lv]}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          {/* ⋯ 收纳菜单（mini 档）：推理强度撤出主行后的唯一入口，行内仍留
-              + / 🛡 / 🧠 / 发送。与三下拉同款浮层（向上弹出，免 JS 测量定位）；
-              推理强度选档即收（单选语义） */}
-          {tier === "mini" && (
-            <div className="relative shrink-0">
-              <button
-                type="button"
-                ref={overflowBtnRef}
-                aria-haspopup="menu"
-                aria-expanded={overflowOpen}
-                className="shrink-0 h-7 px-1.5 flex items-center justify-center rounded-lg text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]"
-                title="更多输入选项"
-                onClick={() => setOverflowOpen((v) => !v)}
+                {!effortIcon && <span>{effortText}</span>}
+              </span>
+              <span className="shrink-0 text-[10px]">
+                {effort.menuOpen ? "▴" : "▾"}
+              </span>
+            </button>
+            {effort.menuOpen && (
+              <div
+                ref={effortDropdownRef}
+                className="absolute bottom-full right-0 mb-2 w-44 nm-card p-1 rounded-xl z-50"
               >
-                <MoreHorizontal size={15} aria-hidden />
-              </button>
-              {overflowOpen && (
-                <div
-                  ref={overflowDropdownRef}
-                  role="menu"
-                  className="absolute bottom-full right-0 mb-2 w-44 nm-card p-1 rounded-xl z-50"
+                <button
+                  className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
+                    !effort.isOverridden
+                      ? "nm-inset text-[var(--t1)] font-medium"
+                      : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                  }`}
+                  onClick={() => effort.setForSession(null)}
+                  title={`清掉本会话覆盖，跟随后台默认（当前：${EFFORT_LABELS[effort.base]}）`}
                 >
-                  <p className="px-2 pt-1.5 pb-0.5 text-[10px] text-[var(--t5)]">
-                    推理强度（只影响当前会话）
-                  </p>
+                  默认
+                </button>
+                {(["off", "low", "medium", "high"] as const).map((lv) => (
                   <button
-                    role="menuitem"
+                    key={lv}
                     className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
-                      !effort.isOverridden
+                      effort.effective === lv && effort.isOverridden
                         ? "nm-inset text-[var(--t1)] font-medium"
                         : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
                     }`}
-                    onClick={() => {
-                      effort.setForSession(null);
-                      setOverflowOpen(false);
-                    }}
-                    title={`清掉本会话覆盖，跟随后台默认（当前：${EFFORT_LABELS[effort.base]}）`}
+                    onClick={() => effort.setForSession(lv)}
                   >
-                    默认
+                    {EFFORT_LABELS[lv]}
                   </button>
-                  {EFFORT_ORDER.map((lv) => (
-                    <button
-                      key={lv}
-                      role="menuitem"
-                      className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
-                        effort.effective === lv && effort.isOverridden
-                          ? "nm-inset text-[var(--t1)] font-medium"
-                          : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                      }`}
-                      onClick={() => {
-                        effort.setForSession(lv);
-                        setOverflowOpen(false);
-                      }}
-                    >
-                      {EFFORT_LABELS[lv]}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
+          </div>
           {/* 发送/停止一体键：回复中变为红描边圆形停止键，
               点击即 bot_stop 中断本次运行；中断/回答结束自动变回发送键 */}
           {viewedBusy ? (
             <button
               type="button"
               aria-label="停止当前回复"
-              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center border border-[var(--danger)] text-[var(--danger)] hover:bg-[var(--hover-bg)] transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]"
+              className="shrink-0 h-8 rounded-full flex items-center justify-center border border-[var(--danger)] text-[var(--danger)] hover:bg-[var(--hover-bg)] transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]"
+              style={{ width: COMPOSER_SEND_W }}
               title="停止当前回复"
               onClick={onStop}
             >
@@ -627,7 +566,8 @@ export function InputArea({
           ) : (
             <button
               type="button"
-              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-[var(--t1)] text-[var(--bg)] hover:opacity-85 transition-[opacity,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]"
+              className="shrink-0 h-8 rounded-full flex items-center justify-center bg-[var(--t1)] text-[var(--bg)] hover:opacity-85 transition-[opacity,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]"
+              style={{ width: COMPOSER_SEND_W }}
               title="发送（Enter 发送，Shift+Enter 换行）"
               aria-label="发送"
               onClick={send}

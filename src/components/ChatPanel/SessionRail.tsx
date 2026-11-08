@@ -5,6 +5,7 @@
 
 import { MessageSquare, Plus, Trash2 } from "lucide-react";
 import { relativeTime } from "../../format";
+import { SESSION_RAIL_W } from "./chatLayout";
 import type { Session } from "./types";
 
 type SessionRailProps = {
@@ -26,11 +27,12 @@ export function SessionRail({
     <aside
       id="chat-session-rail"
       aria-label="会话列表"
-      // 224px：主导航（NAV_W）与本栏的宽度此消彼长——导航收窄省下的转给这里，
-      // 导航按「最宽一行装得下」加宽时再从这里扣回去，聊天主体的宽度不变。
-      // 会话标题普遍较长，这一栏窄一像素首行就少两个字。窗口无最小宽度约束
-      // （tauri.conf.json），侧栏自身不缩：先压聊天主体
-      className="flex w-[224px] shrink-0 flex-col border-r border-[var(--edge)] pr-3"
+      // 宽度（SESSION_RAIL_W）：主导航（NAV_W）与本栏此消彼长——导航收窄省下的
+      // 转给这里，导航按「最宽一行装得下」加宽时再从这里扣回去，聊天主体的宽度不变。
+      // 会话标题普遍较长，这一栏窄一像素首行就少两个字。侧栏自身不缩；它也是窗口
+      // 最小宽度推导链的一环（chatLayout），改宽度只改那里的常量
+      className="flex shrink-0 flex-col border-r border-[var(--edge)] pr-3"
+      style={{ width: SESSION_RAIL_W }}
     >
       {/* 「新建对话」占满整行：折叠入口统一在聊天头部，侧栏内不再放第二个 */}
       <button

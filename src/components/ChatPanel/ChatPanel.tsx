@@ -28,6 +28,7 @@ import { PlanPanel } from "./PlanPanel";
 import { AskCard, useAskCards } from "./AskCard";
 import { UsageMeter } from "./UsageMeter";
 import { InputArea } from "./InputArea";
+import { COMPOSER_MIN_W } from "./chatLayout";
 import { STICK_BOTTOM_PX } from "./constants";
 import { TracePanel } from "../TracePanel";
 import { useChatSessions } from "./useChatSessions";
@@ -823,8 +824,13 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
       )}
       {/* flex-[2]：与右侧栏的 flex-1 按 2:1 分剩余空间 —— 侧栏恰为聊天区的
           1/3。写百分比（w-[33.333%]）的基准是根容器（含左侧会话栏），
-          与「聊天区的 1/3」不是一回事 */}
-      <div className="relative flex min-w-0 flex-[2] flex-col">
+          与「聊天区的 1/3」不是一回事。最小宽度 = 输入卡底栏全图标行装得下
+          （COMPOSER_MIN_W），显式 min-width 同时顶替 flex 默认的 min-width:auto，
+          长串不可断内容撑不宽这一列 */}
+      <div
+        className="relative flex flex-[2] flex-col"
+        style={{ minWidth: COMPOSER_MIN_W }}
+      >
       {/* 拖放提示层：文件悬停在聊天区上时显示，松开即加入附件 */}
       {dragHover && (
         <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-[var(--brand)] bg-black/20">

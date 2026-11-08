@@ -3,6 +3,11 @@ import { chatDefaultInvoke } from "../test/chatTestMocks";
 import { render, screen, waitFor, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatPanel } from "./ChatPanel";
+import {
+  COMPOSER_MIN_W,
+  CONTEXT_RAIL_MIN_W,
+  SESSION_RAIL_W,
+} from "./ChatPanel/chatLayout";
 import * as streamState from "./ChatPanel/streamState";
 import { stubScrollNoop } from "../test/scrollNoop";
 
@@ -642,5 +647,24 @@ describe("ChatPanel", () => {
       mocks.invokeMock.mockImplementation(prevInvokeImpl!);
       mocks.listenMock.mockImplementation(prevListenImpl!);
     }
+  });
+});
+
+describe("ChatPanel 布局尺寸取自 chatLayout 推导链", () => {
+  it("两侧栏全开：中栏下限 = 底栏全图标行装得下，两侧栏宽度同源", async () => {
+    mocks.invokeMock.mockImplementation(chatDefaultInvoke);
+    // 右侧栏默认收起：先打开，验「全展开」这一最挤的布局
+    localStorage.setItem("chat-ctx-open", "1");
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    const sessionRail = screen.getByRole("complementary", { name: "会话列表" });
+    expect(sessionRail.style.width).toBe(`${SESSION_RAIL_W}px`);
+    const ctxRail = screen.getByRole("complementary", { name: "上下文侧栏" });
+    expect(ctxRail.style.minWidth).toBe(`${CONTEXT_RAIL_MIN_W}px`);
+    // 中栏：输入卡往上找第一个钉了最小宽度的祖先
+    let el: HTMLElement | null = screen.getByTitle("切换模型");
+    while (el && !el.style.minWidth) el = el.parentElement;
+    expect(el?.style.minWidth).toBe(`${COMPOSER_MIN_W}px`);
+    expect(el?.className).toContain("flex-[2]");
   });
 });
