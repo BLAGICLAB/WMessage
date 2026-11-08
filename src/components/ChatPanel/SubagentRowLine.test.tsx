@@ -102,4 +102,18 @@ describe("SubagentRowLine 子 agent 单行摘要", () => {
     render(<SubagentProgress run={run({ startedAt: t0 - 125_000 })} />);
     expect(screen.getByText("2m 05s")).toBeTruthy();
   });
+
+  it("外壳的尾巴与时长同块（折行时不落单）；没有任何读数时尾巴照样显示", () => {
+    const t0 = Date.now();
+    vi.setSystemTime(t0);
+    const { unmount } = render(
+      <SubagentProgress run={run({ startedAt: t0 - 4000 })} tail={<span>详情 ›</span>} />,
+    );
+    expect(screen.getByText("4s").parentElement).toBe(
+      screen.getByText("详情 ›").parentElement,
+    );
+    unmount();
+    render(<SubagentProgress run={run({ status: "queued" })} tail={<span>详情 ›</span>} />);
+    expect(screen.getByText("详情 ›")).toBeTruthy();
+  });
 });

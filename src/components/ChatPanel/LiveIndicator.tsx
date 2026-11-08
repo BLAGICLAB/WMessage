@@ -43,12 +43,22 @@ export function LiveIndicator({
         ? (detail ?? "正在思考")
         : "正在回复";
   return (
-    <span className="flex shrink-0 items-center gap-1.5 text-[10px]">
-      <Loader2 size={10} className="wmsg-activity text-[var(--brand)]" aria-hidden />
-      <span style={GRADIENT_TEXT} className="wmsg-live-label tabular-nums">
-        {label}
+    // 文案与时长分段、段内不断行：窄栏放不下时时长整块折到下一行，
+    // 不再被挤成「8m / 11s」两截；转圈图标钉在首行（1.625em = 本行一行高）
+    <span className="flex items-start gap-1.5 text-[10px] leading-relaxed">
+      <span className="flex h-[1.625em] shrink-0 items-center">
+        <Loader2 size={10} className="wmsg-activity text-[var(--brand)]" aria-hidden />
       </span>
-      {secs != null && <span className="tabular-nums text-[var(--t4)]">{fmtElapsed(secs)}</span>}
+      <span className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+        <span style={GRADIENT_TEXT} className="wmsg-live-label tabular-nums">
+          {label}
+        </span>
+        {secs != null && (
+          <span className="whitespace-nowrap tabular-nums text-[var(--t4)]">
+            {fmtElapsed(secs)}
+          </span>
+        )}
+      </span>
     </span>
   );
 }

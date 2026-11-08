@@ -7,6 +7,7 @@
 
 import { Bot } from "lucide-react";
 import {
+  FIRST_LINE_SLOT,
   SubagentCancelButton,
   SubagentRowLine,
 } from "./SubagentRowLine";
@@ -38,18 +39,22 @@ export function SubagentStrip({
     <div className="nm-card mb-2 rounded-xl px-2 py-1.5">
       <button
         type="button"
-        className="flex w-full items-center gap-1.5 text-left"
+        className="flex w-full items-start gap-1.5 text-left"
         aria-expanded={expanded}
         onClick={onToggleExpanded}
       >
-        <Bot size={12} aria-hidden className="shrink-0 text-[var(--brand)]" />
-        <span className="text-[11px] font-medium text-[var(--t2)]">
-          子 Agent
+        {/* 标签与计数各自不断行，窄栏放不下时计数整块折到下一行——
+            不再被挤成「子 / Agent」「1 个执 / 行中」 */}
+        <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5">
+          <span className="flex items-center gap-1.5 whitespace-nowrap text-[11px] font-medium text-[var(--t2)]">
+            <Bot size={12} aria-hidden className="shrink-0 text-[var(--brand)]" />
+            子 Agent
+          </span>
+          <span className="whitespace-nowrap font-mono text-[10px] text-[var(--t5)]">
+            {runningCount > 0 ? `${runningCount} 个执行中` : `${subagents.length} 个`}
+          </span>
         </span>
-        <span className="font-mono text-[10px] text-[var(--t5)]">
-          {runningCount > 0 ? `${runningCount} 个执行中` : `${subagents.length} 个`}
-        </span>
-        <span aria-hidden className="ml-auto shrink-0 text-[10px] text-[var(--t5)]">
+        <span aria-hidden className="shrink-0 text-[10px] text-[var(--t5)]">
           {expanded ? "▴" : "▾"}
         </span>
       </button>
@@ -58,21 +63,26 @@ export function SubagentStrip({
           {shown.map((s) => (
             <div
               key={s.id}
-              className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+              className="flex w-full items-start gap-1.5 rounded-md px-1.5 py-1 text-[11px] leading-relaxed text-[var(--t3)] hover:bg-[var(--hover-bg)]"
             >
               <button
                 type="button"
                 title={`${s.title}${s.error ? `（${s.error}）` : ""}`}
-                className="flex min-w-0 flex-1 items-center gap-1.5 text-left hover:text-[var(--t2)]"
+                className="flex min-w-0 flex-1 items-start gap-1.5 text-left hover:text-[var(--t2)]"
                 onClick={() => onOpen(s.id)}
               >
-                <SubagentRowLine run={s} />
-                {/* 侧栏入口提示：点它去哪儿，得让人看得见 */}
-                <span className="shrink-0 text-[10px] text-[var(--t6)]">
-                  详情 ›
-                </span>
+                <SubagentRowLine run={s}>
+                  {/* 侧栏入口提示：点它去哪儿，得让人看得见 */}
+                  <span className="whitespace-nowrap text-[10px] text-[var(--t6)]">
+                    详情 ›
+                  </span>
+                </SubagentRowLine>
               </button>
-              <SubagentCancelButton run={s} onCancel={onCancel} />
+              <SubagentCancelButton
+                run={s}
+                onCancel={onCancel}
+                className={FIRST_LINE_SLOT}
+              />
             </div>
           ))}
         </div>

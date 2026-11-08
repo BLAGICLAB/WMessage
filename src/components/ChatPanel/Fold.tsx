@@ -20,7 +20,8 @@ export function Fold({
         aria-expanded={open}
         // 面板未渲染（收起或无内容）时不能引用不存在的 id（a11y：aria-controls 指向必须存在）
         aria-controls={open && children ? panelId : undefined}
-        className="inline-flex items-center gap-1 max-w-full text-[10px] text-[var(--t5)] hover:text-[var(--t3)]"
+        // items-start：标题在窄栏下可能折成多行（工具折叠的分段整块换行），箭头钉在首行
+        className="inline-flex items-start gap-1 max-w-full text-[10px] text-[var(--t5)] hover:text-[var(--t3)]"
         onClick={() => setOpen((v) => !v)}
       >
         <span className="w-2 shrink-0 inline-block">{open ? "▾" : "▸"}</span>

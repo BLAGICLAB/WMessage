@@ -380,6 +380,11 @@ function ToolStatusMark({ t }: { t: ToolCall }) {
   );
 }
 
+/** 工具折叠标题的段首分隔点：点位宽与段间距相等（1.5em ≈ 原先等宽字体的「 · 」），
+ *  段整体左移同宽 */
+const SEGMENT_DOT =
+  "-ml-[1.5em] before:inline-block before:w-[1.5em] before:text-center before:content-['·']";
+
 /** 工具调用：一行可折叠的摘要（🔧 调用工具 N/M），展开才是 mono pill 徽章行
  *  + 逐工具入参/结果。
  *
@@ -405,22 +410,33 @@ const ToolBadges = memo(function ToolBadges({
     <div className="mb-1">
       <Fold
         title={
-          <span className="inline-flex items-center gap-1">
-            <Wrench size={11} aria-hidden className="shrink-0" />
-            <span className="font-mono">
-              调用工具 {done}/{tools.length}
-              {failed > 0 && (
-                <span className="text-[var(--danger)]">
-                  {" "}
-                  · {failed} 失败
-                </span>
-              )}
-              {totalMs > 0 && ` · Σ ${formatMsShort(totalMs)}`}
+          // 分段整块换行：窄栏放不下时失败数 / Σ 总耗时 / 正在跑的工具各自折到下一行，
+          // 而不是被 Fold 的单行截断吞掉。分隔点挂在段首、段整体左移一个点位：同一行
+          // 时落在两段之间；折到行首时落进 Fold 标题外层 overflow-hidden 的裁剪区，
+          // 行首不会冒出孤零零的「·」
+          <span className="flex flex-wrap items-center gap-x-[1.5em]">
+            <span className="inline-flex items-center gap-1">
+              <Wrench size={11} aria-hidden className="shrink-0" />
+              <span className="font-mono">
+                调用工具 {done}/{tools.length}
+              </span>
             </span>
+            {failed > 0 && (
+              <span className={`${SEGMENT_DOT} font-mono text-[var(--danger)]`}>
+                {failed} 失败
+              </span>
+            )}
+            {totalMs > 0 && (
+              <span className={`${SEGMENT_DOT} font-mono`}>
+                Σ {formatMsShort(totalMs)}
+              </span>
+            )}
             {runningTool && (
-              <span className="inline-flex items-center gap-1 text-[var(--brand)]">
-                <Loader2 size={9} className="wmsg-activity" />
-                正在跑 {runningTool.name || "tool"}
+              <span className="flex min-w-0 items-center gap-1 text-[var(--brand)]">
+                <Loader2 size={9} className="wmsg-activity shrink-0" />
+                <span className="truncate">
+                  正在跑 {runningTool.name || "tool"}
+                </span>
               </span>
             )}
           </span>

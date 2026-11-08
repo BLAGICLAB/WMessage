@@ -112,11 +112,37 @@ describe("工具折叠单档呈现", () => {
 
   it("默认收起：标题带进度/失败数/Σ 总耗时，入参与结果不进 DOM", () => {
     render(<MessageList messages={[toolsMsg]} {...baseProps} />);
-    const title = screen.getByText(/调用工具 2\/2/);
+    const title = screen.getByRole("button", { name: /调用工具 2\/2/ });
     expect(title.textContent).toContain("1 失败");
-    expect(title.textContent).toContain("Σ");
+    expect(title.textContent).toContain("Σ 1.5s");
     expect(screen.queryByText(/"path"/)).toBeNull();
     expect(screen.queryByText("共 114 条功能")).toBeNull();
+  });
+
+  it("标题按段成块：失败数 / Σ 总耗时 / 正在跑的工具各占一块，窄栏下整块换行而不是被单行截断吞掉", () => {
+    // 回归：Σ 总耗时原先与「调用工具 N/M」挤在同一个文本串里，中栏最窄时被
+    // Fold 的单行截断直接裁掉。jsdom 不排版，这里钉住「能整块换行」的结构
+    const msg: Msg = {
+      ...toolsMsg,
+      tools: [...(toolsMsg.tools ?? []), { id: "t3", name: "check_subagent" }],
+    };
+    render(<MessageList messages={[msg]} {...baseProps} />);
+    const count = screen.getByText(/调用工具 2\/3/);
+    const failed = screen.getByText("1 失败");
+    const sigma = screen.getByText("Σ 1.5s");
+    const running = screen.getByText("正在跑 check_subagent");
+    const row = sigma.parentElement as HTMLElement;
+    expect(row.className).toContain("flex-wrap");
+    expect([...row.children]).toEqual([
+      count.parentElement,
+      failed,
+      sigma,
+      running.parentElement,
+    ]);
+    // 次段的分隔点挂在段首：同一行时落在两段之间，折到行首时被裁掉
+    expect(sigma.className).toContain("before:content-['·']");
+    // 工具名过长时只截断自己这一段，不把整行顶出气泡
+    expect(running.className).toContain("truncate");
   });
 
   it("点开即全量：徽章行与每工具入参/结果同时可见，没有档位闸", () => {

@@ -63,6 +63,21 @@ describe("LiveIndicator", () => {
     });
     expect(screen.queryByText("5s")).toBeNull();
   });
+
+  it("时长单独成块、块内不断行：窄栏下整块折到文案下一行，不被挤成「8m / 11s」两截", () => {
+    render(
+      <LiveIndicator
+        status="running"
+        detail="正在思考 · 第 4 轮"
+        startedAt={Date.now() - 491_000}
+      />,
+    );
+    const time = screen.getByText("8m 11s");
+    const label = screen.getByText("正在思考 · 第 4 轮");
+    expect(time.className).toContain("whitespace-nowrap");
+    expect(time.parentElement).toBe(label.parentElement);
+    expect(time.parentElement?.className).toContain("flex-wrap");
+  });
 });
 
 describe("useElapsed", () => {
