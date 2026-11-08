@@ -51,10 +51,12 @@ function EngineToggle({
   );
 }
 
-/** 多开冲突提示文案：列出开启中的引擎（与后端 Conflict 报错同源，「与」连接） */
+/** 多开冲突提示文案：列出开启中的引擎（与后端 Conflict 报错同源，「与」连接）。
+ * 互斥开关已在 toggle 时自动关闭其余引擎，正常操作到不了这里；见到即说明
+ * 配置文件被外部改成了双开（或保存失败残留），提示用户任关一个即恢复单开。 */
 function conflictText(enabled: string[]): string | null {
   if (enabled.length < 2) return null;
-  return `${enabled.join(" 与 ")} 只能开启一个，请关闭其中一个。`;
+  return `${enabled.join(" 与 ")} 同时只能开启一个搜索引擎，开启时会自动关闭其余；当前配置异常双开，请任关一个。`;
 }
 
 export function McpSection({

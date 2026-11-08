@@ -859,10 +859,67 @@ describe("SettingsPage", () => {
     await userEvent
       .setup()
       .click(screen.getByRole("button", { name: "MCP 服务" }));
-    // 三个引擎同开 → 警告列出全部名字（与后端 Conflict 报错同源，「与」连接）
+    // 外部改配置造成的双开残留 → 警告照出（正常路径互斥开关到不了这里）
     expect(
-      await screen.findByText(/DeepSeek 与 Tavily 与 Brave 只能开启一个/),
+      await screen.findByText(
+        /DeepSeek 与 Tavily 与 Brave 同时只能开启一个搜索引擎/,
+      ),
     ).not.toBeNull();
+  });
+
+  it("搜索引擎互斥：DeepSeek 已开时点开 Tavily → DeepSeek 随本次保存自动关闭", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "",
+          model: "",
+          hasApiKey: false,
+          bypassLlmOnPreStepHit: true,
+          allowedDirs: [],
+          hasTavilyKey: true,
+          tavilyEnabled: false,
+          hasDeepseekKey: true,
+          deepseekEnabled: true, // 初始：只有 DeepSeek 开着
+          deepseekFetchEnabled: false,
+          pythonTimeoutSecs: null,
+        };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
+        };
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "MCP 服务" }));
+    const title = await screen.findByText("Tavily 搜索");
+    const row = title.closest("div")?.parentElement;
+    const toggle = row?.querySelector("button");
+    expect(toggle).not.toBeNull();
+    if (!toggle) return;
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          config: expect.objectContaining({
+            tavilyEnabled: true,
+            // 互斥：开启 Tavily 的同一次保存里 DeepSeek 被关掉
+            deepseekEnabled: false,
+          }),
+        }),
+      );
+    });
   });
 
   it("Tavily 开关：开启但没填 key → 显示缺 key 提示（不静默走百度）", async () => {

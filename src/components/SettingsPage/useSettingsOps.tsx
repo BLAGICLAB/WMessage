@@ -74,18 +74,39 @@ export function useSettingsOps(params: SettingsOpsParams) {
   const [importingWs, setImportingWs] = useState(false);
   const [consolidateBusy, setConsolidateBusy] = useState(false);
   const [consolidateMsg, flashConsolidateMsg] = useFlashMsg(4000);
+  // 搜索引擎互斥单开：web_search 后端一次只认一个引擎（双开运行期报
+  // 「XX 与 YY 不能同时开启」，recon 阶段实测会拖慢调研）。开启任一引擎时
+  // 其余两个随本次保存一并关闭；deepseekFetchEnabled 是抓取通道不在互斥集。
   const toggleTavily = async () => {
-    const next = { ...config, tavilyEnabled: !config.tavilyEnabled };
+    const on = !config.tavilyEnabled;
+    const next = {
+      ...config,
+      tavilyEnabled: on,
+      braveEnabled: on ? false : config.braveEnabled,
+      deepseekEnabled: on ? false : config.deepseekEnabled,
+    };
     setConfig(next);
     await saveConfig(next);
   };
   const toggleBrave = async () => {
-    const next = { ...config, braveEnabled: !config.braveEnabled };
+    const on = !config.braveEnabled;
+    const next = {
+      ...config,
+      braveEnabled: on,
+      tavilyEnabled: on ? false : config.tavilyEnabled,
+      deepseekEnabled: on ? false : config.deepseekEnabled,
+    };
     setConfig(next);
     await saveConfig(next);
   };
   const toggleDeepseek = async () => {
-    const next = { ...config, deepseekEnabled: !config.deepseekEnabled };
+    const on = !config.deepseekEnabled;
+    const next = {
+      ...config,
+      deepseekEnabled: on,
+      tavilyEnabled: on ? false : config.tavilyEnabled,
+      braveEnabled: on ? false : config.braveEnabled,
+    };
     setConfig(next);
     await saveConfig(next);
   };
