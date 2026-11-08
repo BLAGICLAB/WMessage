@@ -39,7 +39,6 @@ import type {
   Msg,
   TaskRef,
   ToolCall,
-  VerboseLevel,
 } from "./types";
 
 /** 气泡回调（父级 useCallback 固定引用，memo 浅比较依赖这一点） */
@@ -77,8 +76,6 @@ type MsgBubbleProps = BubbleCallbacks & {
   isCopied: boolean;
   /** 视图会话是否有在途回复（驱动移除按钮禁用态） */
   busy: boolean;
-  /** 执行过程详细度：控制工具徽章展开级别（简洁/详细/调试） */
-  verboseLevel: VerboseLevel;
   /** 子 agent 内嵌区；仅挂在最后一条助手回复上，其余气泡为 undefined */
   subagentSlot?: SubagentSlot;
   /** 点文件（pill / 正文路径链接）→ 右侧栏就地预览。父级用 useCallback 固定，
@@ -93,7 +90,6 @@ function MsgBubbleBase({
   idx,
   isCopied,
   busy,
-  verboseLevel,
   subagentSlot,
   onPreviewFile,
   onShowFileChanges,
@@ -246,7 +242,7 @@ function MsgBubbleBase({
           )}
           {/* 工具调用（对齐截图）：mono pill 徽章行 + 可折叠「进程 N/M」详情 */}
           {(m.tools?.length ?? 0) > 0 && (
-            <ToolBadges tools={m.tools!} verboseLevel={verboseLevel} />
+            <ToolBadges tools={m.tools!} />
           )}
           {/* 子 agent 条带 = 在途指示器：有在途才挂在最新回复的工具调用下方，
               全部终态即退场（完成态详情在右侧栏，派发记录留在原轮的工具徽章）。
@@ -392,15 +388,14 @@ function ToolStatusMark({ t }: { t: ToolCall }) {
  *  折叠不等于静默——标题行带着「N/M」进度与**当前正在跑的工具名**，
  *  「亮着」也真有信息（否则用户会以为卡死）。
  *
- *  verbose 三档决定展开后看到多少：简洁=只有徽章；详细=再带入参/结果；
- *  调试=默认展开 + 耗时。
+ *  单档呈现（渐进披露）：默认收起只看标题（进度 + 失败数 + Σ 总耗时 +
+ *  正在跑什么），点开才是徽章行 + 每工具的入参/结果/单耗时——收起时明细
+ *  根本不渲染（Fold 的 open && children），平时零 DOM 成本，信息无删减。
  *  memo：文本流式 tick 不改 tools 引用，跳过整块重渲染。 */
 const ToolBadges = memo(function ToolBadges({
   tools,
-  verboseLevel,
 }: {
   tools: ToolCall[];
-  verboseLevel: VerboseLevel;
 }) {
   const done = tools.filter((t) => t.done).length;
   const failed = tools.filter((t) => t.ok === false).length;
@@ -420,9 +415,7 @@ const ToolBadges = memo(function ToolBadges({
                   · {failed} 失败
                 </span>
               )}
-              {verboseLevel === "debug" &&
-                totalMs > 0 &&
-                ` · Σ ${formatMsShort(totalMs)}`}
+              {totalMs > 0 && ` · Σ ${formatMsShort(totalMs)}`}
             </span>
             {runningTool && (
               <span className="inline-flex items-center gap-1 text-[var(--brand)]">
@@ -432,7 +425,6 @@ const ToolBadges = memo(function ToolBadges({
             )}
           </span>
         }
-        defaultOpen={verboseLevel === "debug"}
       >
         <div className="flex flex-wrap gap-1">
           {tools.map((t) => (
@@ -445,32 +437,30 @@ const ToolBadges = memo(function ToolBadges({
             </span>
           ))}
         </div>
-        {verboseLevel !== "concise" && (
-          <div className="mt-1 space-y-1">
-            {tools.map((t) => (
-              <div key={t.id}>
-                <span className="font-mono text-[10px] text-[var(--t4)]">
-                  {t.name || "tool"}
-                  {t.ms != null && (
-                    <span className="ml-1 text-[var(--t5)]">{formatMsShort(t.ms)}</span>
-                  )}
-                </span>
-                {t.args ? (
-                  <pre className="opacity-80 whitespace-pre-wrap break-words font-mono text-[10px]">
-                    {t.args.length > 500 ? t.args.slice(0, 500) + "…" : t.args}
-                  </pre>
-                ) : null}
-                {t.result ? (
-                  <pre className="whitespace-pre-wrap break-words font-mono text-[10px] text-[var(--t5)]">
-                    {t.result.length > 800
-                      ? t.result.slice(0, 800) + "…"
-                      : t.result}
-                  </pre>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        )}
+        <div className="mt-1 space-y-1">
+          {tools.map((t) => (
+            <div key={t.id}>
+              <span className="font-mono text-[10px] text-[var(--t4)]">
+                {t.name || "tool"}
+                {t.ms != null && (
+                  <span className="ml-1 text-[var(--t5)]">{formatMsShort(t.ms)}</span>
+                )}
+              </span>
+              {t.args ? (
+                <pre className="opacity-80 whitespace-pre-wrap break-words font-mono text-[10px]">
+                  {t.args.length > 500 ? t.args.slice(0, 500) + "…" : t.args}
+                </pre>
+              ) : null}
+              {t.result ? (
+                <pre className="whitespace-pre-wrap break-words font-mono text-[10px] text-[var(--t5)]">
+                  {t.result.length > 800
+                    ? t.result.slice(0, 800) + "…"
+                    : t.result}
+                </pre>
+              ) : null}
+            </div>
+          ))}
+        </div>
       </Fold>
     </div>
   );
@@ -581,8 +571,6 @@ type MessageListProps = BubbleCallbacks & {
   viewedBusy: boolean;
   /** 「已复制」反馈的消息下标 */
   copiedIdx: number | null;
-  /** 执行过程详细度（透传给 ToolBadges） */
-  verboseLevel: VerboseLevel;
   /** 空状态起始短语点击：把短语填进当前会话输入框（不自动发送） */
   onPickStarter: (text: string) => void;
   /** 子 agent 内嵌区；不传 = 本会话没有子 agent */
@@ -635,7 +623,6 @@ function renderMessageList(
     messages,
     viewedBusy,
     copiedIdx,
-    verboseLevel,
     subagentSlot,
     onPreviewFile,
     onShowFileChanges,
@@ -684,7 +671,6 @@ function renderMessageList(
                 idx={i}
                 isCopied={copiedIdx === i}
                 busy={viewedBusy}
-                verboseLevel={verboseLevel}
                 subagentSlot={i === hostIdx ? subagentSlot : undefined}
                 onPreviewFile={onPreviewFile}
                 onShowFileChanges={onShowFileChanges}

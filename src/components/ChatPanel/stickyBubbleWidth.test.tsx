@@ -62,7 +62,6 @@ const baseProps = {
   scrollRef: { current: null },
   viewedBusy: false,
   copiedIdx: null,
-  verboseLevel: "detailed" as const,
   onCopy: () => {},
   onRemove: () => {},
   onOpenTask: () => {},

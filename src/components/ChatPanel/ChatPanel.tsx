@@ -16,7 +16,7 @@ import { getBotConfig } from "../../lib/botConfig";
 import type { Task } from "../../types";
 import { useConfirm } from "../../lib/useConfirm";
 import { handleCommandError, formatCommandError, isCommandError } from "../../lib/errorHandler";
-import type { ChatModelEntry, Msg, PermMode, Session, SubagentRow, VerboseLevel } from "./types";
+import type { ChatModelEntry, Msg, PermMode, Session, SubagentRow } from "./types";
 import { execTaskDedup, finishedExecTasks, SUBAGENT_STATUS } from "./constants";
 import { useAutoGrow } from "./useChatUi";
 import { useDismissable } from "../../lib/useDismissable";
@@ -153,14 +153,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
       }
     >
   >({});
-  const [verboseLevel, setVerboseLevelState] = useState<VerboseLevel>(() => {
-    const v = localStorage.getItem("chat-verbose-level");
-    return v === "concise" || v === "debug" ? v : "detailed";
-  });
-  const setVerboseLevel = (l: VerboseLevel) => {
-    setVerboseLevelState(l);
-    localStorage.setItem("chat-verbose-level", l);
-  };
   const {
     closeSubagentDetail,
     ctxOpen,
@@ -921,7 +913,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
         messages={messages}
         viewedBusy={viewedBusy}
         copiedIdx={copiedIdx}
-        verboseLevel={verboseLevel}
         subagentSlot={subagentSlot}
         onPreviewFile={openFilePreview}
         onShowFileChanges={openFileChanges}
@@ -951,7 +942,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
         </p>
       )}
       <InputArea
-        verbose={{ level: verboseLevel, setLevel: setVerboseLevel }}
         input={input}
         setInput={setInput}
         files={files}

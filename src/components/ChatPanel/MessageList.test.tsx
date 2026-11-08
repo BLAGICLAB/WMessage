@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MessageList } from "./MessageList";
 import { BUBBLE_MAX_W_PCT } from "./constants";
 import type { Msg } from "./types";
@@ -24,7 +24,6 @@ const baseProps = {
   scrollRef: { current: null },
   viewedBusy: false,
   copiedIdx: null,
-  verboseLevel: "detailed" as const,
   ...stableCallbacks,
 };
 
@@ -88,5 +87,45 @@ describe("消息列表归属头像", () => {
     // 上限挂在列容器上（不是气泡上）：头像不占正文宽度
     expect(colOf(botAvatar).style.maxWidth).toBe(`${BUBBLE_MAX_W_PCT}%`);
     expect(colOf(userAvatar).style.maxWidth).toBe(`${BUBBLE_MAX_W_PCT}%`);
+  });
+});
+
+// 详细度三档（简洁/详细/调试）收敛为单档后的呈现契约：全部信息保留在一个
+// 折叠块里，靠「默认收起 + 点开」分层（渐进披露），不再有档位设置
+describe("工具折叠单档呈现", () => {
+  const toolsMsg: Msg = {
+    role: "assistant",
+    content: "跑完了",
+    tools: [
+      {
+        id: "t1",
+        name: "read_file",
+        done: true,
+        ok: true,
+        ms: 1200,
+        args: '{"path":"SPEC.md"}',
+        result: "共 114 条功能",
+      },
+      { id: "t2", name: "run_python", done: true, ok: false, ms: 300 },
+    ],
+  };
+
+  it("默认收起：标题带进度/失败数/Σ 总耗时，入参与结果不进 DOM", () => {
+    render(<MessageList messages={[toolsMsg]} {...baseProps} />);
+    const title = screen.getByText(/调用工具 2\/2/);
+    expect(title.textContent).toContain("1 失败");
+    expect(title.textContent).toContain("Σ");
+    expect(screen.queryByText(/"path"/)).toBeNull();
+    expect(screen.queryByText("共 114 条功能")).toBeNull();
+  });
+
+  it("点开即全量：徽章行与每工具入参/结果同时可见，没有档位闸", () => {
+    render(<MessageList messages={[toolsMsg]} {...baseProps} />);
+    // fireEvent 而非 userEvent：点折叠标题展开（与 LiveIndicator 用例同模式）
+    fireEvent.click(screen.getByText(/调用工具 2\/2/));
+    expect(screen.getByText('{"path":"SPEC.md"}')).not.toBeNull();
+    expect(screen.getByText("共 114 条功能")).not.toBeNull();
+    // 徽章行与明细行各有一枚工具名（单档下明细恒渲染，不再被档位闸掉）
+    expect(screen.getAllByText(/run_python/).length).toBeGreaterThanOrEqual(1);
   });
 });

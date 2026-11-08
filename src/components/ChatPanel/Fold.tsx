@@ -6,14 +6,12 @@ import { useId, useState, type ReactNode } from "react";
 export function Fold({
   title,
   children,
-  /** verbose=debug 档：工具详情默认展开（Ctrl+O「临时全展开」语义落在档位上） */
-  defaultOpen = false,
 }: {
   title: ReactNode;
   children?: ReactNode;
-  defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  // 恒收起起步：折叠块承载的是「按需看」的明细，默认不占视野（点开才渲染子树）
+  const [open, setOpen] = useState(false);
   const panelId = useId();
   return (
     <div>

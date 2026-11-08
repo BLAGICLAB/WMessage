@@ -36,7 +36,6 @@ function renderInput(over: Partial<Parameters<typeof InputArea>[0]> = {}) {
     },
     permBtnRef: { current: null },
     permDropdownRef: { current: null },
-    verbose: { level: "concise", setLevel: vi.fn() },
     modelBtnRef: { current: null },
     modelDropdownRef: { current: null },
     effortBtnRef: { current: null },
@@ -157,20 +156,16 @@ describe("InputArea 底栏窄宽度三档降级", () => {
   it("full 档：控件全文案，没有 ⋯ 钮", () => {
     renderInput();
     fireCardWidth(700);
-    expect(screen.getByTitle(/执行过程详细度/).textContent).toContain("简洁");
     expect(screen.getByTitle(EFFORT_TITLE).textContent).toContain("默认");
     expect(screen.getByTitle(/授权模式 弹授权/).textContent).toContain("弹授权");
     expect(screen.queryByTitle("更多输入选项")).toBeNull();
   });
 
-  it("compact 档：详细度与推理强度只留图标，现值退到 aria-label；⋯ 还不出现", () => {
+  it("compact 档：推理强度只留图标，现值退到 aria-label；⋯ 还不出现", () => {
     renderInput({
       effort: { base: "medium", effective: "high", isOverridden: true, menuOpen: false, setMenuOpen: vi.fn(), setForSession: vi.fn() },
     });
     fireCardWidth(550);
-    const verbose = screen.getByTitle(/执行过程详细度/);
-    expect(verbose.textContent).not.toContain("简洁");
-    expect(verbose.getAttribute("aria-label")).toContain("简洁");
     const effortChip = screen.getByTitle(EFFORT_TITLE);
     expect(effortChip.textContent).not.toContain("高");
     expect(effortChip.getAttribute("aria-label")).toContain("高");
@@ -188,10 +183,9 @@ describe("InputArea 底栏窄宽度三档降级", () => {
     expect(effortChip.querySelector("span.rounded-full")).toBeNull();
   });
 
-  it("mini 档：详细度与推理强度撤出主行，⋯ 钮出现，授权模式图标化", () => {
+  it("mini 档：推理强度撤出主行，⋯ 钮出现，授权模式图标化", () => {
     renderInput();
     fireCardWidth(400);
-    expect(screen.queryByTitle(/执行过程详细度/)).toBeNull();
     expect(screen.queryByTitle(EFFORT_TITLE)).toBeNull();
     expect(screen.getByTitle("更多输入选项")).not.toBeNull();
     const perm = screen.getByTitle(/授权模式 弹授权/);
@@ -202,14 +196,15 @@ describe("InputArea 底栏窄宽度三档降级", () => {
     expect(screen.getByTitle("发送（Enter 发送，Shift+Enter 换行）")).not.toBeNull();
   });
 
-  it("⋯ 菜单：详细度行点击循环一档，菜单保持开着", () => {
-    const setLevel = vi.fn();
-    renderInput({ verbose: { level: "concise", setLevel } });
+  it("详细度 pill 已退役：任何宽度档都不再渲染（三档收敛为单档工具折叠）", () => {
+    renderInput();
+    fireCardWidth(700);
+    expect(screen.queryByTitle(/执行过程详细度/)).toBeNull();
     fireCardWidth(400);
+    expect(screen.queryByTitle(/执行过程详细度/)).toBeNull();
+    // ⋯ 菜单里也不再有它的第二入口
     fireEvent.click(screen.getByTitle("更多输入选项"));
-    fireEvent.click(screen.getByRole("menuitem", { name: /执行过程详细度/ }));
-    expect(setLevel).toHaveBeenCalledWith("detailed");
-    expect(screen.getByRole("menu")).not.toBeNull();
+    expect(screen.queryByText(/执行过程详细度/)).toBeNull();
   });
 
   it("⋯ 菜单：推理强度选档走 setForSession，选完收起菜单", () => {

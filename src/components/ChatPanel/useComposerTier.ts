@@ -7,8 +7,8 @@
 //
 // 三档语义：
 //   full    ≥ ICONIFY_BELOW ：底栏控件全文案（原始形态）
-//   compact ≥ COLLAPSE_BELOW：详细度/推理强度图标化（文案退到 tooltip 与 aria-label）
-//   mini    < COLLAPSE_BELOW：详细度/推理强度收进 ⋯ 菜单，授权模式也图标化
+//   compact ≥ COLLAPSE_BELOW：推理强度图标化（文案退到 tooltip 与 aria-label）
+//   mini    < COLLAPSE_BELOW：推理强度收进 ⋯ 菜单，授权模式也图标化
 //
 // 容器隐藏时量到的是 0（聊天页切走是隐藏不卸载，见 SPEC「聊天常挂载」）：
 // 没有可用宽度可言，回落 full 维持原渲染，切回来自然恢复分档。
@@ -19,7 +19,7 @@ import type { RefObject } from "react";
 
 export type ComposerTier = "full" | "compact" | "mini";
 
-/** 低于此宽度（px）：全文案底栏开始放不下，详细度/推理强度去文案只留图标 */
+/** 低于此宽度（px）：全文案底栏开始放不下，推理强度去文案只留图标 */
 const ICONIFY_BELOW = 620;
 /** 低于此宽度（px）：图标化也放不下，两控件收进 ⋯ 菜单、授权模式一并图标化 */
 const COLLAPSE_BELOW = 470;

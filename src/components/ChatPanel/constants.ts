@@ -6,7 +6,6 @@ import type {
   PermMode,
   ReasoningLevel,
   SubagentRow,
-  VerboseLevel,
 } from "./types";
 
 /** execute-task 事件去重窗口（毫秒）：同一 id 窗口内重复触发直接跳过 */
@@ -102,13 +101,6 @@ export const PERM_HINTS: Record<PermMode, string> = {
 /** 下拉档位顺序：由严到宽。用户在这排里挑的是「放行多宽」，
  *  按宽度排比按枚举顺序更好比较——这是安全档，不做记忆化排序。 */
 export const PERM_ORDER: readonly PermMode[] = ["strict", "ask", "auto", "yolo"] as const;
-
-/** 执行过程详细度（ verbose 三档）：短标签进 pill，语义见 types.ts */
-export const VERBOSE_LABELS: Record<VerboseLevel, string> = {
-  concise: "简洁",
-  detailed: "详细",
-  debug: "调试",
-};
 
 /** 子 agent 六态 → 中文标签 + 徽标色（右侧栏徽标与收尾提示共用一份）。
  *  取消/预算耗尽各有自己的说法：都写成「失败」等于把用户的选择说成系统出错 */

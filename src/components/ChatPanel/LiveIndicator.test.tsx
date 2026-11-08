@@ -102,7 +102,6 @@ describe("工具徽章的未完成态", () => {
     render(
       <MessageList
         messages={[msg]}
-        verboseLevel="concise"
         scrollRef={{ current: null }}
         viewedBusy={false}
         copiedIdx={null}
@@ -122,7 +121,8 @@ describe("工具徽章的未完成态", () => {
     // fireEvent 而非 userEvent：本用例跑在 fake timers 下，userEvent 的
     // 内部轮询等不到真实时钟推进会挂死
     fireEvent.click(screen.getByText(/调用工具 0\/1/));
-    expect(screen.getByText("run_python")).toBeTruthy();
+    // 徽章行与明细行各有一枚工具名：单档呈现下明细恒渲染
+    expect(screen.getAllByText("run_python").length).toBeGreaterThan(0);
     // 静态「…」不该再出现——它与「已完成」在视觉上无法区分
     expect(screen.queryByText("…")).toBeNull();
     act(() => {

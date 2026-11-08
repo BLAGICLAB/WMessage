@@ -33,10 +33,6 @@ export type FileChangeLite = {
   deleted: number;
 };
 
-/** 执行过程详细度（verbose 三档）：简洁=只看工具名；详细=可展开入参/结果；
- *  调试=默认展开+耗时+轮次。localStorage 持久化，仅影响展示不改数据流 */
-export type VerboseLevel = "concise" | "detailed" | "debug";
-
 /** Skill 失败半成品上下文（仅本会话内存；FailedButRecoverable 兜底）。
  *  后端 run_skill_scheduler 返回 DslOutcome::FailedButRecoverable { reason, completed_summary, rollback_attempted }
  *  时通过 `bot-skill-failed` SSE event 推过来；前端把它存到这条消息上渲染 ⚠️ 折叠行。

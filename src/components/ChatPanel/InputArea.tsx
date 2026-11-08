@@ -1,6 +1,6 @@
 // ChatPanel 子模块：斜杠命令 picker + 输入卡（ 拆分自 ChatPanel.tsx，JSX 逐字搬移）。
 // 上多行输入区（自动增高）、附件 chips（图片悬停缩略图）、下工具栏
-// （＋ 附件 / 🛡 授权模式 / 🔍 详细度 / 🧠 模型下拉 / ⚡ 推理强度 / 发送-停止一体键；
+// （＋ 附件 / 🛡 授权模式 / 🧠 模型下拉 / ⚡ 推理强度 / 发送-停止一体键；
 // 窄宽度按 useComposerTier 三档降级——compact 图标化、mini 收进 ⋯ 菜单）。
 // 发送/停止的调用语义由父级闭包提供，本组件不做任何数据流决策。
 
@@ -14,7 +14,6 @@ import {
   MoreHorizontal,
   Paperclip,
   Plus,
-  Search,
   Shield,
   Square,
   Zap,
@@ -29,7 +28,6 @@ import {
   PERM_ORDER,
   PROVIDER_LABELS,
   SLASH_COMMANDS,
-  VERBOSE_LABELS,
 } from "./constants";
 import { useComposerTier } from "./useComposerTier";
 import type {
@@ -37,7 +35,6 @@ import type {
   PermMode,
   ReasoningLevel,
   TaskRef,
-  VerboseLevel,
 } from "./types";
 
 /** 输入框占位文案：回复中 / 带附件 / 默认 三态 */
@@ -50,14 +47,6 @@ function placeholderOf(viewedBusy: boolean, hasFiles: boolean): string {
 /** 当前输入命中的斜杠命令（picker 渲染与键盘导航共用同一份匹配结果） */
 function slashMatches(input: string) {
   return SLASH_COMMANDS.filter((c) => c.cmd.startsWith(input));
-}
-
-/** 详细度循环的下一档（简洁→详细→调试→简洁）：主行 pill 与 ⋯ 菜单两个
- *  入口共用，循环顺序不得漂移 */
-function nextVerboseLevel(level: VerboseLevel): VerboseLevel {
-  if (level === "concise") return "detailed";
-  if (level === "detailed") return "debug";
-  return "concise";
 }
 
 type InputAreaProps = {
@@ -89,8 +78,6 @@ type InputAreaProps = {
   };
   permBtnRef: RefObject<HTMLButtonElement | null>;
   permDropdownRef: RefObject<HTMLDivElement | null>;
-  /** 🔍 执行过程详细度（ verbose 三档）：localStorage 持久化，控制工具徽章展开档位 */
-  verbose: { level: VerboseLevel; setLevel: (l: VerboseLevel) => void };
   // 🧠/⚡ 的按钮与下拉 ref 顶层传（与滚动容器同模式）：ref 与普通值混嵌同一
   // prop 对象会触发 react/refs 的全对象标记
   modelBtnRef: RefObject<HTMLButtonElement | null>;
@@ -135,7 +122,6 @@ export function InputArea({
   perm,
   permBtnRef,
   permDropdownRef,
-  verbose,
   modelBtnRef,
   modelDropdownRef,
   effortBtnRef,
@@ -147,7 +133,7 @@ export function InputArea({
   // 不是窗口——左右侧栏开合改变的是卡片宽，窗口断点量不出这个落差
   const cardRef = useRef<HTMLDivElement | null>(null);
   const tier = useComposerTier(cardRef);
-  // ⋯ 菜单只是详细度/推理强度的第二入口、不碰数据流，开合态留在本地。
+  // ⋯ 菜单只是推理强度的第二入口、不碰数据流，开合态留在本地。
   // 底栏所有浮层都是 absolute bottom-full 从卡内向上弹出：输入卡不得加
   // overflow-hidden 兜底，裁剪会连浮层一起裁掉（防溢出靠分档降级）。
   const overflowBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -425,26 +411,6 @@ export function InputArea({
               </div>
             )}
           </div>
-          {/* 🔍 执行过程详细度（P2-b verbose 三档）：点击循环 简洁→详细→调试，
-              localStorage 持久化；控制工具徽章默认展开级别与耗时/结果列示。
-              compact 档只留图标（现值退到 tooltip/aria-label），mini 档整个
-              撤出主行、收进 ⋯ 菜单 */}
-          {tier !== "mini" && (
-            <button
-              type="button"
-              aria-label={
-                tier !== "full"
-                  ? `执行过程详细度：${VERBOSE_LABELS[verbose.level]}（点击切换）`
-                  : undefined
-              }
-              className="shrink-0 inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 text-[10px] leading-4 text-[var(--t4)] hover:text-[var(--t2)]"
-              title={`执行过程详细度：${verbose.level}（点击切换 简洁→详细→调试）`}
-              onClick={() => verbose.setLevel(nextVerboseLevel(verbose.level))}
-            >
-              <Search size={10} aria-hidden />
-              {tier === "full" && <span>{VERBOSE_LABELS[verbose.level]}</span>}
-            </button>
-          )}
           {/* 🧠 模型下拉（UI-1 从顶栏移入输入卡底栏；按钮/列表/切换逻辑不变，
               相对按钮向上弹出，免 JS 测量定位）。标签宽度上限 150px；本 chip 是
               底栏唯一可收缩项（min-w-0）：窄窗下其余芯片都 shrink-0，空间不够时
@@ -585,9 +551,8 @@ export function InputArea({
               )}
             </div>
           )}
-          {/* ⋯ 收纳菜单（mini 档）：详细度与推理强度两枚次要控件撤出主行后的
-              唯一入口，行内仍留 + / 🛡 / 🧠 / 发送。与三下拉同款浮层（向上弹出，
-              免 JS 测量定位）；详细度点击循环、菜单保持开着（看得到值在变），
+          {/* ⋯ 收纳菜单（mini 档）：推理强度撤出主行后的唯一入口，行内仍留
+              + / 🛡 / 🧠 / 发送。与三下拉同款浮层（向上弹出，免 JS 测量定位）；
               推理强度选档即收（单选语义） */}
           {tier === "mini" && (
             <div className="relative shrink-0">
@@ -608,22 +573,6 @@ export function InputArea({
                   role="menu"
                   className="absolute bottom-full right-0 mb-2 w-44 nm-card p-1 rounded-xl z-50"
                 >
-                  <button
-                    role="menuitem"
-                    className="w-full text-left px-2 py-1 rounded-lg text-xs text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                    title="点击循环 简洁→详细→调试"
-                    onClick={() => verbose.setLevel(nextVerboseLevel(verbose.level))}
-                  >
-                    <span className="flex items-center gap-1.5">
-                      <Search size={12} aria-hidden className="shrink-0" />
-                      <span className="font-medium text-[var(--t2)]">
-                        执行过程详细度
-                      </span>
-                      <span className="text-[10px] text-[var(--t5)]">
-                        {VERBOSE_LABELS[verbose.level]}
-                      </span>
-                    </span>
-                  </button>
                   <p className="px-2 pt-1.5 pb-0.5 text-[10px] text-[var(--t5)]">
                     推理强度（只影响当前会话）
                   </p>
