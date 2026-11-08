@@ -10,7 +10,8 @@ use super::*;
 #[derive(Debug, Clone)]
 pub struct FileChangeReceipt {
     pub path: String,
-    /// "create" | "modify"（现有文件工具不产 delete）
+    /// "create" | "modify" | "delete"（delete 来自 manage_file 的删除动作与
+    /// move 的源侧凭证）
     pub kind: &'static str,
     pub added: i64,
     pub deleted: i64,

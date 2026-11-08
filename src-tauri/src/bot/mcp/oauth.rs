@@ -346,17 +346,9 @@ async fn login_impl(app: &tauri::AppHandle, server_id: &str) -> Result<String, S
         let _ = req.respond(tiny_http::Response::from_string(
             "授权完成，可关闭此页面。若未自动关闭，请回到 wmessage 查看结果。",
         ));
-        match (got_state, got_code, err) {
-            (_, _, Some(e)) => return Err(format!("授权回调错误：{e}")),
-            (s, c, None) if s.as_deref() == Some(state.as_str()) && c.is_some() => {
-                break c.expect("上方已判 is_some");
-            }
-            // state 不匹配 / 无 code：拒绝（伪造回调防线）——继续等下一个请求？
-            // 只收一个请求的语义下直接报错更诚实：伪造/失败即终止，用户重来。
-            (s, _, None) if s.as_deref() != Some(state.as_str()) => {
-                return Err("回调 state 不匹配，已拒绝（可能是伪造回调）".to_string());
-            }
-            _ => return Err("回调缺授权码，已终止（请重新登录）".to_string()),
+        match callback_verdict(got_state, got_code, err, &state) {
+            Ok(c) => break c,
+            Err(e) => return Err(e),
         }
     };
     let (access, refresh, expires_in) = token_request(
@@ -412,6 +404,25 @@ fn parse_callback(target: &str) -> (Option<String>, Option<String>, Option<Strin
         }
     }
     (state, code, error)
+}
+
+/// 回调判定（纯函数便于单测）：state 与发起时不一致即拒——伪造回调防线要求
+/// 「错 state + 有 code」也必须 Err，这条映射必须有生产行直测钉住。
+/// 只收一个请求的语义下伪造/失败即终止（报错比继续等更诚实，用户重来）。
+fn callback_verdict(
+    got_state: Option<String>,
+    got_code: Option<String>,
+    err: Option<String>,
+    expected_state: &str,
+) -> Result<String, String> {
+    match (got_state.as_deref(), got_code, err) {
+        (_, _, Some(e)) => Err(format!("授权回调错误：{e}")),
+        (s, Some(c), None) if s == Some(expected_state) => Ok(c),
+        (s, _, None) if s != Some(expected_state) => {
+            Err("回调 state 不匹配，已拒绝（可能是伪造回调）".to_string())
+        }
+        _ => Err("回调缺授权码，已终止（请重新登录）".to_string()),
+    }
 }
 
 fn urlencode(s: &str) -> String {
@@ -654,7 +665,44 @@ mod tests {
         assert_eq!(e.as_deref(), Some("access_denied"));
     }
 
-    /// state 不匹配 → Err（伪造回调防线由 login_impl 的 match 分支保证）
+    /// state 不匹配 → Err（伪造回调防线，生产行直测）：错 state + 合法 code
+    /// 也必须被拒——state 被删时本测试必须红
+    #[test]
+    fn callback_verdict_rejects_mismatched_state_even_with_code() {
+        let r = callback_verdict(
+            Some("attacker-state".into()),
+            Some("valid-code".into()),
+            None,
+            "expected-state",
+        );
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("state 不匹配"));
+        // 正确 state + code → Ok(code)
+        assert_eq!(
+            callback_verdict(
+                Some("expected-state".into()),
+                Some("c".into()),
+                None,
+                "expected-state"
+            )
+            .unwrap(),
+            "c"
+        );
+        // error 字段优先于一切
+        assert!(callback_verdict(
+            Some("expected-state".into()),
+            Some("c".into()),
+            Some("access_denied".into()),
+            "expected-state"
+        )
+        .is_err());
+        // state 对但缺 code → Err（不误放）
+        assert!(
+            callback_verdict(Some("expected-state".into()), None, None, "expected-state").is_err()
+        );
+    }
+
+    /// TokenBundle 序列化往返 + 过期判定窗口
     #[test]
     fn token_bundle_roundtrip() {
         let t = TokenBundle {

@@ -202,19 +202,30 @@ async fn copy_or_move(
                 ),
             );
             let verb = if is_move { "移动" } else { "复制" };
-            // move 发两条凭证：源 delete（含 before 快照，回滚=恢复源文件）+
-            // 目标 create（落点凭据）；copy 只有目标 create
             let mut result = ToolResult::ok(
                 format!("已{verb}：{src_s} → {dst_s}（{summary}）。目标路径：{dst_s}"),
                 Vec::new(),
             );
-            if let Some(snap) = src_snap {
-                result = result.with_file_change(delete_receipt(&src_s, Some(snap)));
+            // move 发两条凭证：源 delete（回滚=恢复源文件）+ 目标 create；
+            // copy 源仍在原处，只发目标 create
+            if is_move {
+                result = result.with_file_change(move_source_receipt(&src_s, src_snap));
             }
             result.with_file_change(crate::bot_fs::build_binary_file_receipt(&dst_s))
         }
         Err(e) => ToolResult::error(format!("{action} 失败：{e}"), Vec::new()),
     }
+}
+
+/// move 的源侧 delete 凭证（纯函数便于单测）：快照降级（None = 目录/超大/
+/// 软链/写盘失败）时凭证仍要发——可观测但不可回滚（回滚侧报「请从回收站
+/// 手动找回」），与 delete 动作的降级语义同一口径；快照缺失若连凭证都不发，
+/// 撤回面就完全不知道这个源的存在。
+fn move_source_receipt(
+    src: &str,
+    src_snap: Option<(String, String)>,
+) -> crate::bot_fs::FileChangeReceipt {
+    delete_receipt(src, src_snap)
 }
 
 /// 移动：同卷 rename（原子）；跨卷复制后把源移入回收站。
@@ -500,5 +511,25 @@ mod tests {
             src.contains("SCHEMA_MANAGE_FILE"),
             "manage_file 必须有 schema 常量"
         );
+    }
+
+    /// move 源侧凭证（生产行直测）：快照在 → delete 凭证带快照（回滚=恢复源），
+    /// 快照降级 → delete 凭证照发但不带快照（可观测不可回滚）。凭证丢失 = 撤回
+    /// 时源文件回不到原位，本测试必须红。copy 不走源侧（调用点 is_move 分支），
+    /// 源仍在原处不发 delete。
+    #[test]
+    fn move_receipts_pair_source_delete_with_target_create() {
+        let with_snap = move_source_receipt("/a/old.txt", Some(("snap-1".into(), "sha".into())));
+        assert_eq!(with_snap.kind, "delete");
+        assert_eq!(with_snap.path, "/a/old.txt");
+        assert_eq!(
+            with_snap.before_ref.as_deref(),
+            Some("snap-1"),
+            "源快照随凭证"
+        );
+
+        let degraded = move_source_receipt("/a/old.txt", None);
+        assert_eq!(degraded.kind, "delete", "快照降级凭证照发（可观测）");
+        assert!(degraded.before_ref.is_none(), "降级 = 无快照可回滚");
     }
 }

@@ -121,6 +121,17 @@ pub(crate) fn short_circuit(session_id: Option<&str>) -> Option<Decision> {
     (streak >= DENY_STREAK_LIMIT).then_some(Decision::Unsure)
 }
 
+/// 分类器输出 → 三态判决（纯函数便于单测）：首词 allow/deny 命中，其余
+/// （含模型胡说）→ unsure。deny 分支必须有生产行直测——fail-safe 的牙齿
+/// 就在「deny 落 Deny 而非放行」这一行映射上。
+fn parse_verdict(verdict: Option<&str>) -> Decision {
+    match verdict.map(|s| s.trim()) {
+        Some(v) if v.starts_with("allow") => Decision::Allow,
+        Some(v) if v.starts_with("deny") => Decision::Deny,
+        _ => Decision::Unsure,
+    }
+}
+
 /// 判决入口。调用点已保证 perm_mode==Auto && interactive；这里只判开关 /
 /// 连拦 / 模型可用，然后一次小请求出三态。
 pub async fn auto_gate_decide(
@@ -150,11 +161,7 @@ pub async fn auto_gate_decide(
     let started = Instant::now();
     let verdict = classify(&model, tool, detail, &intent).await;
     let latency_ms = started.elapsed().as_millis() as u64;
-    let decision = match verdict.as_deref().map(|s| s.trim()) {
-        Some(v) if v.starts_with("allow") => Decision::Allow,
-        Some(v) if v.starts_with("deny") => Decision::Deny,
-        _ => Decision::Unsure,
-    };
+    let decision = parse_verdict(verdict.as_deref());
     match (decision, session_id) {
         (Decision::Deny, Some(sid)) => {
             let mut map = deny_streaks().lock().unwrap_or_else(|p| p.into_inner());
@@ -322,22 +329,22 @@ mod tests {
         reset();
     }
 
-    /// 判定解析：首词 allow/deny 命中，其余（含模型胡说）→ unsure（fail-safe）
+    /// 判定解析（生产行直测）：deny 必须落 Deny——deny 被改成放行时本测试
+    /// 必须红，fail-safe 假设才有自动化闸
     #[test]
     fn verdict_parsing() {
-        let parse = |v: Option<&str>| match v.map(|s| s.trim()) {
-            Some(v) if v.starts_with("allow") => Decision::Allow,
-            Some(v) if v.starts_with("deny") => Decision::Deny,
-            _ => Decision::Unsure,
-        };
-        assert_eq!(parse(Some("allow")), Decision::Allow);
-        assert_eq!(parse(Some("deny")), Decision::Deny);
-        assert_eq!(parse(Some("ALLOW")), Decision::Unsure, "小写化后才比对");
-        assert_eq!(parse(Some("maybe")), Decision::Unsure);
-        assert_eq!(parse(None), Decision::Unsure);
+        assert_eq!(parse_verdict(Some("allow")), Decision::Allow);
+        assert_eq!(parse_verdict(Some("deny")), Decision::Deny);
+        assert_eq!(
+            parse_verdict(Some("ALLOW")),
+            Decision::Unsure,
+            "小写化后才比对"
+        );
+        assert_eq!(parse_verdict(Some("maybe")), Decision::Unsure);
+        assert_eq!(parse_verdict(None), Decision::Unsure);
         // 小写化入口在 classify 返回侧：to_lowercase 后 ALLOW→allow
         assert_eq!(
-            parse(Some("ALLOW".to_lowercase().as_str())),
+            parse_verdict(Some("ALLOW".to_lowercase().as_str())),
             Decision::Allow
         );
     }

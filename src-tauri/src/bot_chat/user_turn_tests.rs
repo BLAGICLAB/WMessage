@@ -283,6 +283,19 @@ fn backend_rebuild_sites_emit_rows_with_ids() {
         rebuild_note, 2,
         "exec 两个重建点（建会话/回复落库）都要广播"
     );
+    // 广播载荷必须与库行同 id：借库行本体（&history_rows）或未改 id 的 clone
+    // 均可；广播前重新生成 id 会让投影指着一个库里不存在的行（围观侧与库失配）
+    assert!(
+        exec.contains("for r in &history_rows {")
+            && exec.contains("emit_row_upserted(&app_for_audit, Some(&s.id), r);"),
+        "建会话点广播必须借用库行本体（载荷 id 与库行同源）"
+    );
+    assert!(
+        exec.contains("let rows_for_event = history_rows.clone();")
+            && exec.contains("for row in &rows_for_event {")
+            && exec.contains("emit_row_upserted(app, Some(&sid), row);"),
+        "回复落库点广播必须用库行的同 id clone"
+    );
     let runner = include_str!("../bot/subagent_runner.rs");
     assert!(
         runner.contains("msg_id: Some(crate::db::bot_history::new_bot_msg_id())"),
