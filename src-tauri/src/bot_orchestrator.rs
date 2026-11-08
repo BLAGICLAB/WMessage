@@ -380,7 +380,11 @@ where
         // 话末档 600s 要等满整个预算）。监听复用上面已 enable 的那个
         // notified——事件到达时立刻破片回去重读状态；薄片到点只查停止
         // 标志，不重读——DB 读频不随切片变密。
-        let step_end = std::time::Instant::now() + std::time::Duration::from_millis(step_ms);
+        // 步长钳到剩余预算内：末档 600s 若从 deadline 前起步，睡满整档会把
+        // 实际等待拖到预算的近一倍——超时上界必须在步长起点就封死。
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let step_end =
+            std::time::Instant::now() + std::time::Duration::from_millis(step_ms).min(remaining);
         loop {
             let now = std::time::Instant::now();
             if now >= step_end {

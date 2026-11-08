@@ -214,6 +214,35 @@ async fn long_budget_does_not_reopen_db_on_every_step() {
         reads.get()
     );
 }
+#[tokio::test]
+async fn timeout_lands_on_the_budget_not_on_a_full_ladder_step() {
+    // 预算 5s 时阶梯走到 4.5s 那次读还没到点，下一档是 6000ms——步长若不
+    // 钳到剩余预算内，超时会落在 ~10.5s（4.5+6.0），「上限」名不副实。
+    // 钳制后超时必须落在预算上（5s ± 抖动），远早于未钳制的整档走完。
+    let reads = std::cell::Cell::new(0usize);
+    let started = std::time::Instant::now();
+    let (_, exit) = wait_until_terminal(
+        || {
+            reads.set(reads.get() + 1);
+            async { Ok::<_, CommandError>(fake_state(SubagentStatus::Running)) }
+        },
+        5_000,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(exit, WaitExit::Timeout);
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(4_900),
+        "预算没走满就提前返回了：{:?}",
+        started.elapsed()
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(7_000),
+        "超时拖到了整档步长（未钳制会到 ~10.5s）：{:?}",
+        started.elapsed()
+    );
+}
 /// 并发闸状态机（合并为单测：static GATE 进程级共享，cargo 并行跑两个测试
 /// 会互相踩计数；手动构造票据，不调 wait_slot——它会与其他并行测试竞争
 /// 全局槽导致排队挂死）。
