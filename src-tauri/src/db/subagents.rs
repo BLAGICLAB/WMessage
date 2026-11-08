@@ -497,8 +497,9 @@ pub fn find_live_subagent_by_request(
 
 /// 按会话（作为父会话 **或** 子 agent 自己的会话）取**在途**行。
 ///
-/// 会话删除时用：父会话没了，它派出去的子 agent 就成了没人收的孤儿——看不见、
-/// 停不掉，还照烧完整份预算。
+/// 两个调用方：会话删除（父会话没了，派出去的子 agent 成了没人收的孤儿——
+/// 看不见、停不掉，还照烧完整份预算）与 `/stop` 级联取消（主回合停了，
+/// 后台子 agent 不许独自跑完再经汇报轮续上主会话）。
 pub fn load_live_subagents_by_session(
     conn: &rusqlite::Connection,
     session_id: &str,

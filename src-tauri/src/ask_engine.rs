@@ -1,6 +1,6 @@
 //! 任务问答引擎（ask_user 工具 + 通知页应答 + 会话内问题卡事件）。
 //! 原随工作流画布而生（workflow_questions），画布退役后中立化保留——
-//! 手动执行任务卡与普通聊天回合（bot_chat 用户轮）共用。
+//! 手动执行任务卡、普通聊天回合与汇报轮（bot_chat 用户轮 / 子 agent 终态续轮）共用。
 //!
 //! ask 端（ask_user 工具，bot/registry 挂载）：落 notifications
 //! （kind=workflow_question，遗留名含库内历史行，id=wfq:{qid}）
@@ -196,7 +196,7 @@ pub(crate) fn resolved_event_payload(qid: &str, action: &str, answer: Option<&st
 pub enum AskOrigin {
     /// 手动执行任务卡（现有路径）
     TaskCard,
-    /// 普通聊天回合（bot_chat 用户轮）
+    /// 普通聊天回合（bot_chat 用户轮与汇报轮）
     Chat,
 }
 
@@ -235,7 +235,7 @@ pub(crate) fn register_ask_context<R: tauri::Runtime>(
     );
 }
 
-/// 注册聊天提问上下文（bot_chat 用户轮在 run_model_loop 前后成对调用）。
+/// 注册聊天提问上下文（bot_chat 用户轮与汇报轮在 run_model_loop 前后成对调用）。
 /// 预算与任务卡同源（ASK_BUDGET_DEFAULT）；task_id/node_title 留空——
 /// 通知标题走「聊天提问」，不挂任务卡名。
 pub(crate) fn register_chat_ask_context<R: tauri::Runtime>(
@@ -382,7 +382,7 @@ async fn wait_ask_reply(
 }
 
 /// ask_user 工具入口（registry TOOLS_TABLE 挂载；timeout 参数化供测试用短值）：
-/// 未注册上下文（聊天等非执行链路）→ warn 引导自行继续；模式关闭/超预算 → 不落队列直接回落假设；
+/// 未注册上下文（定时/批量等无人值守链路，不经 bot_chat 注册路径）→ warn 引导自行继续；模式关闭/超预算 → 不落队列直接回落假设；
 /// 正常路径：落通知队列（wfq:{qid}）+ 系统通知门铃 → oneshot 等待 → 回答/假设作为工具结果。
 /// stop：/stop 等取消源（24h 等待必须可被用户停止打断，否则模型循环
 /// 挂到超时；轮询 stopped() 每 500ms，命中即回落假设并清理 waiter）。

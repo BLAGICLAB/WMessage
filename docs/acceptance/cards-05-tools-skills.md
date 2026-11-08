@@ -420,14 +420,14 @@
   2. 设置页「MCP 服务」分区：填 DeepSeek API Key 点「保存配置」→ 开启「DeepSeek 搜索」→ 让机器人「搜一下最近的 Rust 新闻」→ 结果带 `[DeepSeek]` 标签，摘要行尾带（发布：YYYY-MM-DD）。
   3. 时间过滤：让机器人搜「最近一周的 …」（模型应传 timeRange=week）→ 结果落在时间窗内。
   4. 站点限定：让机器人限定 github.com 搜 → 结果全部来自该域。
-  5. 多开互斥：再开启「Tavily 搜索」→ web_search 明确报错「DeepSeek 与 Tavily 搜索不能同时开启」；设置页同名红字警告提前可见；关掉一个恢复。
+  5. 互斥单开：设置页开着「DeepSeek 搜索」再点开「Tavily 搜索」→ 同一次保存后 Tavily 开、DeepSeek 自动关闭（UI 上不再可能双开）；web_search 运行期报错「XX 与 YY 搜索不能同时开启」仅在外部改配置成双开时兜底出现，此时设置页红字提示同源可见，任关一个恢复。
   6. 计费对账：记 DeepSeek 平台余额，跑 5 次搜索后再看 → 扣费 ≈ 5×0.005 元；断网跑一次（失败请求）→ 不扣费。
   7. 抓取开关：开启「DeepSeek 抓取」→ 让机器人 fetch_url 抓一个直连拿不到正文的 JS 渲染页 → 返回整页 Markdown；bot.log 出现 `web.deepseek_fetch_used`。
   8. 抓取失败回退：抓一个 DeepSeek 拿不到的 URL → 自动回退直连+Jina 原链路，bot.log 有 `web.deepseek_fetch_failed`；关闭开关后 fetch_url 行为与改动前完全一致。
   9. 缺 key 链路：开启「DeepSeek 搜索」但不填 key → web_search 报「DeepSeek 搜索已开启，但设置页还没填 DeepSeek API Key」；只开「DeepSeek 抓取」不填 key → fetch_url 照常走原链路（不报错不阻断）。
 - **判据**：
   1. 【可核对】步骤 2/3/4 的行为与 `bot_web/search.rs` 的 `deepseek_query_and_time` / `parse_deepseek_results` / `format_deepseek_results` 纯函数一致（锚点测试锁死）。
-  2. 【可核对】步骤 5：`resolve_search_route` 多开报 Conflict（携带引擎名列表），单开缺 key 报 Missing*；前端 MCP 卡同名警告同源。
+  2. 【可核对】步骤 5：前端互斥开一关余；后端 `resolve_search_route` 对外部双开配置仍报 Conflict（携带引擎名列表），单开缺 key 报 Missing*；前端红字仅外部双开残留可见，正常互斥操作到不了。
   3. 【可审计】步骤 6：Search/Fetch 按「成功请求」计费，失败/空结果/超时不扣费；余额变动与成功调用次数一致。
   4. 【可核对】步骤 7/8：`fetch_text` 的 DeepSeek 优先路径（`deepseek_fetch_mode` 严格手动：Some(true)+key 才启用）与失败回退（`deepseek: Some(Err)` 上抛给工具层记审计）。
   5. 【可审计】走第三方时审计事件 `web.deepseek_fetch_used` / `web.deepseek_fetch_failed`（已收录 event-names.md）。

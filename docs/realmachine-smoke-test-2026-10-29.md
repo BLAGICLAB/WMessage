@@ -743,6 +743,8 @@ Windows 上没有 unix 那套信号语义，停止走 `taskkill /PID <pid> /T /F
 **变异注入复验**：把 `askStore.ts` 的 `applyAsk` 改成**原地改对象**（`asks.get(sid)[i].question = ...` 不整体替换）→ 重跑应 **FAIL**（卡片出现但不刷新）。
 第二个变体：把 `bot_chat/flow.rs` 的注册条件从 `origin == TurnOrigin::User` 改成无条件 → 重跑第 6 步应 **FAIL**（汇报轮也弹卡）。
 
+> **勘误（2026-11-09）**：汇报轮提问口径已反转——`ask_registered` 现覆盖 `TurnOrigin::User | TurnOrigin::Report`（提交 `485b5887`）。本卡「**汇报轮不注册**」段落、第 6 步「不出现提问卡」的 PASS 判据与「汇报轮也弹卡」的 FAIL 反例、以及上面第二个变异锚点（`origin == TurnOrigin::User` 代码已不存在）**全部作废**。复跑口径：第 6 步改为「汇报轮也**能**弹提问卡且可正常应答」（子 agent 终态续轮与用户轮同闸同预算）；变异注入改为「把 `matches!(origin, TurnOrigin::User | TurnOrigin::Report)` 退回只认 User → 汇报轮提问被拒回落假设，应 **FAIL**」。
+
 **平台**：跨平台。
 
 ---

@@ -158,8 +158,8 @@ export function McpSection({
             <p className="text-xs text-[var(--t6)] leading-snug">
               key 存系统凭据存储（与主 API key
               同），不再明文写进配置文件；填 key 后点「保存配置」生效；
-              要停用请关闭开关（已存的 key 不提供清除入口）。与 Tavily
-              互斥，两个开关同时开启会报错。开关开启但缺 key / Brave
+              要停用请关闭开关（已存的 key 不提供清除入口）。与 Tavily/DeepSeek
+              三选一互斥：开启任一个，其余随同一次保存自动关闭。开关开启但缺 key / Brave
               请求失败时会明确报错，不会静默走百度。
             </p>
           )}
@@ -199,7 +199,7 @@ export function McpSection({
               key 存系统凭据存储（与主 API key
               同），不再明文写进配置文件；填 key 后点「保存配置」生效；
               要停用请关闭开关（已存的 key 不提供清除入口）。与 Tavily/Brave
-              互斥，多开报错。按成功搜索计费（约 5 元/千次，搜索不到不收费），从
+              三选一互斥：开启任一个，其余随同一次保存自动关闭。按成功搜索计费（约 5 元/千次，搜索不到不收费），从
               DeepSeek 平台余额扣。
             </p>
           )}

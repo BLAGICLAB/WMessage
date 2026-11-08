@@ -2,7 +2,8 @@
 //!
 //! 主入口 `bot_chat`（在 bot_chat.rs）走 run_model_loop + 工具循环；
 //! 这里集中「停止执行实例」「危险操作确认」「机器人总开关」三类旁路能力：
-//! - `/stop` 快捷命令（bot_stop）：遍历 StopRegistry 把 interactive=true 的实例标志置位
+//! - `/stop` 快捷命令（bot_stop）：遍历 StopRegistry 把 interactive=true 的实例标志置位，
+//!   并级联取消本会话在跑子 agent（停了等待也停后台活）
 //! - 弹窗确认（ConfirmMap）：删除任务等危险操作走 ask_user_confirm（两按钮）；
 //!   文件访问授权走 ask_path_confirm（三按钮：允许一次/始终允许该目录/拒绝）
 //! - 机器人总开关（bot_get_enabled / bot_set_enabled）：flag 文件持久化
@@ -142,9 +143,9 @@ pub fn active_execution_count<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> u
 // 各自注入独立实例，且**没有任何调用方再对兜底实例做全局广播**
 // → 「并行置位别人 StopGuard」这条路已从结构上消失。
 
-/// /stop 快捷命令：停止**当前会话**用户交互触发的执行（bot_chat / 🤖 任务卡执行），
-/// 后台定时（interactive=false）与别的会话不受影响
-/// （避免会话 B 的 /stop 误杀会话 A 的活动 Skill）
+/// /stop 快捷命令：停止**当前会话**用户交互触发的执行并级联取消其在跑子 agent
+/// （bot_chat / 🤖 任务卡执行），后台定时（interactive=false）与别的会话不受影响
+/// （避免会话 B 的 /stop 误杀会话 A 的活动 Skill 与子 agent）
 ///
 /// 返回置位的执行实例数：前端据此知道「停了几条」。原先 `map(|_| ())` 把计数
 /// 丢了，前端只能靠「有没有在途」猜，停没停成功都拿不到。

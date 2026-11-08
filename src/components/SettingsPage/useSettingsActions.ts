@@ -71,11 +71,11 @@ export function useSettingsActions(params: SettingsActionsParams) {
     tavilyEnabled: false,
     // Brave 搜索 key 是否已存系统凭据存储（同 hasTavilyKey）
     hasBraveKey: false,
-    // 「Brave 搜索」开关：开 = web_search 走 Brave；与 Tavily 互斥，双开报错
+    // 「Brave 搜索」开关：开 = web_search 走 Brave；三选一互斥，toggle 时自动关余
     braveEnabled: false,
     // DeepSeek 搜索/抓取 key 是否已存系统凭据存储（同 hasTavilyKey；搜索与抓取共用一把）
     hasDeepseekKey: false,
-    // 「DeepSeek 搜索」开关：开 = web_search 走 DeepSeek；与 Tavily/Brave 互斥，多开报错
+    // 「DeepSeek 搜索」开关：开 = web_search 走 DeepSeek；三选一互斥，toggle 时自动关余
     deepseekEnabled: false,
     // 「DeepSeek 抓取」开关：开 = fetch_url 优先走 DeepSeek Fetch（手动，默认关）
     deepseekFetchEnabled: false,
