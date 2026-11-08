@@ -315,6 +315,7 @@
 - `bot-plan`
 - `bot-ask`
 - `bot-ask-resolved`
+- `bot-check-heartbeat`
 - `bot-confirm`
 - `bot-chat-report`
 - `bot-msg-upserted`

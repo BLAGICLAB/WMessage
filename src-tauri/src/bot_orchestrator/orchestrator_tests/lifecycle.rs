@@ -243,6 +243,29 @@ async fn timeout_lands_on_the_budget_not_on_a_full_ladder_step() {
         started.elapsed()
     );
 }
+#[test]
+fn check_wait_emits_heartbeat_to_parent_session() {
+    // check 是阻塞型工具：等待期主回合零流式事件，前端 dead-man 看门狗会把
+    // 这种合法静默判死并自动 /stop。守卫三条：心跳只挂在带等待且带会话号的
+    // check 上、间隔走常量、等待结束必须收回任务（防泄漏）。
+    let src = include_str!("../../bot_orchestrator.rs");
+    let (_, rest) = src
+        .split_once("pub async fn check_subagent")
+        .expect("check_subagent 函数存在");
+    let body = rest
+        .split_once("\npub async fn ")
+        .map(|(b, _)| b)
+        .unwrap_or(rest);
+    assert!(
+        body.contains("bot-check-heartbeat"),
+        "check 等待期必须向父会话发心跳事件"
+    );
+    assert!(
+        body.contains("CHECK_HEARTBEAT_MS"),
+        "心跳间隔必须走常量，不得散落魔数"
+    );
+    assert!(body.contains("hb.abort()"), "等待结束后必须收回心跳任务");
+}
 /// 并发闸状态机（合并为单测：static GATE 进程级共享，cargo 并行跑两个测试
 /// 会互相踩计数；手动构造票据，不调 wait_slot——它会与其他并行测试竞争
 /// 全局槽导致排队挂死）。

@@ -501,6 +501,43 @@ describe("后端发起轮：终态清场与回灌重建", () => {
       vi.useRealTimers();
     }
   });
+
+  it("check 等待心跳刷新活跃戳：阻塞工具的合法静默不触发 dead-man 判死", async () => {
+    vi.useFakeTimers();
+    try {
+      let heartbeat:
+        | ((e: { payload: Record<string, unknown> }) => void)
+        | null = null;
+      mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+        if (event === "bot-check-heartbeat")
+          heartbeat = cb as typeof heartbeat;
+        return () => {};
+      });
+      render(<ChatPanel {...defaultProps} />);
+      await act(async () => {});
+      streamState.markInflight("s1");
+      // check_subagent 阻塞 700s 后来了记心跳：活跃戳回到现在，看门狗放行
+      await act(async () => {
+        heartbeat?.({
+          payload: {
+            subagentId: "sa_x",
+            waitedMs: 700_000,
+            sessionId: "s1",
+            seq: 1,
+          },
+        });
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(16_000);
+      });
+      expect(streamState.isInflight("s1")).toBe(true);
+      expect(
+        mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_stop"),
+      ).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 /* 终态清场权与赛跑防线：invoke 轮的终态事件不得代 runChat 清场（收尾要

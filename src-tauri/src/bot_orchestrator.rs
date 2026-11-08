@@ -14,6 +14,7 @@
 //! 结构约定（同 task_patch / task_patch_locked 先例）：纯 DB 核心 `*_locked` 可在
 //! in-memory conn 上单测；异步包装负责 spawn_blocking + DB_WRITE_LOCK + 审计 + 广播。
 
+use crate::bot::stream_log::emit_recorded;
 use crate::db::{now_ms, SubagentProfile, SubagentRow, SubagentStatus};
 use crate::error::{CommandError, CommandResult};
 use tauri::AppHandle;
@@ -73,6 +74,11 @@ const CHECK_POLL_LADDER_MS: [u64; 10] = [
 /// 停止标志——/stop 的响应延迟以此为上界，不再随步长阶梯走到分钟级。
 /// 只影响睡眠粒度，DB 重读仍只在事件唤醒或整步走完时发生。
 const CHECK_STOP_SLICE_MS: u64 = 500;
+
+/// check 等待期向父会话发心跳的间隔（毫秒）：check 是阻塞型工具调用，
+/// 等待期间主回合没有任何流式事件，前端 dead-man 看门狗以静默时长判死。
+/// 间隔要对看门狗阈值留足倍数裕量，但又不必密——它只承载「后端还活着」。
+const CHECK_HEARTBEAT_MS: u64 = 60_000;
 
 /// 三段式派发阶段（设计 §8.5）——主 agent 在 recon/executor/verifier 三段闭环中
 /// 选定当前阶段的角色语义。**不破坏 SubagentProfile 枚举**——profile 仍是工具白名单
@@ -414,7 +420,32 @@ pub async fn check_subagent(
     let started = std::time::Instant::now();
     let app2 = app.clone();
     let key2 = key.to_string();
-    let (state, exit) = wait_until_terminal(
+    // 等待期心跳：阻塞的 check 期间主回合零流式事件，前端 dead-man
+    // 看门狗会把这种合法静默判死并顺手 /stop。心跳只经统一出口盖章广播
+    // （不进回合终稿），等待结束即收回。
+    let heartbeat = match (wait > 0, session_id) {
+        (true, Some(sid)) => {
+            let hb_app = app2.clone();
+            let hb_sid = sid.to_string();
+            let hb_key = key2.clone();
+            Some(tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(CHECK_HEARTBEAT_MS)).await;
+                    emit_recorded(
+                        &hb_app,
+                        Some(&hb_sid),
+                        "bot-check-heartbeat",
+                        serde_json::json!({
+                            "subagentId": hb_key,
+                            "waitedMs": started.elapsed().as_millis() as u64,
+                        }),
+                    );
+                }
+            }))
+        }
+        _ => None,
+    };
+    let wait_result = wait_until_terminal(
         || {
             let app = app2.clone();
             let key = key2.clone();
@@ -430,7 +461,11 @@ pub async fn check_subagent(
         wait,
         stop,
     )
-    .await?;
+    .await;
+    if let Some(hb) = heartbeat {
+        hb.abort();
+    }
+    let (state, exit) = wait_result?;
     // 问到终态 = 父上下文已拿到这份结果：记进去重表，digest 不再重念，
     // 自动汇报轮也不会因为「没人提过」而重复讲同一件事。
     if state.status.is_terminal() {

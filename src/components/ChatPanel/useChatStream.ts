@@ -481,6 +481,20 @@ export function useChatStream(params: ChatStreamParams) {
       if (!streamState.noteSeq(sid, p?.seq)) return;
       askStore.applyResolved(p);
     });
+    // check_subagent 等待期心跳：阻塞型工具调用期间没有任何流式事件，
+    // dead-man 看门狗会把这种合法静默判死并自动 /stop——本事件只用来
+    // 刷新活跃戳（noteSeq 即刷新），不渲染任何 UI。
+    const unHeartbeat = reg<{
+      subagentId?: string;
+      waitedMs?: number;
+      sessionId?: string | null;
+      seq?: number;
+    }>("bot-check-heartbeat", (p) => {
+      const sid = p?.sessionId ?? null;
+      if (sid === null) return;
+      if (sid !== sessionIdRef.current && !streamState.isInflight(sid)) return;
+      if (!streamState.noteSeq(sid, p?.seq)) return;
+    });
     //  水位条数据源：Anthropic 回合级 usage 按会话累计（当前视图 + 在途会话，
     //  与流式事件同过滤口径——切走的会话继续累计，切回可见）
     const unUsage = listen<{
@@ -590,6 +604,7 @@ export function useChatStream(params: ChatStreamParams) {
       unlistenSafe(unPlan);
       unlistenSafe(unAsk);
       unlistenSafe(unAskResolved);
+      unlistenSafe(unHeartbeat);
       streamHandlersRef.current = {};
     };
   }, [loadFinalText]);
