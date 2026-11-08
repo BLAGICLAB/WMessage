@@ -604,3 +604,28 @@ fn digest_is_injected_at_the_end_of_message_assembly() {
         "回报段作为 system 消息追加"
     );
 }
+/// 接线守卫：汇报轮（子 agent 终态触发的续轮）必须与用户轮同闸开放提问。
+/// 收编轮 ask_user 曾因只认用户轮被全量拒绝——用户明确要求提问时，模型在
+/// 汇报轮里试问三次全被闸拦，只能按假设推进。匹配串 `concat!` 拆分防自匹配。
+#[test]
+fn report_turn_registers_ask_context_like_user_turn() {
+    let chat = include_str!("../../bot_chat/flow.rs");
+    let needle = concat!(
+        "let ask_registered = matches!(origin, ",
+        "TurnOrigin::User | TurnOrigin::Report);"
+    );
+    assert!(
+        chat.contains(needle),
+        "提问注册必须覆盖 User 与 Report 两类轮，不得退回只认用户轮"
+    );
+    // 注销与注册必须仍走同一条成对收口路径
+    let at = chat.find(needle).expect("注册点存在");
+    let unregister = chat[at..]
+        .find("unregister_ask_context")
+        .map(|i| i + at)
+        .expect("注册点之后应有成对注销");
+    assert!(
+        unregister > at,
+        "注销收口必须在注册点之后（run_model_loop 返回侧）"
+    );
+}

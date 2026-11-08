@@ -721,11 +721,12 @@ pub(super) async fn bot_chat_guarded(
             c.session_id = Some(sid.clone());
         }
     }
-    // 提问授权（ask_user 按 session_id 查表）：普通聊天用户轮开放提问——
-    // 问题卡进当前会话（bot-ask 事件）+ 通知中心双写；汇报轮是后端自动轮，
-    // 保持无人值守（不注册，调用即回落假设）。注销必须赶在 session_id
-    // 按值转移（记忆抽取）之前，故紧跟 run_model_loop 成对收口。
-    let ask_registered = origin == TurnOrigin::User;
+    // 提问授权（ask_user 按 session_id 查表）：普通聊天用户轮与汇报轮开放提问——
+    // 问题卡进当前会话（bot-ask 事件）+ 通知中心双写；汇报轮由子 agent 终态
+    // 触发、跑在交互 StopGuard 上（用户在场同一会话），与用户轮同闸同预算。
+    // 定时/批量等无人值守链路不在 bot_chat 链路上，本就不经此处。注销必须赶在
+    // session_id 按值转移（记忆抽取）之前，故紧跟 run_model_loop 成对收口。
+    let ask_registered = matches!(origin, TurnOrigin::User | TurnOrigin::Report);
     // 注销句柄提前克隆：app 随后按值消费进 run_model_loop，出循环后原句柄不可用
     let ask_cleanup_app = if ask_registered {
         Some(app.clone())
