@@ -171,7 +171,8 @@ fn classify(
             ),
         };
     }
-    // 后台执行（无人值守）不弹窗：等一个没人点的确认窗只是浪费 60s。
+    // 真正无人值守（interactive=false：程序页运行 / eval / 退出清理）不弹窗：
+    // 等一个没人点的确认窗只是浪费 60s。定时作业是有人在场，不走此分支、正常弹窗。
     if !interactive {
         return Classified::Denied {
             dest: "unattended",

@@ -398,8 +398,8 @@
   6. 让机器人调 `http_request` 带 `"Authorization": "keyring:<已配厂商名>"` 调一次带鉴权的 API → 返回值里搜不到 key 明文；`grep -F "<key明文>" <data_dir>/bot.log` 无命中。
   7. 让机器人用 `http_request` 的 `saveAs` 下载一个 CSV → 文件落 `<data_dir>/AI_Gen_Files/`，返回的是路径与字节数；再让 `run_python` 读该路径做统计 → 断网后能力不回退的关键一步。
   8. 让机器人 `run_python` 跑 `import urllib.request; urllib.request.urlopen("https://example.com")` → macOS 上应报 PermissionError/network 被拒，错误如实回灌（不是静默成功）。
-  9. 建一个定时任务，让它在无人值守时调 `http_request` 访问白名单外地址 → 任务应快速失败（不等 60s），bot.log 记 `bot.http_request` 且 `dest=unattended`。
-  10. 让机器人调 `open_url` 于定时任务内 → 应被拒（无人值守不打开浏览器）。
+  9. 建一个定时任务调 `http_request` 访问白名单外地址，逐验三种在场形态（定时作业是有人在场链路，不走 `dest=unattended`）：主窗口可见 → 真弹确认窗，点批准后放行（`dest=asked`）；可见但不点 → 60s 超时拒（`dest=confirm_denied`）；主窗口不可见 → 立即拒不弹窗（同样 `dest=confirm_denied`，不等 60s）。真正 `dest=unattended` 只在程序页运行 / eval 等非交互链路出现。
+  10. 让机器人调 `open_url` 于定时任务内 → 会**真的打开浏览器**（有人在场语义；`open_url` 的无人值守拒只拦 interactive=false 链路）。要验「无人值守不开浏览器」，走程序页运行等非交互链路。
 - **判据**：
   1. 【可核对】步骤 3/4/5 的行为与 `bot_web/destination.rs` 的 `classify` 分支一致；批准后同会话同 host 不再弹（锚点测试 `yolo_and_session_grant_lifecycle`）。
   2. 【可核对】步骤 6：凭据只走 `keyring:` 前缀引用——真值在宿主解开（`bot/tools/http.rs::resolve_secret`），审计与 preview 只见条目名（`dispatch.rs` 的 http_request 特例 preview）。

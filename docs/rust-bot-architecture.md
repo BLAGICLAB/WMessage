@@ -128,7 +128,7 @@ src-tauri/src/
 ├── bot_chat.rs (830)    入口编排门面：bot_chat / bot_compact / bot_execute_task 命令 + 公共类型
 │                        （ChatMsg/TaskRef/BotChatResult）+ 子模块转出（旧路径 1:1 保持）
 │   ├── bot_chat/flow.rs (838)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
-│   ├── bot_chat/exec.rs (571)   任务执行面：批量执行 + ExecGuard + run_task_in_chat 全链路
+│   ├── bot_chat/exec.rs (574)   任务执行面：批量执行 + ExecGuard + run_task_in_chat 全链路
 │   ├── bot_chat/media.rs (152)  多模态图片组装：base64 入模 + 扩展名白名单 + 附件索引
 │   ├── bot_chat/summary.rs (322) 历史摘要面：截断点选择 + 摘要请求 + 压缩
 │   ├── bot_chat/inject.rs (96)  上下文注入面：摘要/记忆块并入末条消息（保缓存前缀稳定）
@@ -162,7 +162,7 @@ src-tauri/src/
 │   │                                    tool_call 增量累积 / token usage 归一
 │   ├── bot_model_loop/core.rs (1159)     核心循环：run_model_loop_core（可注入 mock）+
 │   │                                    dispatch_round（工具分发/回灌）
-│   ├── bot_model_loop/shell.rs (584)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
+│   ├── bot_model_loop/shell.rs (585)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
 │   ├── bot_model_loop/request.rs (726)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
 │   ├── bot_model_loop/sse.rs (820)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
 │   ├── bot_model_loop/guard.rs (707)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
@@ -507,7 +507,7 @@ src-tauri/src/
 │                        原.workflow_questions，随画布退役中立化保留（手动执行任务卡共用）
 │
 │─ Bot 工具实现（被 bot.rs 分发调用）
-├── bot_fs.rs (550)       路径白名单 + perm_mode(ask/yolo) 两档授权闸；
+├── bot_fs.rs (551)       路径白名单 + perm_mode(ask/yolo) 两档授权闸；
 │                        per-tool 规则表（lookup_tool_rule / tool_rule_for）+ 读闸
 │                        （resolve_with_perm / allowed_dirs）；子模块转出（旧路径 1:1 保持）
 │   ├── bot_fs/edit.rs (671)      文件编辑面：写闸 + 三级匹配内核 + edit_file/write_file
@@ -656,7 +656,7 @@ src-tauri/src/
 | `BotSession` | db/bot_sessions.rs:24 |
 | `CommandError` / `CommandErrorCode` / `CommandResult` | error.rs:151 / :36 |
 | `ChatMsg` / `TaskRef` / `BotChatResult` / `TaskExecOrigin` | bot_chat.rs:39 / :111 / :119 / bot_chat/exec.rs:138 |
-| `BotConfig` / `ApiProvider` / `PermMode` / `KeySlot` | bot/config/types.rs:82 / :376 / :401 / :42 |
+| `BotConfig` / `ApiProvider` / `PermMode` / `KeySlot` | bot/config/types.rs:78 / :357 / :381 / :42 |
 | `LlmHttp` / `ModelLoopDeps` / `ParsedChunk` | bot_model_loop.rs:906 / :1014 / :156 |
 | `SkillRun` / `SkillState` | bot_skills/state.rs |
 | `SkillMeta` | bot_skills/parse.rs |

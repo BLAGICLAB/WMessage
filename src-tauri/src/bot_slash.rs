@@ -250,9 +250,10 @@ pub const CONFIRM_KIND_FILE_ACCESS: &str = "file_access";
 
 /// 弹窗确认公共内核：发 "bot-confirm" 事件（带 kind 供前端渲染两/三按钮、
 /// 带 sessionId 供前端按会话过滤），60s 超时默认拒绝（安全兜底）；
-/// 非交互执行（后台定时任务，interactive=false）直接拒绝不弹窗——
-/// 无人在场时弹窗只会串进用户当前会话且必然超时。
-/// 主窗口不可见时同样直接拒绝，不白等 60s。
+/// 非交互执行（interactive=false：程序页运行 / eval / 退出清理）直接拒绝
+/// 不弹窗——无人在场时弹窗只会串进用户当前会话且必然超时。
+/// 主窗口不可见时同样直接拒绝，不白等 60s。定时作业不属此列：
+/// 它以有人在场（interactive=true）跑，窗口可见会真弹窗，不可见走上面的立即拒。
 async fn ask_confirm_inner<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     tool: &str,

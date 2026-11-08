@@ -273,8 +273,9 @@ fn append_session_read_dirs<R: tauri::Runtime>(
 /// ~ 展开 → canonicalize（不存在即拒）→ 白名单命中直接放行；
 /// 白名单外按 perm_mode 分流：ask 弹授权窗（允许一次 /
 /// 始终允许该目录自动写入 allowedDirs / 拒绝）/ yolo 直接放行。全程记审计。
-/// interactive/session_id（会话隔离）：后台执行（interactive=false）
-/// 不弹授权窗直接拒；弹窗事件带 sessionId 供前端按会话过滤。
+/// interactive/session_id（会话隔离）：后台执行（interactive=false，
+/// 程序页运行 / eval / 退出清理）不弹授权窗直接拒；定时作业是有人在场，
+/// 会正常弹窗。弹窗事件带 sessionId 供前端按会话过滤。
 /// 成功返回 canonical 路径（Windows 剥 \\?\ 前缀）。
 /// 包 spawn_blocking 同步 syscall：避免阻塞 Tauri async runtime（ performance）。
 ///

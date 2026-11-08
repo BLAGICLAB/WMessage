@@ -249,8 +249,9 @@ pub async fn run_model_loop(
         ),
     };
     // 会话隔离：流式事件（bot-chat-delta 等）只由交互实例广播；
-    // 后台定时任务（interactive=false）不发流——否则后台执行的输出会
-    // 串进用户当前会话的 streaming 气泡。Skill 归属同理按 session 过滤。
+    // 非交互链路（interactive=false：程序页运行 / eval / 退出清理）不发流——
+    // 否则后台执行的输出会串进用户当前会话的 streaming 气泡。
+    // 定时作业是有人在场（interactive=true），流照发到自己的会话。Skill 归属同理按 session 过滤。
     let stream_to_main = stop.is_interactive();
     let session_id: Option<&str> = stop.session_id();
     // 在途登记：这一轮开始。客户端重挂载后靠它知道「有回合正在跑」——

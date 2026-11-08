@@ -459,6 +459,9 @@ where
             c.session_id = Some(sid.clone());
         }
     }
+    // 有人在场（interactive=true）：定时/批量/手动统一走交互链路——确认窗可用
+    // （主窗口可见可批准 / 不可见立即拒 / 60s 超时拒）；真正无人值守只有
+    // 程序页运行 / eval / 退出清理。
     let stop = StopGuard::new(app, true, Some(sid.clone()));
     // 收尾判定停止用：stop 本体 move 进 run，先留只读令牌
     let stop_token = stop.token();
