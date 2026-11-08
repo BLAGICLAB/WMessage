@@ -85,6 +85,16 @@
 - 钥匙串弹窗战争：重建后的 debug 无签名二进制对既有条目（wmessage.bot.v1 service 族）反复弹授权框——env 补丁盖住全部 `get_password` 读点后，settings 页仍触发个别读点弹窗（未定位到行）；逐条「允许/拒绝」可过但污染节奏。下一轮实机要么请用户本人点一次「始终允许」（需钥匙串密码），要么先定位那只漏网读点再补 env 回退。
 - 环境台账（本轮全部已还原）：config 备份还原 ✓ / env 文件已删 ✓ / 桩+vite 已停 ✓ / keyring `mcp-oauth:smoke-oauth-stub-0001` 已删 ✓ / 源码 5 文件 git checkout ✓ / pristine 重建 ✓；Chrome 有 4 个回调 tab 残留（用户手动关即可）。
 
+### 四缺口补测收编（2026-11-08 下午，`37573770`）
+
+变异轮实证的四处 L1 缺口当日收编，全量 2316 绿：
+
+- **V168**：`auto_classifier.rs` 的 deny 映射抽纯函数 `parse_verdict`，生产 match 改调它；`verdict_parsing` 从镜像闭包改为生产行直测——deny→放行变异从此必红，fail-safe 有了自动化闸。
+- **V170**：`login_impl` 回调判定抽纯函数 `callback_verdict`，新增 `callback_verdict_rejects_mismatched_state_even_with_code` 直测「错 state + 有 code → Err」；`token_bundle_roundtrip` 上挂错的陈旧注释一并修正。
+- **V165**：move 源侧凭证抽 `move_source_receipt` 直测；**顺带修一个补测试时红出来的真缺口**——原 `if let Some(snap)` 让快照降级（目录/超大/软链/写盘失败）时源 delete 凭证整体缺失，撤回面不知道该源存在；改为凭证照发、`before_ref=None`（可观测不可回滚），对齐 delete 动作的降级语义。copy 路径不发源凭证（is_move 分支），行为面不变。
+- **V160**：`backend_rebuild_sites_emit_rows_with_ids` 结构断言升级——两个重建点的广播必须借库行本体或同 id clone，广播前重新生成 id 即红。
+- 附带：`receipt.rs` 的 kind 注释过期（「现有文件工具不产 delete」）修正。
+
 ## 三、环境操作台账
 
 | 改了什么 | 改在哪 | 还原了吗 |
