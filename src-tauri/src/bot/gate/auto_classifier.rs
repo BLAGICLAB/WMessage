@@ -132,7 +132,7 @@ fn parse_verdict(verdict: Option<&str>) -> Decision {
     }
 }
 
-/// 判决入口。调用点已保证 perm_mode==Auto && interactive；这里只判开关 /
+/// 判决入口。调用点已保证 perm_mode==Ask && interactive；这里只判开关 /
 /// 连拦 / 模型可用，然后一次小请求出三态。
 pub async fn auto_gate_decide(
     app: &AppHandle,

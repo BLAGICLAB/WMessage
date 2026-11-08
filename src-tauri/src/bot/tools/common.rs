@@ -51,7 +51,7 @@ pub(super) fn parse_task_files_arg(
 
 /// 模型来源 files 的安全校验：create_task/edit_task 的
 /// files 参数直接来自模型，不加校验模型可把任意目录标 isDir=true 绑进任务卡，
-/// `allowed_dirs` 会把它并入文件白名单（且先于 permMode 分流），strict 模式也被架空。
+/// `allowed_dirs` 会把它并入文件白名单（且先于 permMode 分流），ask 档的授权弹窗也被绕过。
 /// 白名单闸（对齐 link_file_to_task）：文件与文件夹一律要求 canonicalize 后落在
 /// AI_Gen_Files 内；is_dir 以真实 metadata 校正（不信模型自报）。被拒条目记审计。
 /// 用户亲手绑定走 bind_file 系统弹框，不在此限。

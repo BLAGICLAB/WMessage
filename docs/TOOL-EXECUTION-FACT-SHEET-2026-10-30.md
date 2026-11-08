@@ -74,7 +74,7 @@
 
 | 工具 | 跑位 | 数据边界 | 闸 | 强制层 |
 |---|---|---|---|---|
-| `read_text_file` / `grep_files` / `list_files` | 宿主进程内 | **读白名单内任意路径**：桌面/下载/文档 + 任务卡绑定文件夹 + 设置页 `allowedDirs` | `bot_fs::resolve_with_perm`：白名单外 `strict` 拒 / `ask` 弹确认 / `yolo` 放行 | 无（文件系统隔离不存在） |
+| `read_text_file` / `grep_files` / `list_files` | 宿主进程内 | **读白名单内任意路径**：桌面/下载/文档 + 任务卡绑定文件夹 + 设置页 `allowedDirs` | `bot_fs::resolve_with_perm`：白名单外 `ask` 弹确认 / `yolo` 放行 | 无（文件系统隔离不存在） |
 | `extract_document` | 宿主进程内 | 同上；PDF 走 `pypdf`/PyMuPDF | 同上 | 无 |
 | `ocr_image` | 宿主进程内（macOS Vision / Windows PP-OCRv6 本地推理） | 只收**本地路径**，网络路径在入口直接拒 | 同上 + **隐私红线：图片绝不上传外网**（`ocr.rs:3-5`、`schemas.rs:66`） | 无（但这条红线靠「不实现网络路径」成立） |
 

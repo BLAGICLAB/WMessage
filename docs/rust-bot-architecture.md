@@ -507,20 +507,20 @@ src-tauri/src/
 │                        原.workflow_questions，随画布退役中立化保留（手动执行任务卡共用）
 │
 │─ Bot 工具实现（被 bot.rs 分发调用）
-├── bot_fs.rs (562)       路径白名单 + perm_mode(strict/ask/auto/yolo) 四档授权闸；
+├── bot_fs.rs (550)       路径白名单 + perm_mode(ask/yolo) 两档授权闸；
 │                        per-tool 规则表（lookup_tool_rule / tool_rule_for）+ 读闸
 │                        （resolve_with_perm / allowed_dirs）；子模块转出（旧路径 1:1 保持）
-│   ├── bot_fs/edit.rs (686)      文件编辑面：写闸 + 三级匹配内核 + edit_file/write_file
+│   ├── bot_fs/edit.rs (671)      文件编辑面：写闸 + 三级匹配内核 + edit_file/write_file
 │   │                             （N6，Aider 式三级匹配：精确→空白容错→reflection；
 │   │                             写白名单≠读白名单：可写根=AI_Gen_Files+任务卡绑定文件夹+
-│   │                             allowedDirs；白名单外 perm_mode 三分支/覆盖确认）
+│   │                             allowedDirs；白名单外 perm_mode 两分支/覆盖确认含 yolo）
 │   ├── bot_fs/read.rs (750)      读取面：glob / 目录遍历 / 二进制判定 / inode 复核 +
 │   │                             只读工具 read_text_file/grep_files/list_files
 │   ├── bot_fs/receipt.rs (176)   文件变更凭证面：unified diff / sha256 / before 快照 / 回执
 │   ├── bot_fs/tests.rs (845)     读写闸与编辑内核单测
 │   ├── bot_fs/file_change_tests.rs (180) 变更凭证单测
 │   ├── bot_fs/read_path_single_open_tests.rs (70) 读路径只开一次 fd 的源码守卫
-│   └── bot_fs/tool_rule_tests.rs (47)      per-tool 规则表单测
+│   └── bot_fs/tool_rule_tests.rs (48)      per-tool 规则表单测
 ├── bot_archive.rs (1031) + bot_archive/tests.rs   归档工具 unpack_archive/pack_archive：zip / tar / tar.gz 的解包与打包
 │                        （纯 Rust：zip + tar + flate2，不依赖本机 Python）；压缩包是外部
 │                        输入——条目名带 .. / 绝对路径 / 盘符 / 软链一律跳过并列出，单文件

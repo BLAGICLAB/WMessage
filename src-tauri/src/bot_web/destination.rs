@@ -12,7 +12,7 @@
 //! 弹窗只发生在 ask 档且三类都未命中时，批准记入会话授权（同会话同 host 不再问，
 //! 不做「始终允许」——持久信任只有设置页白名单一条路，授权面不积累第二套账）。
 //! 子 agent 会话（后台会话，弹窗无人认领）与后台执行（interactive=false，无人值守）
-//! 按 strict 处理：白名单外且无会话授权即拒——会话授权是「用户点过头的凭据」，
+//! 按 fail-closed 一律拒：白名单外且无会话授权即拒——会话授权是「用户点过头的凭据」，
 //! 命中即放行（含无人值守），其余白名单外一律拒。这是 fail-closed，不是可用性缺陷。
 
 use url::Url;
@@ -46,7 +46,7 @@ enum Classified {
 pub enum DestOutcome {
     /// dest ∈ product / whitelist / session / asked / yolo
     Allowed { dest: &'static str },
-    /// dest ∈ strict / subagent / unattended / confirm_denied
+    /// dest ∈ no_host / subagent / unattended / confirm_denied
     Denied { dest: &'static str, reason: String },
 }
 
@@ -162,7 +162,7 @@ fn classify(
     if granted {
         return Classified::Allowed("session");
     }
-    // 子 agent 是后台会话：弹窗无人认领（停滞 600s 才被接替），一律 strict。
+    // 子 agent 是后台会话：弹窗无人认领（停滞 600s 才被接替），一律拒（fail-closed）。
     if subagent {
         return Classified::Denied {
             dest: "subagent",
@@ -311,7 +311,7 @@ mod tests {
 
     /// 锚点：子 agent 上下文白名单外直接拒，无弹窗等待。
     #[test]
-    fn subagent_context_is_strict() {
+    fn subagent_context_denies() {
         let out = classify("other.com", &[], false, true, true, PermMode::Yolo);
         match out {
             Classified::Denied { dest, .. } => assert_eq!(dest, "subagent"),

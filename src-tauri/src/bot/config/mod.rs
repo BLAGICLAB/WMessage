@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn perm_mode_defaults_to_ask() {
-        // 老配置缺 permMode 字段 → None → Ask（默认：弹授权而非硬拒）
+        // 老配置缺 permMode 字段 → None → Ask（默认档：白名单外弹授权）
         let raw = r#"{"baseUrl":"https://api.deepseek.com/v1","model":"deepseek-chat"}"#;
         let cfg: BotConfig = serde_json::from_str(raw).unwrap();
         assert_eq!(PermMode::from_cfg(cfg.perm_mode.as_deref()), PermMode::Ask);

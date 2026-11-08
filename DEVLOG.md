@@ -9449,3 +9449,20 @@ call density）的 Cursor，论坛反馈恰是「Detailed 管的范围比想象�
 从 Tailwind 任意值类改成引用常量的 style——navWidth.ts 当初的教训：宽度必须能被
 import，推导链两头才真的同步。窄于 950 的三种兜底（窗口下限 / 主区横滚 / 自动收右栏）
 拍了窗口下限：横滚丑，自动收右栏会与手动开关、子 agent 详情强开打架。
+
+## 2026-11-08 授权模式四档并两档：strict 与 auto 退役
+
+四档是历史叠层：strict 先于白名单快车道存在，auto 又叠在 ask 上。真源是白名单判定
+排在档位之前、四档共用——所以 ask 的实际行为本来就是「白名单内静默放行、白名单外
+弹窗」，auto 关掉灰度分类器后与 ask 只差覆盖写免确认一项，是重复档位；用户实际只在
+用 ask 与 yolo。行业同向：Cursor 2026-05 把 Ask Every Time 从独立档退役（降格为
+「Allowlist + 空白名单」的退化情形），OpenAI 把 untrusted（白名单外必弹窗）整档退役；
+「白名单外硬拒」只有 Claude Code 的 dontAsk 还做成档位，且定位是锁死的 CI——而本仓
+无人值守的拒已经在链路里（无人在场立即拒 / 主窗口不可见拒 / 弹窗 60s 超时拒），
+不需要全局硬拒旋钮。
+
+两个附带拍板：write_file 覆盖已存在文件的确认收归任何档都弹（覆盖不可逆值得单独
+一道闸；auto 曾跳过它，界面「全部放行不弹窗」的文案随之改准）；分类器灰度不删、
+改挂 ask 档——「代审」正在成为各家第二个标准档（Claude auto / Codex auto_review /
+Cursor Auto-review / Copilot Assisted 六家同形态），留着灰度等它证明自己再决定是否
+独立成档。旧配置里的 strict/auto 值读时回落 ask，零迁移。

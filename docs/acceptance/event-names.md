@@ -9,7 +9,7 @@
 > 为什么不用「只取发射点」：有些事件的落点是 `format!` 拼串或别的 helper（如 `skill_step_fail`），
 > 只认发射点会漏收真事件，而漏收的代价是卡里写了白名单外的名字、门禁当场拦下。
 >
-> 共 262 条。表外的名字有两种合法用法：运行时拼出的（`前缀.{动作}` 形态，源码里能找到 `前缀.{`）、
+> 共 294 条。表外的名字有两种合法用法：运行时拼出的（`前缀.{动作}` 形态，源码里能找到 `前缀.{`）、
 > 以及中文期望文案（按 `format!` 运行时拼出，按既有约定不进对拍闸）。
 
 - `api.handler_panic`
@@ -24,6 +24,8 @@
 - `ask_notify_enqueue_failed`
 - `ask_user_asked`
 - `ask_user_queue_error`
+- `auto_gate.classifier`
+- `auto_gate.classifier_disabled`
 - `bot-ask`
 - `bot-ask-resolved`
 - `bot-chat-report`
@@ -47,8 +49,8 @@
 - `bot_fs.ask_allow_write`
 - `bot_fs.ask_denied`
 - `bot_fs.ask_denied_write`
-- `bot_fs.denied`
-- `bot_fs.denied_write`
+- `bot_fs.classifier_allow`
+- `bot_fs.classifier_allow_write`
 - `bot_fs.edit_file`
 - `bot_fs.edit_file.fail`
 - `bot_fs.grep`

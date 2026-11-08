@@ -89,7 +89,7 @@ async fn extract_path_check(
             return Ok(());
         }
     }
-    // 3) 授权分流（与 bot_fs 同一口径：白名单静默放行 / strict 拒 /
+    // 3) 授权分流（与 bot_fs 同一口径：白名单静默放行 /
     //    ask 弹窗 / yolo 放）
     crate::bot_fs::resolve_with_perm(app, "extract_document", path, interactive, session_id)
         .await
