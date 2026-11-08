@@ -36,6 +36,14 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
    **产物类标准用机器可判定写法**（相对子 agent 产物目录）：`file_exists:report.md`
    要求文件存在、`file_nonempty:output.xlsx` 要求存在且非空——这类由服务端核验，
    子 agent 自己说"已产出"不作数。其余需要看内容的标准照常写自然语言。
+   **验收面收敛（verifier 段的标准尤其要收敛，防验收子 agent 空转撞预算线）**：
+   - 机械判据（存在/非空/字节数/页数）服务端收尾自动核验，不要再写成
+     LLM 验收条目让 verifier 重验一遍；
+   - 抽样类条目必须写明上限（如「抽查 ≤20 个数字」），禁止「逐一 / 全部 /
+     穷举」式全量核对写法——逐条轮次核对几十个数字必然烧光预算；
+   - 整文档全量比对（表格逐格、全文一致性）不该派给只读 verifier 逐条勾，
+     那是一次性脚本比对的活——单独派一个 coder 子 agent，把所有核对点写进
+     一个脚本一次跑完，结果即验收证据。
 3. 调用 spawn_subagent(...) —— 非阻塞，立即返回；马上告诉用户"已派发"，不等待。
 4. 继续响应用户；等子任务结果时用 check_subagent，waitMs 一次给足（上限 600000，即 10 分钟）——服务端内部递进等待、子任务转入终态立刻返回，不要自己反复小值轮询（每查一次你都要重新想一轮）。
 5. 完成后取结果，只向用户汇报：结论、产物路径、未完成项、风险。
@@ -180,6 +188,11 @@ pub(crate) const PROFILE_VERIFIER: &str = r#"你是 verifier（验收）子 agen
 - met=true/false 必须给依据，禁止"应该/大致/可能"模糊词。
 - 标了 `file_exists:` / `file_nonempty:` 的条目由服务端直接核验，你的 met 会被
   服务端结论覆盖——这类不必自己声称通过，照样写 evidence 即可。
+- 核对范围严格按 acceptanceCriteria 写明的上限执行（如「抽查 ≤20 个」就抽 20 个），
+  不自行扩大为全量核对；发现标准要求全量比对时，在 summary 里说明这是脚本级
+  核对的活、建议改派 coder 档，不要自己逐条磨。
+- 边验边写：每完成一批核验就覆盖写一次 verified.json（write_artifact_file），
+  熔断/触顶时保留已验部分——零产出的验收等于白验。
 - 收尾输出 verified.json 到产物目录，结构：{"checks":[{"criterion":"…","met":true,"evidence":"…"}],"summary":"…"}。"#;
 
 /// 收尾 JSON schema 提示（设计 §7）——任务包装末尾重申用。
@@ -315,6 +328,38 @@ mod subagent_prompt_tests {
         assert!(
             MAIN_AGENT_ADDENDUM.contains("只列 failed 的 criterion"),
             "addendum 缺精准修复约束"
+        );
+    }
+
+    #[test]
+    fn main_agent_addendum_converges_verifier_acceptance_surface() {
+        // 验收面收敛三纪律：机械判据归服务端、抽样必须封顶、全量比对归脚本。
+        // 缺任何一条，主 agent 都会给 verifier 开穷举式验收清单——实机上这种
+        // 清单让验收子 agent 磨到 200 轮熔断、零产出。
+        assert!(
+            MAIN_AGENT_ADDENDUM.contains("验收面收敛"),
+            "addendum 缺验收面收敛指引"
+        );
+        assert!(
+            MAIN_AGENT_ADDENDUM.contains("抽查 ≤20 个数字"),
+            "addendum 缺抽样上限示例"
+        );
+        assert!(
+            MAIN_AGENT_ADDENDUM.contains("一次性脚本比对"),
+            "addendum 缺全量比对归脚本的指引"
+        );
+        assert!(
+            !MAIN_AGENT_ADDENDUM.contains("逐一核实"),
+            "addendum 不得出现全量核对式措辞示范"
+        );
+        // verifier profile 侧：抽样纪律 + 边验边写（熔断时留已验部分）
+        assert!(
+            PROFILE_VERIFIER.contains("不自行扩大为全量核对"),
+            "verifier profile 缺抽样纪律"
+        );
+        assert!(
+            PROFILE_VERIFIER.contains("边验边写"),
+            "verifier profile 缺增量落盘纪律"
         );
     }
 

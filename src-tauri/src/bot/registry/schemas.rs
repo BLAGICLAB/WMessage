@@ -290,7 +290,7 @@ pub const SCHEMA_SPAWN_SUBAGENT: &str = r##"{"type":"function","function":{"name
     "onion":{"type":"string","description":"per-onion 配置档名（可选）：probe=只读探查产出素材 / writereditor=撰写与写代码 / validator=只读验收。指定后本子 agent 的工具面与角色按该配置收窄，服务端会拒绝配置清单外的工具；不给时 stage 派发自动挂载对应内置档（recon→probe / executor→writereditor / verifier→validator），显式指定优先。需要别的工具面时先在设置页建配置档再在这里点名"},
     "profile":{"type":"string","enum":["research","coder","general"],"description":"工具档位：research=联网调研写报告 / coder=读代码跑 Python 写文件 / general=两者并集（与 stage 同给时白名单档优先，stage 只换角色语义层）。不给时按 onion 配置的 profile 派生；两者都不给则按 stage 派生（recon/verifier→research，executor→coder），都没有则报错"},
     "stage":{"type":"string","enum":["recon","executor","verifier"],"description":"三段式派发阶段（可选）：recon=只读调研 / executor=基于报告动手实现 / verifier=逐条验收。不给 stage 时仅按 profile 走基线提示词；只给 stage 不给 profile 时按默认派生（recon/verifier→research，executor→coder）"},
-    "acceptanceCriteria":{"type":"array","items":{"type":"string"},"minItems":1,"description":"验收标准，每条可检验"},
+    "acceptanceCriteria":{"type":"array","items":{"type":"string"},"minItems":1,"description":"验收标准，每条可检验。写法收敛：机械判据（file_exists/file_nonempty）由服务端自动核验，不必重复写成 LLM 核对条目；抽样类条目写明上限（如「抽查 ≤20 个数字」），禁止「逐一/全部/穷举」式全量核对——整文档全量比对是一次性脚本的活，派 coder 档一次跑完"},
     "contextSummary":{"type":"string","description":"必要上下文摘要（可选；不含主对话全文）"},
     "modelProfile":{"type":"string","description":"指定模型名（可选；未指定/无效回退当前激活模型）"},
     "parentTaskId":{"type":"string","description":"主卡 id（可选；编排计划卡，缺卡报错）"}
