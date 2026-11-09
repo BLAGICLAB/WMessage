@@ -192,6 +192,7 @@ async fn run_task_in_chat_full_chain_manual_origin() {
                     let _ = rounds;
                 },
                 turn_status: None,
+                deliverable_ready: None,
             };
             run_model_loop_core(&http, msgs, 10, &stop, None, &deps, exec, noop_replan).await
         }

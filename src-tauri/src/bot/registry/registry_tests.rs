@@ -853,6 +853,7 @@ fn gate_whitelist_and_schema_list_are_computed_from_the_same_intersection() {
                 &allowed,
             )),
             artifact_dir: std::path::PathBuf::from("/tmp/art_parity"),
+            acceptance_criteria_count: 0,
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             last_progress_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),

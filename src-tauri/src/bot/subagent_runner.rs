@@ -428,6 +428,7 @@ pub(crate) async fn run_subagent(
             profile: row.profile,
             tools: std::sync::Arc::new(subagent_tools),
             artifact_dir: artifact_dir.clone(),
+            acceptance_criteria_count: self_judged_criteria_count(&row),
             used_tool_calls: used_tool_calls.clone(),
             used_rounds: rounds_gauge.clone(),
             last_progress_ms: last_progress_ms.clone(),
@@ -1027,4 +1028,158 @@ fn emit_subagent_finished(
     // 叫醒 check 等待方：本函数是所有转终态路径的唯一出口，通知挂在这里
     // 就不会漏（含排队期取消 / 启动中止 / ghost 路径）。
     finish_notify().notify_waiters();
+}
+
+/// 需自评判据数：acceptanceCriteria 里非机器判据（`file_exists:` /
+/// `file_nonempty:` 前缀）的条数。机器判据由服务端收尾代验、提示词明说模型
+/// 可不自评——交付件探测的覆盖基准因此不含它们，否则 checks 数永远差几条。
+fn self_judged_criteria_count(row: &SubagentRow) -> usize {
+    acceptance_criteria_of(row)
+        .iter()
+        .filter(|c| crate::bot::subagent_digest::parse_machine_criterion(c.trim()).is_none())
+        .count()
+}
+
+/// verifier 交付件就绪探测：产物目录与 gen 根目录里名字含 verif 的 .json，
+/// `checks` 数组条数 ≥ 基准判据数 → 验收已齐，返回收尾提醒文案（模型循环轮末
+/// 注入用）。全部探测点都不满足 → None（下一轮再探）。
+///
+/// 只认「覆盖条数」不比对条目内容：单条判据被拆成多条 checks 只会让条件更早
+/// 满足，而「满足」正是想要的结果；反向的漏判（写少了）由下一轮重探兜住，
+/// 探测是每轮重跑的，不是一次定终身。半截写入解析失败同样按未就绪处理。
+///
+/// `not_before` 是 mtime 下限：gen 根目录是跨会话共享区，历史会话的同名旧
+/// 报告（实测：上轮任务的 verified.json 在根目录滞留数日）不能算这次的交付
+/// 件——本轮开跑之前落盘的一律不算。
+pub(crate) fn verifier_deliverable_nudge(
+    artifact_dir: &std::path::Path,
+    gen_dir: Option<&std::path::Path>,
+    required_checks: usize,
+    not_before: std::time::SystemTime,
+) -> Option<String> {
+    if required_checks == 0 {
+        return None;
+    }
+    let mut dirs = vec![artifact_dir];
+    if let Some(g) = gen_dir {
+        dirs.push(g);
+    }
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let lower = name.to_string_lossy().to_ascii_lowercase();
+            if !lower.contains("verif") || !lower.ends_with(".json") {
+                continue;
+            }
+            let fresh = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .map(|t| t >= not_before)
+                .unwrap_or(false);
+            if !fresh {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            let Some(checks) = v.get("checks").and_then(|c| c.as_array()) else {
+                continue;
+            };
+            if checks.len() >= required_checks {
+                return Some(format!(
+                    "【系统提示】验收报告已齐：{} 的 checks 已覆盖全部需自评判据（{} 条）。\
+                     请立即输出收尾 JSON 结束任务，不要再调用任何核对、取证或加固类工具。",
+                    entry.path().display(),
+                    checks.len()
+                ));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod deliverable_probe_tests {
+    use super::*;
+
+    /// 就绪判定只认本轮新写的 verif*.json：旧文件（跨会话残留）不算，
+    /// checks 数不足不算，非 JSON / 无 checks 数组不算。
+    #[test]
+    fn deliverable_nudge_requires_fresh_full_checks() {
+        // 截断先取、文件后写——与生产一致（下限在循环开跑前定，交付件在其后落盘）
+        let now = std::time::SystemTime::now();
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("verified.json");
+        std::fs::write(&p, r#"{"checks":[{}, {}, {}]}"#).unwrap();
+        // 3 条 checks ≥ 基准 3 → 就绪
+        let hit = verifier_deliverable_nudge(dir.path(), None, 3, now);
+        assert!(hit.is_some(), "满额 checks 应判就绪");
+        assert!(
+            hit.unwrap().contains(&p.display().to_string()),
+            "文案带路径"
+        );
+        // 基准 4 → 未满
+        assert!(verifier_deliverable_nudge(dir.path(), None, 4, now).is_none());
+        // 名字不含 verif 的 json 不探
+        let other = dir.path().join("evidence.json");
+        std::fs::write(other, r#"{"checks":[{}, {}, {}]}"#).unwrap();
+        std::fs::remove_file(&p).unwrap();
+        assert!(verifier_deliverable_nudge(dir.path(), None, 3, now).is_none());
+        // 半截 JSON（写一半被抓到）不算就绪
+        let half = dir.path().join("verified.json");
+        std::fs::write(&half, r#"{"checks":[{}, {"#).unwrap();
+        assert!(verifier_deliverable_nudge(dir.path(), None, 3, now).is_none());
+    }
+
+    /// gen 根目录的跨会话旧报告不冒充本次交付件：mtime 在本轮开跑之前一律跳过，
+    /// 就算文件名与内容都齐也不算。
+    #[test]
+    fn deliverable_nudge_ignores_stale_gen_root_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale = dir.path().join("verified.json");
+        std::fs::write(&stale, r#"{"checks":[{}, {}, {}]}"#).unwrap();
+        let file_older_than_run =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        assert!(
+            verifier_deliverable_nudge(dir.path(), None, 3, file_older_than_run).is_some(),
+            "下限早于文件 mtime 时照常命中（对照组）"
+        );
+        assert!(
+            verifier_deliverable_nudge(dir.path(), None, 3, std::time::SystemTime::now()).is_none(),
+            "下限晚于文件 mtime 时旧文件不算"
+        );
+        // 基准 0（全部是机器判据）整档让开：探测根本不该跑
+        assert!(
+            verifier_deliverable_nudge(dir.path(), None, 0, std::time::SystemTime::now()).is_none()
+        );
+    }
+
+    /// 产物目录与 gen 根目录两处都探（判据允许报告落任一处），产物目录优先。
+    #[test]
+    fn deliverable_nudge_probes_both_dirs() {
+        let artifact = tempfile::tempdir().unwrap();
+        let gen = tempfile::tempdir().unwrap();
+        let now = std::time::SystemTime::now();
+        // 只落 gen 根：产物目录没有 → 探得到
+        let in_gen = gen.path().join("verified_final.json");
+        std::fs::write(&in_gen, r#"{"checks":[{}]}"#).unwrap();
+        let hit = verifier_deliverable_nudge(artifact.path(), Some(gen.path()), 1, now);
+        assert!(hit.is_some(), "gen 根目录的交付件应被探到");
+        assert!(hit.unwrap().contains("verified_final.json"));
+        // 两处都有：产物目录的先命中
+        let in_artifact = artifact.path().join("verified.json");
+        std::fs::write(&in_artifact, r#"{"checks":[{}, {}]}"#).unwrap();
+        let hit2 = verifier_deliverable_nudge(artifact.path(), Some(gen.path()), 1, now);
+        let hit2 = hit2.unwrap();
+        assert!(
+            hit2.contains("verified.json") && !hit2.contains("verified_final"),
+            "产物目录优先命中：{hit2}"
+        );
+    }
 }

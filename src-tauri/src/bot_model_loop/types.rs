@@ -182,6 +182,15 @@ pub struct ModelLoopDeps<'a> {
     /// 侧装配——那里有 AppHandle，能开库；core 保持可注入 mock（测试直驱 core
     /// 时传 None = 不查凭证，路径存在性那道闸照旧生效）。
     pub file_receipts: Option<&'a (dyn Fn(Option<&str>, &[String]) -> Vec<String> + Send + Sync)>,
+    /// 交付件就绪探测（verifier 收尾提醒的数据源）：每轮末调用一次，返回
+    /// Some(提醒文案) = 验收报告已覆盖全部判据、应当收尾。
+    ///
+    /// 探测逻辑（哪个文件算交付件、怎么算「覆盖」）全部留在薄壳闭包里——核心
+    /// 只认「就绪与否」这一位，不知道 verified.json 也不判据为何物。None =
+    /// 非验收子 agent（主聊天 / 无判据子 agent），整档让开，零开销。
+    /// 与预算驱动的 `inject_soft_warnings` 互补：那只在上限近旁才响，覆盖不了
+    /// 「预算还早就够用、纯靠惯性磨」的空转段。
+    pub deliverable_ready: Option<&'a (dyn Fn() -> Option<String> + Send + Sync)>,
 }
 
 /// 回合状态机。借鉴 ZCode 的 turn view model（`running` / `settling` /

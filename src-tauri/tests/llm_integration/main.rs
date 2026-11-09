@@ -255,6 +255,7 @@ impl CoreHarness {
                 let _ = rounds;
             },
             turn_status: None,
+            deliverable_ready: None,
             session_tools: Some(&*self.session_tools),
             guard_claim_keywords: &self.guard_claim_keywords,
             file_receipts: Some(&*self.file_receipts),
@@ -276,6 +277,7 @@ impl CoreHarness {
                 let _ = rounds;
             },
             turn_status: None,
+            deliverable_ready: None,
             session_tools: Some(&*self.session_tools),
             guard_claim_keywords: &self.guard_claim_keywords,
             file_receipts: Some(&*self.file_receipts),

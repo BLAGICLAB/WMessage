@@ -111,6 +111,9 @@ where
     let mut rounds_warn_sent: bool = false;
     // 技能预算软警告已注入（只一次）：技能步数快用完时提醒模型收尾
     let mut skill_warn_sent: bool = false;
+    // 交付件收尾提醒已注入（只一次）：verifier 的验收报告覆盖全部判据后触发，
+    // 见轮末注入块——事件驱动，与预算驱动的软警告互补。
+    let mut deliverable_nudge_sent: bool = false;
     // 防幻觉汇报守卫：本次提问是否实际执行过变更类工具（提问级一次置位、不按轮
     // 重置——后续正常汇报轮靠它放行，按轮重置会把改完再汇报的正常轮误判为幻觉）；
     // 补一轮机会（claim_retry）同样每次提问只用一次
@@ -586,6 +589,24 @@ where
                                 ("step", run.step.to_string()),
                                 ("max_steps", run.max_steps.to_string()),
                             ],
+                        );
+                    }
+                }
+            }
+            // 交付件收尾提醒（事件驱动，只一次）：探测闭包说交付件已齐（验收报告
+            // 覆盖全部判据）就注入「立即收尾」。预算驱动的两处软警告都在上限近旁
+            // 才响——verifier 在判据全部落盘后继续磨证据的空转段预算还很富余，
+            // 那段里没有任何声音劝它停，报告写完到人手动终止之间能白烧十几分钟。
+            // 只喊一次：模型没照做时预算软警告会在上限近旁接手，不重复打扰。
+            if !deliverable_nudge_sent {
+                if let Some(ready) = deps.deliverable_ready {
+                    if let Some(warn) = ready() {
+                        deliverable_nudge_sent = true;
+                        msgs.push(serde_json::json!({ "role": "user", "content": warn }));
+                        audit(
+                            crate::audit::AuditLevel::Info,
+                            "subagent_deliverable_nudge",
+                            vec![("round", (round + 1).to_string())],
                         );
                     }
                 }

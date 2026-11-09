@@ -43,6 +43,7 @@ fn tool_call_counter_accumulates() {
             crate::bot::registry::profile_whitelist(SubagentProfile::Coder).to_vec(),
         ),
         artifact_dir: std::path::PathBuf::from("/tmp/art_c1"),
+        acceptance_criteria_count: 0,
         used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         last_progress_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),

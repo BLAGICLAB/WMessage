@@ -467,6 +467,7 @@ async fn turn_status_and_tool_running_events_are_emitted_in_order() {
         emit: &*emit,
         on_round: &|_| {},
         turn_status: Some(&*turn_status),
+        deliverable_ready: None,
         ..h.deps()
     };
 
@@ -528,6 +529,7 @@ async fn turn_status_is_interrupted_when_stopped() {
     let deps = ModelLoopDeps {
         on_round: &|_| {},
         turn_status: Some(&*turn_status),
+        deliverable_ready: None,
         ..h.deps()
     };
 
@@ -547,6 +549,64 @@ async fn turn_status_is_interrupted_when_stopped() {
         statuses.lock().unwrap().last(),
         Some(&TurnStatus::Interrupted),
         "stop 置位后终态须为 Interrupted"
+    );
+}
+
+/// 交付件收尾提醒（verifier 收编）：探测闭包报「验收报告已齐」后，下一轮请求
+/// 必须带上一次「立即收尾」的 user 消息，且**只注入一次**——后续轮沿用的都是
+/// 历史里那一份，不得每轮重复注入（重复提醒等于教模型忽略系统提示）。
+#[tokio::test]
+async fn deliverable_nudge_injected_once_when_ready() {
+    let server = MockLlmServer::start();
+    // 轮 1 / 轮 2：工具调用（模拟 verifier 报告已齐后还在继续跑核对），轮 3：最终文本
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "grep_files".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "grep_files".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::TextReply("验收完成".into()));
+    let h = CoreHarness::new();
+
+    let nudge = || {
+        Some(String::from(
+            "【系统提示】交付件已齐，请立即输出收尾 JSON 结束任务。",
+        ))
+    };
+    let deps = ModelLoopDeps {
+        on_round: &|_| {},
+        deliverable_ready: Some(&nudge),
+        ..h.deps()
+    };
+
+    run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &deps,
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("", Vec::new()) },
+        noop_replan,
+    )
+    .await
+    .expect("应 Ok");
+
+    let bodies = server.request_bodies();
+    assert_eq!(bodies.len(), 3, "应为三轮请求");
+    let marker = "交付件已齐";
+    assert!(!bodies[0].contains(marker), "首轮请求不该带提醒");
+    assert_eq!(
+        bodies[1].matches(marker).count(),
+        1,
+        "轮 2 请求应恰好带一次提醒（轮 1 末注入）"
+    );
+    assert_eq!(
+        bodies[2].matches(marker).count(),
+        1,
+        "轮 3 请求仍只有轮 1 末注入的那一份，不得重复注入"
     );
 }
 

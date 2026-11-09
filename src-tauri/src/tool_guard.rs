@@ -60,6 +60,13 @@ pub struct SubagentSessionCtx {
     pub tools: std::sync::Arc<Vec<&'static str>>,
     /// 产物目录 gen_dir/subagents/{subagent_id}/（write_artifact_file 的唯一可写区）
     pub artifact_dir: PathBuf,
+    /// 需自评判据数（acceptanceCriteria 里非机器判据的条数，spawn 注册时算好）。
+    ///
+    /// 模型循环薄壳的交付件收尾探测以它为覆盖基准：报告 checks 数 ≥ 此值即视为
+    /// 验收已齐。机器判据（file_exists:/file_nonempty: 前缀）由服务端收尾代验、
+    /// 提示词明说模型可不自评——计数基准不含它们，否则条件永远差几条。
+    /// 0 = 无需自评判据，探测整档让开。
+    pub acceptance_criteria_count: usize,
     /// 已执行工具调用累计：dispatch 白名单闸后自增的仪表读数。
     /// 强制点在模型循环层的阶梯（fuse::gate_call），这里只给 read_own_card 的
     /// 实时余量与收尾时的预算触达判定读。
@@ -239,6 +246,7 @@ mod tests {
                     .to_vec(),
             ),
             artifact_dir: std::path::PathBuf::from(format!("/tmp/art/{subagent_id}")),
+            acceptance_criteria_count: 0,
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             last_progress_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),

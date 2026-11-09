@@ -329,6 +329,32 @@ pub async fn run_model_loop(
         .filter(|s| !s.is_empty())
         .collect();
 
+    // 交付件就绪探测（verifier 收尾提醒的数据源）：只有注册了非零需自评判据数
+    // 的子 agent 会话才探测，主聊天与普通子 agent 恒 None（零开销）。
+    // mtime 下限取闭包构造时刻——本轮开跑之前落盘的 verif*.json 一律不算交付件，
+    // 防的是 gen 根目录里跨会话滞留的同名旧报告冒充本次产出（实机发生过）。
+    let deliverable_ready_box = stop
+        .session_id()
+        .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
+        .and_then(|ctx| {
+            let required = ctx.acceptance_criteria_count;
+            if required == 0 {
+                return None;
+            }
+            let app = app.clone();
+            let artifact_dir = ctx.artifact_dir.clone();
+            let started = std::time::SystemTime::now();
+            Some(Box::new(move || {
+                let gen_dir = crate::db::gen_dir(&app).ok();
+                crate::bot::subagent_runner::verifier_deliverable_nudge(
+                    &artifact_dir,
+                    gen_dir.as_deref(),
+                    required,
+                    started,
+                )
+            })
+                as Box<dyn Fn() -> Option<String> + Send + Sync>)
+        });
     let deps = ModelLoopDeps {
         // 熔断上限：None = 安全网常量（主/子同一套）；Some 只剩 eval
         // 用例与单测直驱注入一条路。
@@ -390,6 +416,7 @@ pub async fn run_model_loop(
                 }
             }
         }),
+        deliverable_ready: deliverable_ready_box.as_deref(),
         // 落盘凭证查询：返回「查不到凭证」的候选路径。查库失败一律返回空
         // （= 全部放行）——查不到证据不等于有罪，宁可漏判不可误伤。
         file_receipts: Some(&|sid: Option<&str>, paths: &[String]| {
