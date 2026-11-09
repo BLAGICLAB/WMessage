@@ -14,8 +14,17 @@ const LOGO_URL: &str = "https://models.dev/logos/{}.svg";
 const PALETTE: [&str; 8] = [
     "#0ea5e9", "#8b5cf6", "#f59e0b", "#10b981", "#ef4444", "#ec4899", "#6366f1", "#14b8a6",
 ];
-/// 手动同步会回源 models.dev（大 JSON），给整请求级超时
-const SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// 手动同步会回源 models.dev（大 JSON，实测量级 ~6MB），给整请求级超时
+///（reqwest 的 request timeout 从建连算到正文读完）。慢路由下 30s 可能连
+/// 头带体都拉不完——半路被掐的现象与连不上同源不同层，放宽到 60s。
+const SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// 同步重试：初试 + 2 次重试，间隔指数退避（失败多为路由抖动，立即重试
+/// 大概率同路；间隔拉开给路由切换留时间）
+const SYNC_ATTEMPTS: usize = 3;
+const SYNC_RETRY_DELAYS: [std::time::Duration; 2] = [
+    std::time::Duration::from_secs(1),
+    std::time::Duration::from_secs(3),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncStats {
@@ -108,41 +117,91 @@ pub fn apply_sync(
     })
 }
 
+/// reqwest 错误的顶层文案只有 "error sending request"，DNS 失败/TLS 拒绝/
+/// 连接被重置全藏在 source 链里；审计与前端错误文案都要全链才可诊断。
+/// 深度上限 8：防御个别 Error 实现的环状 source。
+fn err_chain(e: &impl std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut src = e.source();
+    let mut depth = 0;
+    while let (Some(cause), true) = (src, depth < 8) {
+        s.push('：');
+        s.push_str(&cause.to_string());
+        src = cause.source();
+        depth += 1;
+    }
+    s
+}
+
 /// 拉取 api.json 原文（解析与网络分离，解析可纯单测）。
 /// 响应体 16MB 上限：api.json 正常量级几 MB，超限视为异常/劫持响应直接拒绝
 ///（防无限 body 把进程内存打爆）。
-async fn fetch_models_dev(url: &str) -> Result<String, String> {
+/// 失败按 attempts 重试（间隔取 delays，长度 = attempts-1）；全部失败后返回
+/// 末次错误并注明重试次数——错误文案会原样展示到前端按钮旁。
+async fn fetch_models_dev(
+    url: &str,
+    attempts: usize,
+    delays: &[std::time::Duration],
+) -> Result<String, String> {
     const MAX_BODY: usize = 16 * 1024 * 1024;
-    let resp = crate::bot::shared_llm_client()
-        .get(url)
-        .timeout(SYNC_TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| format!("models.dev 请求失败：{e}"))?;
-    let resp = resp
-        .error_for_status()
-        .map_err(|e| format!("models.dev HTTP 错误：{e}"))?;
-    let mut buf = Vec::new();
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
-        let chunk = chunk.map_err(|e| format!("models.dev 读取响应失败：{e}"))?;
-        if buf.len() + chunk.len() > MAX_BODY {
-            return Err(format!(
-                "models.dev 响应超过 {}MB 上限，已中止",
-                MAX_BODY / 1024 / 1024
-            ));
+    let mut last_err = String::new();
+    for attempt in 0..attempts {
+        if attempt > 0 {
+            tokio::time::sleep(delays[attempt - 1]).await;
         }
-        buf.extend_from_slice(&chunk);
+        match async {
+            let resp = crate::bot::shared_llm_client()
+                .get(url)
+                .timeout(SYNC_TIMEOUT)
+                .send()
+                .await
+                .map_err(|e| format!("models.dev 请求失败：{}", err_chain(&e)))?;
+            let resp = resp
+                .error_for_status()
+                .map_err(|e| format!("models.dev HTTP 错误：{}", err_chain(&e)))?;
+            let mut buf = Vec::new();
+            let mut stream = resp.bytes_stream();
+            while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+                let chunk =
+                    chunk.map_err(|e| format!("models.dev 读取响应失败：{}", err_chain(&e)))?;
+                if buf.len() + chunk.len() > MAX_BODY {
+                    return Err(format!(
+                        "models.dev 响应超过 {}MB 上限，已中止",
+                        MAX_BODY / 1024 / 1024
+                    ));
+                }
+                buf.extend_from_slice(&chunk);
+            }
+            String::from_utf8(buf).map_err(|e| format!("models.dev 响应非 UTF-8：{e}"))
+        }
+        .await
+        {
+            Ok(body) => return Ok(body),
+            Err(e) => last_err = e,
+        }
     }
-    String::from_utf8(buf).map_err(|e| format!("models.dev 响应非 UTF-8：{e}"))
+    Err(format!(
+        "{last_err}（重试 {} 次后仍失败）",
+        attempts.saturating_sub(1)
+    ))
 }
 
-/// 可测内核：URL 可注入（坏 URL → Err 且不落库）；正式路径走 `sync_models_dev`
+/// 可测内核：URL/重试参数可注入（坏 URL → Err 且不落库；测试传 attempts=1
+/// 避开生产退避等待）；正式路径走 `sync_models_dev`
 pub(crate) async fn sync_models_dev_with_url<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     url: &str,
 ) -> Result<SyncStats, String> {
-    let body = fetch_models_dev(url).await?;
+    sync_models_dev_inner(app, url, SYNC_ATTEMPTS, &SYNC_RETRY_DELAYS).await
+}
+
+pub(crate) async fn sync_models_dev_inner<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    url: &str,
+    attempts: usize,
+    delays: &[std::time::Duration],
+) -> Result<SyncStats, String> {
+    let body = fetch_models_dev(url, attempts, delays).await?;
     let (providers, models) = parse_models_dev(&body)?;
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -281,15 +340,70 @@ mod tests {
     }
 
     /// 网络失败路径：注入坏 URL → Err（连接被拒，快速失败；失败在落库之前，
-    /// 库根本不会被打开写入）
+    /// 库根本不会被打开写入）。attempts=1 避开生产退避等待。
     #[tokio::test]
     async fn sync_with_bad_url_returns_err() {
         let app = tauri::test::mock_app();
-        let r = sync_models_dev_with_url(app.handle(), "http://127.0.0.1:1/unreachable").await;
+        let r = sync_models_dev_inner(app.handle(), "http://127.0.0.1:1/unreachable", 1, &[]).await;
         let err = r.expect_err("坏 URL 必须返回 Err");
         assert!(
             err.contains("models.dev 请求失败"),
             "错误应指明请求阶段：{err}"
         );
+        // 根因链：顶层文案之外必须带上底层原因（连接被拒），否则 DNS/TLS/重置不可分
+        assert!(
+            err.contains("连接拒绝")
+                || err.contains("Connection refused")
+                || err.contains("refused"),
+            "错误应带 source 链根因：{err}"
+        );
+    }
+
+    /// 重试耗尽：错误注明重试次数（attempts=初试+N，文案写 N 次）
+    #[tokio::test]
+    async fn fetch_retry_reports_attempts() {
+        let delays = [
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_millis(10),
+        ];
+        let err = fetch_models_dev("http://127.0.0.1:1/unreachable", 3, &delays)
+            .await
+            .expect_err("坏 URL 重试耗尽必须 Err");
+        assert!(
+            err.contains("重试 2 次后仍失败"),
+            "错误应注明重试次数：{err}"
+        );
+        assert!(err.contains("models.dev 请求失败"), "{err}");
+    }
+
+    /// err_chain：走 source 链拼根因（用自造错误链验证，深度环有上限保护）
+    #[test]
+    fn err_chain_walks_source() {
+        #[derive(Debug)]
+        struct Leaf;
+        impl std::fmt::Display for Leaf {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "leaf-cause")
+            }
+        }
+        impl std::error::Error for Leaf {}
+
+        #[derive(Debug)]
+        struct Wrap(std::io::Error);
+        impl std::fmt::Display for Wrap {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "top-level")
+            }
+        }
+        impl std::error::Error for Wrap {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let e = Wrap(std::io::Error::other(Leaf));
+        let s = err_chain(&e);
+        assert!(s.contains("top-level"), "{s}");
+        assert!(s.contains("leaf-cause"), "{s}");
     }
 }
