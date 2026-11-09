@@ -112,13 +112,17 @@ pub(crate) const SUBAGENT_BASE: &str = r#"你是子 agent，只执行任务包�
    status = cancelled → 派发已被取消，立即停止新探索并收尾。
 4. 收尾 JSON 的 acceptance_check 逐条给 met 与 evidence（schema 见任务包装末尾）。
 5. 只在白名单工具内操作；产物一律写进「产物目录」。
-6. 预算纪律：
+6. **交付件齐即收尾**：objective 的交付物已产出、acceptanceCriteria 逐条有了
+   结论（或服务端会代验的机器条目已满足），下一步就输出收尾 JSON 结束任务——
+   禁止再开任何新核对、取证或「再加固一下 evidence」。做完之后多跑的每一轮
+   都是空转，预算不会因此变多，结论也不会因此更可信。
+7. 预算纪律：
    - 剩余 3 轮或工具调用达 80% → 停止新探索，整理当前结果。
    - 读文件不传 limit 一次读一大页（每页约 56KB，按字节预算自动收页），
      offset/limit 只用于更大的文件；把一个文件拆成碎片逐段读 = 白烧预算。
    - 连续多轮重复同类调用（重读已读内容、原地打转）→ 停，换策略或直接收尾。
    - 带文件产物的任务尽早落盘：先写骨架再增量补齐，触顶时留下半成品而不是零。
-7. 收尾必须输出结构化 JSON（schema 见任务包装末尾），不要输出无关散文。
+8. 收尾必须输出结构化 JSON（schema 见任务包装末尾），不要输出无关散文。
 
 ## 禁止
 - 写任何任务卡主状态（你只产出结果，进度由系统写进你的 subagent 行）。
@@ -193,6 +197,9 @@ pub(crate) const PROFILE_VERIFIER: &str = r#"你是 verifier（验收）子 agen
   核对的活、建议改派 coder 档，不要自己逐条磨。
 - 边验边写：每完成一批核验就覆盖写一次 verified.json（write_artifact_file），
   熔断/触顶时保留已验部分——零产出的验收等于白验。
+- **全条目落盘即收尾**：全部 acceptanceCriteria 的 checks 都已写进 verified.json
+  后，立即输出收尾 JSON 结束任务——禁止再开任何新核对、重跑脚本或加固
+  evidence。verified.json 的语义是「每条判据一条结论」，不是「跑得越久越可信」。
 - 收尾输出 verified.json 到产物目录，结构：{"checks":[{"criterion":"…","met":true,"evidence":"…"}],"summary":"…"}。"#;
 
 /// 收尾 JSON schema 提示（设计 §7）——任务包装末尾重申用。
@@ -360,6 +367,29 @@ mod subagent_prompt_tests {
         assert!(
             PROFILE_VERIFIER.contains("边验边写"),
             "verifier profile 缺增量落盘纪律"
+        );
+    }
+
+    /// 正向停机纪律：收尾条件不能只有预算触顶类负向触发（剩余 3 轮 / 80% 工具），
+    /// 必须有「交付件齐了就收」的正向出口——实机 verifier 在验收报告全部落盘后
+    /// 继续磨证据十几分钟直到被人手动停，停机判据缺失是直接根。
+    #[test]
+    fn subagent_prompts_carry_positive_stop_discipline() {
+        assert!(
+            SUBAGENT_BASE.contains("交付件齐即收尾"),
+            "子 agent 通用底座缺正向停机纪律"
+        );
+        assert!(
+            SUBAGENT_BASE.contains("禁止再开任何新核对"),
+            "正向停机纪律缺禁止续磨的硬约束"
+        );
+        assert!(
+            PROFILE_VERIFIER.contains("全条目落盘即收尾"),
+            "verifier profile 缺正向停机纪律"
+        );
+        assert!(
+            PROFILE_VERIFIER.contains("不是「跑得越久越可信」"),
+            "verifier profile 缺「结论不随磨时间变可信」的口径"
         );
     }
 
