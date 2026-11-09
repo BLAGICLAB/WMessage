@@ -156,6 +156,7 @@
 - `memory.lesson_save_failed`
 - `memory.proposal_notify_failed`
 - `memory.summary_save_failed`
+- `meta_seed_models_dev`
 - `meta_sync_models_dev`
 - `migration.log.old.1`
 - `migration_log_read_fail`

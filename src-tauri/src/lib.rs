@@ -552,11 +552,20 @@ pub fn run() {
             // 期间攒 N 条」两种场景。幂等同 cluster_correction_lessons_blocking。
             bot::corrections::start_correction_cluster_scheduler(app.handle().clone());
 
-            // 模型元数据：启动后台同步 models.dev（网络失败只记审计、用库内缓存，
-            // 不 panic 不阻断启动；手动同步走 meta_sync_models_dev 命令）
+            // 模型元数据：启动后台先落离线种子（表空才落，毫秒级），再同步
+            // models.dev 刷新覆盖（网络失败只记审计、用库内缓存，不 panic 不
+            // 阻断启动；手动同步走 meta_sync_models_dev 命令）
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
+                    if let Err(e) = meta::sync::ensure_seed(&handle).await {
+                        audit::write_event(
+                            &handle,
+                            audit::AuditLevel::Warn,
+                            "meta_seed_models_dev",
+                            &[("err", e)],
+                        );
+                    }
                     if let Err(e) = meta::sync::sync_models_dev(&handle).await {
                         audit::write_event(
                             &handle,

@@ -189,6 +189,10 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
             ? `更新失败：${r.error ?? "未知错误"}`
             : "更新失败：模型库服务不可用",
         );
+        // 失败分支也刷新：后端可能已落随包快照兜底（错误文案会注明），
+        // 不刷新的话兜底数据要重开设置页才可见
+        const ps = await fetchProviders();
+        if (ps) setMetaProviders(curateProviders(ps));
       }
     } finally {
       setMetaSyncBusy(false);

@@ -3,11 +3,20 @@
 //! 语义蓝本：`model-meta-service/main.py` —— 只覆盖 `source='models_dev'` 的行，
 //! 用户自建（`user_custom`）永不动；网络/解析失败返回 Err，由调用方降级
 //! （启动后台同步记审计不阻断；手动同步命令转成 ok:false 返回前端）。
+//!
+//! 离线种子：`resources/models-dev/snapshot.json` 随二进制内置（include_str!），
+//! meta_provider 空表时落库兜底——首次安装即离线、或网络全程不可达时，设置页
+//! 厂商网格与「从模型库添加」按钮开箱可用；在线同步成功后照常刷新覆盖。
+//! 快照刷新走 `regen_snapshot_from_live`（#[ignore] 手动测试，需网络）。
 
 use super::{first_char_upper, MetaModel, MetaProvider};
 
 /// models.dev 全量元数据 API
 pub const MODELS_DEV_API: &str = "https://models.dev/api.json";
+/// 离线种子快照（编译期编进二进制；刷新见 regen_snapshot_from_live）。
+/// 只含 parse_models_dev 消费的字段（provider 的 name/api，model 的
+/// name + limit.context），格式与线上 api.json 同构。
+pub(crate) const SEED_JSON: &str = include_str!("../../resources/models-dev/snapshot.json");
 /// models.dev 官方 logo 约定
 const LOGO_URL: &str = "https://models.dev/logos/{}.svg";
 /// 同步来的服务商兜底色：按 key 散列取色，稳定且可区分
@@ -219,6 +228,71 @@ pub async fn sync_models_dev<R: tauri::Runtime>(
     sync_models_dev_with_url(app, MODELS_DEV_API).await
 }
 
+/// api.json 形状的 Value → 种子快照：只留 parse_models_dev 消费的字段
+///（provider 的 name/api，model 的 name + limit.context）。与解析器严格对偶，
+/// 解析器新消费字段时必须同步扩这里，否则种子缺字段、离线兜底降级。
+/// 仅测试面使用（regen 快照用），生产路径不引用。
+#[cfg(test)]
+fn trim_models_dev_value(root: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let obj = root
+        .as_object()
+        .ok_or_else(|| "models.dev 顶层必须是对象".to_string())?;
+    let mut out = serde_json::Map::new();
+    for (pkey, p) in obj {
+        let mut tp = serde_json::Map::new();
+        if let Some(name) = p.get("name").and_then(|v| v.as_str()) {
+            tp.insert("name".into(), serde_json::json!(name));
+        }
+        if let Some(api) = p.get("api").and_then(|v| v.as_str()) {
+            tp.insert("api".into(), serde_json::json!(api));
+        }
+        let mut ms = serde_json::Map::new();
+        if let Some(models) = p.get("models").and_then(|v| v.as_object()) {
+            for (mkey, m) in models {
+                let mut tm = serde_json::Map::new();
+                if let Some(name) = m.get("name").and_then(|v| v.as_str()) {
+                    tm.insert("name".into(), serde_json::json!(name));
+                }
+                if let Some(ctx) = m
+                    .get("limit")
+                    .and_then(|l| l.get("context"))
+                    .and_then(|v| v.as_i64())
+                {
+                    tm.insert("limit".into(), serde_json::json!({ "context": ctx }));
+                }
+                ms.insert(mkey.clone(), serde_json::Value::Object(tm));
+            }
+        }
+        tp.insert("models".into(), serde_json::Value::Object(ms));
+        out.insert(pkey.clone(), serde_json::Value::Object(tp));
+    }
+    Ok(serde_json::Value::Object(out))
+}
+
+/// 离线种子兜底：meta_provider 空表 → 落随包快照（幂等：非空表不动，在线
+/// 同步负责刷新）。返回 Some = 本次落了种子。
+/// 残留说明：种子是某时点的 models_dev 数据，在线同步只覆盖同名 key，
+/// 上游已下架的 key 会留在库里直到下次全量重建——无害，接受。
+pub async fn ensure_seed<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<Option<SyncStats>, String> {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = crate::db::open_db(&app)?;
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM meta_provider", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if n > 0 {
+            return Ok(None);
+        }
+        let (providers, models) = parse_models_dev(SEED_JSON)?;
+        let stats = apply_sync(&mut conn, &providers, &models)?;
+        Ok(Some(stats))
+    })
+    .await
+    .map_err(|e| format!("meta 种子落库线程 join 失败：{e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,5 +479,72 @@ mod tests {
         let s = err_chain(&e);
         assert!(s.contains("top-level"), "{s}");
         assert!(s.contains("leaf-cause"), "{s}");
+    }
+
+    /// 种子快照可解析且量级正常（编译期常量，解析失败/量级塌方当场红）
+    #[test]
+    fn seed_snapshot_parses_with_sane_scale() {
+        let (providers, models) = parse_models_dev(SEED_JSON).unwrap();
+        assert!(
+            providers.len() > 100,
+            "种子厂商量级塌方：{}",
+            providers.len()
+        );
+        assert!(models.len() > 1000, "种子模型量级塌方：{}", models.len());
+    }
+
+    /// trim 与解析器对偶：SAMPLE 经 trim 重建后仍可被 parse_models_dev 解析，
+    /// 且字段一一对应（name/api/models{name,limit.context}）
+    #[test]
+    fn trim_roundtrip_matches_parser() {
+        let root: serde_json::Value = serde_json::from_str(SAMPLE).unwrap();
+        let trimmed = trim_models_dev_value(&root).unwrap();
+        let s = serde_json::to_string(&trimmed).unwrap();
+        let (providers, models) = parse_models_dev(&s).unwrap();
+        let expected = parse_models_dev(SAMPLE).unwrap();
+        assert_eq!(providers, expected.0, "trim 后 provider 集合必须等价");
+        assert_eq!(models, expected.1, "trim 后模型集合必须等价");
+        // 种子形状约束：model 只留 name 与 limit.context
+        let tp = trimmed
+            .get("openai")
+            .and_then(|p| p.get("models"))
+            .and_then(|m| m.get("gpt-4o"))
+            .unwrap();
+        assert!(tp.get("name").is_some());
+        assert!(tp.get("limit").and_then(|l| l.get("context")).is_some());
+        assert!(
+            tp.get("limit").and_then(|l| l.get("output")).is_none(),
+            "只留 context"
+        );
+    }
+
+    /// 发版前刷新离线种子快照（需网络，手动跑）：
+    /// `cargo test --lib meta:: -- --ignored`
+    /// 拉线上 api.json 全量原文 → trim 成种子格式 → 写回 resources 文件。
+    /// 快照是编译期 include_str!，刷新后必须重编译才生效。
+    #[ignore]
+    #[tokio::test]
+    async fn regen_snapshot_from_live() {
+        let body = fetch_models_dev(MODELS_DEV_API, 1, &[]).await.unwrap();
+        let root: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let trimmed = trim_models_dev_value(&root).unwrap();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/models-dev/snapshot.json");
+        std::fs::write(&path, serde_json::to_string(&trimmed).unwrap() + "\n").unwrap();
+        let t = trimmed.as_object().unwrap();
+        println!(
+            "snapshot refreshed: {} providers, {} models, {} bytes",
+            t.len(),
+            trimmed
+                .as_object()
+                .unwrap()
+                .values()
+                .map(|p| p
+                    .get("models")
+                    .and_then(|m| m.as_object())
+                    .map_or(0, |m| m.len()))
+                .sum::<usize>(),
+            std::fs::metadata(&path).unwrap().len()
+        );
     }
 }

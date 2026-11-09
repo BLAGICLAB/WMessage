@@ -420,7 +420,9 @@ pub async fn meta_models_by_provider(
 }
 
 /// 手动触发 models.dev 同步（前端「更新模型库」按钮）：
-/// 永远返回 Ok(MetaSyncResult)，失败时 ok:false + error，供按钮直接展示
+/// 永远返回 Ok(MetaSyncResult)，失败时 ok:false + error，供按钮直接展示。
+/// 网络失败时若表仍为空 → 落随包快照兜底并在错误文案注明（前端失败分支
+/// 会照常刷新网格，数据立即可见）。
 #[tauri::command]
 pub async fn meta_sync_models_dev(app: AppHandle) -> MetaSyncResult {
     match sync::sync_models_dev(&app).await {
@@ -431,17 +433,28 @@ pub async fn meta_sync_models_dev(app: AppHandle) -> MetaSyncResult {
             error: None,
         },
         Err(e) => {
+            let mut err = e;
+            match sync::ensure_seed(&app).await {
+                Ok(Some(s)) => {
+                    err.push_str(&format!(
+                        "；已落随包快照兜底（{} 厂商 / {} 模型，离线数据，联网后重试可刷新）",
+                        s.providers, s.models
+                    ));
+                }
+                Ok(None) => {}
+                Err(se) => err.push_str(&format!("；快照兜底也失败：{se}")),
+            }
             crate::audit::write_event(
                 &app,
                 crate::audit::AuditLevel::Warn,
                 "meta_sync_models_dev",
-                &[("err", e.clone())],
+                &[("err", err.clone())],
             );
             MetaSyncResult {
                 ok: false,
                 providers: None,
                 models: None,
-                error: Some(e),
+                error: Some(err),
             }
         }
     }
