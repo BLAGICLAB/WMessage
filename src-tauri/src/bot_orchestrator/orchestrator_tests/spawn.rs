@@ -351,10 +351,13 @@ fn cancelled_subagent_does_not_report_to_parent() {
 /// 单测验不到调用点传的是哪个值，故这里扫源码钉住接线。
 #[test]
 fn parent_report_gate_is_wired_to_the_effective_status() {
-    let src = orch_prod_src();
-    let production = src
+    // 调用点在 runner 收尾路径——精确扫 runner 自己的生产段（首个 #[cfg(test)]
+    // 之前）。不能对六文件拼接体 split_once：任何一个兄弟文件先出现测试模块
+    // （如 subagent_repair 的恢复链测试）都会把「生产段」截短，守卫跟着误报。
+    let runner = include_str!("../../bot/subagent_runner.rs");
+    let production = runner
         .split_once("#[cfg(test)]")
-        .expect("bot_orchestrator.rs 应有测试模块")
+        .expect("subagent_runner.rs 应有测试模块")
         .0;
     assert!(
         production.contains(concat!(

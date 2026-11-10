@@ -604,6 +604,12 @@ pub(crate) async fn run_subagent(
     // 收尾 JSON 解析失败时**补答一次**（结构化输出三段修复的第 3 段）：产出
     // 完整、机检全过，只因最后一段不是 JSON 就判 failed，是完成率最大的单项
     // 黑洞。
+    // 熔断出口前留一份完整对话历史副本：恢复链要带着历史发交卷轮 / 续跑轮，
+    // 恢复失败时它就是 sidecar 的内容（熔断残留只钳 800 字，全量历史只在这里）。
+    let recovery_msgs = msgs.clone();
+    // 盘上交付件的 mtime 下限：本轮开跑前落盘的 verif*.json 一律不算（跨会话
+    // 旧报告冒充防线，与模型循环薄壳里 B 的探测同一个口径、各自取各自的开跑时刻）
+    let started_at = std::time::SystemTime::now();
     let run = async {
         let first = crate::bot_model_loop::run_model_loop(
             app.clone(),
@@ -623,6 +629,89 @@ pub(crate) async fn run_subagent(
         )
         .await?;
         let (text, refs, trace) = first;
+        // 熔断出口恢复链（剥标记 → 盘上 verdict → 强制交卷轮 → 原会话续跑一次）：
+        // 恢复成功就把收尾正文换回给下游 classify 照常判定（交出收尾 JSON 判真实
+        // 完成，收尾窗同款口径）；恢复失败维持熔断正文走 budget_exceeded 留产。
+        // 恢复轮次的 refs / trace 不并回——refs 是主聊天的引用面板数据，恢复轮
+        // 不新增用户可见引用；trace 欠记的轮数在恢复审计事件里有轮数记录。
+        if text.contains(crate::bot_model_loop::FUSE_MARKER)
+            || text.contains(crate::bot_model_loop::ROUNDS_FUSE_MARKER)
+        {
+            let gen_dir_opt = crate::db::gen_dir(&app).ok();
+            let ctx = crate::bot::subagent_repair::FusedRecoveryCtx {
+                required_checks: self_judged_criteria_count(&row),
+                artifact_dir: &artifact_dir,
+                gen_dir: gen_dir_opt.as_deref(),
+                started: started_at,
+            };
+            // 轮执行注入点：恢复轮共用同一 StopGuard（取消即时生效）与 LLM 装配。
+            // app 取引用克隆（move 闭包搬走 AppHandle 会断掉后续收尾路径的 app 使用）
+            let app_ref = &app;
+            let stop_ref = &stop;
+            let run_rounds = move |history: Vec<serde_json::Value>, rounds: usize| {
+                let app = app_ref.clone();
+                async move {
+                    crate::bot_model_loop::run_model_loop(
+                        app, history, rounds, stop_ref, None, None, None, None,
+                    )
+                    .await
+                    .ok()
+                    .map(|(t, _, _)| t)
+                }
+            };
+            let mut recovery_msgs = recovery_msgs;
+            let outcome = crate::bot::subagent_repair::recover_fused_exit(
+                &stop,
+                &mut recovery_msgs,
+                &text,
+                &ctx,
+                run_rounds,
+            )
+            .await;
+            match outcome {
+                crate::bot::subagent_repair::FusedRecovery::Recovered { text, via } => {
+                    crate::bot::audit_log(
+                        &app,
+                        &format!("subagent_fuse_recovered | id: {} | via: {via}", row.id),
+                    );
+                    if let Some(fixed) = repair_final_json_once(&app, &stop, &text).await {
+                        return Ok((fixed, refs, trace));
+                    }
+                    return Ok((text, refs, trace));
+                }
+                crate::bot::subagent_repair::FusedRecovery::NotRecovered => {
+                    // 续跑-1：全量对话历史落 sidecar——熔断残留只有 800 字，这里
+                    // 是跨进程续跑的原料与事后诊断的完整底账。
+                    let sidecar = artifact_dir.join("session_history.json");
+                    let payload = serde_json::json!({
+                        "subagent_id": row.id,
+                        "fused": true,
+                        "messages": recovery_msgs,
+                    });
+                    if let Err(e) = std::fs::create_dir_all(&artifact_dir)
+                        .and_then(|_| std::fs::write(&sidecar, payload.to_string()))
+                    {
+                        crate::bot::audit_log(
+                            &app,
+                            &format!(
+                                "subagent_history_sidecar_failed | id: {} | {} | {e}",
+                                row.id,
+                                sidecar.display()
+                            ),
+                        );
+                    } else {
+                        crate::bot::audit_log(
+                            &app,
+                            &format!(
+                                "subagent_history_sidecar | id: {} | {}",
+                                row.id,
+                                sidecar.display()
+                            ),
+                        );
+                    }
+                }
+            }
+        }
         if let Some(fixed) = repair_final_json_once(&app, &stop, &text).await {
             return Ok((fixed, refs, trace));
         }
@@ -1040,9 +1129,20 @@ fn self_judged_criteria_count(row: &SubagentRow) -> usize {
         .count()
 }
 
-/// verifier 交付件就绪探测：产物目录与 gen 根目录里名字含 verif 的 .json，
-/// `checks` 数组条数 ≥ 基准判据数 → 验收已齐，返回收尾提醒文案（模型循环轮末
-/// 注入用）。全部探测点都不满足 → None（下一轮再探）。
+/// 盘上交付件报告（丙：熔断出口 verdict 推导的数据源；B：轮末提醒的数据源）。
+pub(crate) struct DeliverableReport {
+    pub path: std::path::PathBuf,
+    pub value: serde_json::Value,
+    pub checks: usize,
+}
+
+/// 盘上交付件探测：产物目录与 gen 根目录里名字含 verif 的 .json，
+/// `checks` 数组条数 ≥ 基准判据数 → 验收已齐，返回**数据**（路径 + 解析后的
+/// JSON）。全部探测点都不满足 → None。
+///
+/// 消费方两个：轮末收尾提醒（[verifier_deliverable_nudge]，B）与熔断出口的
+/// verdict 推导（subagent_repair::recover_fused_exit，丙）——同一套「算不算
+/// 齐了」的口径只写一份，提醒说「该收尾」、恢复说「结论我拿回来了」。
 ///
 /// 只认「覆盖条数」不比对条目内容：单条判据被拆成多条 checks 只会让条件更早
 /// 满足，而「满足」正是想要的结果；反向的漏判（写少了）由下一轮重探兜住，
@@ -1051,12 +1151,12 @@ fn self_judged_criteria_count(row: &SubagentRow) -> usize {
 /// `not_before` 是 mtime 下限：gen 根目录是跨会话共享区，历史会话的同名旧
 /// 报告（实测：上轮任务的 verified.json 在根目录滞留数日）不能算这次的交付
 /// 件——本轮开跑之前落盘的一律不算。
-pub(crate) fn verifier_deliverable_nudge(
+pub(crate) fn find_fresh_deliverable_report(
     artifact_dir: &std::path::Path,
     gen_dir: Option<&std::path::Path>,
     required_checks: usize,
     not_before: std::time::SystemTime,
-) -> Option<String> {
+) -> Option<DeliverableReport> {
     if required_checks == 0 {
         return None;
     }
@@ -1088,20 +1188,36 @@ pub(crate) fn verifier_deliverable_nudge(
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
                 continue;
             };
-            let Some(checks) = v.get("checks").and_then(|c| c.as_array()) else {
+            let checks_len = v.get("checks").and_then(|c| c.as_array()).map(|a| a.len());
+            let Some(checks_len) = checks_len else {
                 continue;
             };
-            if checks.len() >= required_checks {
-                return Some(format!(
-                    "【系统提示】验收报告已齐：{} 的 checks 已覆盖全部需自评判据（{} 条）。\
-                     请立即输出收尾 JSON 结束任务，不要再调用任何核对、取证或加固类工具。",
-                    entry.path().display(),
-                    checks.len()
-                ));
+            if checks_len >= required_checks {
+                return Some(DeliverableReport {
+                    path: entry.path(),
+                    value: v,
+                    checks: checks_len,
+                });
             }
         }
     }
     None
+}
+
+/// 轮末收尾提醒文案（B 的注入口）：同一探测口径，产出面向模型的提醒。
+pub(crate) fn verifier_deliverable_nudge(
+    artifact_dir: &std::path::Path,
+    gen_dir: Option<&std::path::Path>,
+    required_checks: usize,
+    not_before: std::time::SystemTime,
+) -> Option<String> {
+    let report = find_fresh_deliverable_report(artifact_dir, gen_dir, required_checks, not_before)?;
+    Some(format!(
+        "【系统提示】验收报告已齐：{} 的 checks 已覆盖全部需自评判据（{} 条）。\
+         请立即输出收尾 JSON 结束任务，不要再调用任何核对、取证或加固类工具。",
+        report.path.display(),
+        report.checks
+    ))
 }
 
 #[cfg(test)]

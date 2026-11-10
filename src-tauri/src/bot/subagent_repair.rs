@@ -226,6 +226,193 @@ pub(crate) fn parse_final_json(text: &str) -> Option<serde_json::Value> {
     }
     None
 }
+
+/// 熔断出口恢复结果。
+pub(crate) enum FusedRecovery {
+    /// 恢复出可作为收尾正文的文本（已可解析或交给下游补答）：调用方用它替换
+    /// 熔断正文，下游 classify 照常走「模型自报终态 / verifier checks 判定」，
+    /// 预算触顶但工作实际完成 → 交出收尾 JSON 判真实完成（收尾窗同款口径）。
+    Recovered { text: String, via: &'static str },
+    /// 恢复不了：调用方维持熔断留产（budget_exceeded），并把对话历史落 sidecar
+    /// 供事后诊断与跨进程续跑。
+    NotRecovered,
+}
+
+/// 熔断出口恢复的探测材料（调用方装配；本模块不持有 AppHandle）。
+pub(crate) struct FusedRecoveryCtx<'a> {
+    /// 需自评判据数（非机器判据条数）：> 0 才做盘上 verdict 推导
+    pub required_checks: usize,
+    pub artifact_dir: &'a std::path::Path,
+    pub gen_dir: Option<&'a std::path::Path>,
+    /// 本轮开跑时刻：盘上报告只认这之后新写的（跨会话旧文件不冒充）
+    pub started: std::time::SystemTime,
+}
+
+/// 续跑小额度：熔断后原会话自动续跑一次的轮数。不重置满额（业界口径：
+/// 重试消耗同一份预算），只给「把已完成的工作收尾」所需的量。
+const RESUME_ROUNDS: usize = 10;
+
+/// 剥掉熔断标记取回正文。两种标记（工具 / 轮数）共用 `⏹ 已熔断` 前缀，
+/// 切短标记即覆盖两者。正文本身可能是合法收尾 JSON（模型交卷与熔断写标记
+/// 同轮发生）——剥掉就能直接解析，零 LLM 成本。
+fn strip_fuse_marker(text: &str) -> &str {
+    match text.find(crate::bot_model_loop::FUSE_MARKER) {
+        Some(i) => text[..i].trim_end(),
+        None => text,
+    }
+}
+
+/// 强制交卷轮：追加「只输出收尾 JSON」提示后发一轮单轮请求。轮内模型又调
+/// 工具（循环带熔断标记返回）或解析不出收尾 JSON → None。
+/// `msgs` 追加的提示留在历史里（成功与否都如实记录）。
+async fn forced_submit_round<F, Fut>(
+    msgs: &mut Vec<serde_json::Value>,
+    run_rounds: &mut F,
+) -> Option<String>
+where
+    F: FnMut(Vec<serde_json::Value>, usize) -> Fut,
+    Fut: std::future::Future<Output = Option<String>>,
+{
+    use crate::bot_model_loop::{FUSE_MARKER, ROUNDS_FUSE_MARKER};
+
+    msgs.push(serde_json::json!({
+        "role": "user",
+        "content": format!(
+            "【系统提示】预算已触顶（熔断），这是唯一的收尾机会。不要再调用任何工具、\
+             不要展开任何新核对：把已经完成的工作与结论整理成收尾 JSON，**只输出 JSON 本身**：\n{}",
+            crate::prompts::RESULT_SCHEMA_HINT
+        ),
+    }));
+    let history = msgs.clone();
+    let out = run_rounds(history, 1).await?;
+    if out.contains(FUSE_MARKER) || out.contains(ROUNDS_FUSE_MARKER) {
+        return None;
+    }
+    parse_final_json(&out)?;
+    Some(out)
+}
+
+/// 盘上 verdict 推导：verifier 已把完整验收报告写进产物区（熔断只截走了交卷
+/// 那一步）。报告就是模型自己写的，取回并标注来源，按 verifier 判定口径走。
+fn disk_verdict_text(ctx: &FusedRecoveryCtx<'_>) -> Option<String> {
+    if ctx.required_checks == 0 {
+        return None;
+    }
+    let report = super::subagent_runner::find_fresh_deliverable_report(
+        ctx.artifact_dir,
+        ctx.gen_dir,
+        ctx.required_checks,
+        ctx.started,
+    )?;
+    let mut v = report.value;
+    v["recovered_from"] = serde_json::json!(format!("artifact:{}", report.path.display()));
+    Some(v.to_string())
+}
+
+/// 熔断出口恢复链（强按顺序，成本从零到高）：
+///
+/// 1. **剥标记**（零成本）：熔断正文剥掉标记后能解析 → 直接当收尾；
+/// 2. **盘上 verdict**（零 LLM）：verifier 的验收报告已完整落盘 → 从制品推导
+///    verdict（「交付件即真源」）；
+/// 3. **强制交卷轮**（1 轮 LLM）：带着完整对话历史发一轮「预算已尽、只输出
+///    收尾 JSON」——历史都在上下文里，verdict 一轮就能交出来；
+/// 4. **原会话续跑一次**（≤10 轮 LLM）：以上都失败 → 追加小额度继续完成并交卷，
+///    续跑后再走一遍廉价恢复（剥标记 / 盘上 verdict / 单轮强制交卷）。
+///
+/// 用户已停止 → 整条链让开（取消就是取消，不给机会烧钱）。
+/// `msgs` 会被追加恢复用的 user 消息（成功与否都留在历史里，如实记录）；
+/// run_rounds 是轮执行注入点（生产 = run_model_loop，测试 = 假轮次脚本）。
+pub(crate) async fn recover_fused_exit<F, Fut>(
+    stop: &crate::bot_slash::StopGuard,
+    msgs: &mut Vec<serde_json::Value>,
+    text: &str,
+    ctx: &FusedRecoveryCtx<'_>,
+    mut run_rounds: F,
+) -> FusedRecovery
+where
+    F: FnMut(Vec<serde_json::Value>, usize) -> Fut,
+    Fut: std::future::Future<Output = Option<String>>,
+{
+    use crate::bot_model_loop::{FUSE_MARKER, ROUNDS_FUSE_MARKER};
+
+    let fused = text.contains(FUSE_MARKER) || text.contains(ROUNDS_FUSE_MARKER);
+    if !fused || stop.stopped() {
+        return FusedRecovery::NotRecovered;
+    }
+
+    // 1. 剥标记：正文已是收尾 JSON 的情形（交卷与熔断标记同轮）
+    let stripped = strip_fuse_marker(text);
+    if parse_final_json(stripped).is_some() {
+        return FusedRecovery::Recovered {
+            text: stripped.to_string(),
+            via: "fuse_tail_json",
+        };
+    }
+
+    // 2. 盘上 verdict
+    if let Some(text) = disk_verdict_text(ctx) {
+        return FusedRecovery::Recovered {
+            text,
+            via: "disk_verdict",
+        };
+    }
+
+    // 3. 强制交卷轮
+    if !stop.stopped() {
+        if let Some(out) = forced_submit_round(msgs, &mut run_rounds).await {
+            return FusedRecovery::Recovered {
+                text: out,
+                via: "forced_submit",
+            };
+        }
+    }
+
+    // 4. 原会话续跑一次：executor 型子 agent 的主恢复路径（verifier 走到这说明
+    //    报告没写完，续跑让它补完再交卷）
+    if stop.stopped() {
+        return FusedRecovery::NotRecovered;
+    }
+    msgs.push(serde_json::json!({
+        "role": "user",
+        "content": format!(
+            "【系统提示】你此前因预算触顶被中断，没有交出收尾 JSON。现追加 {RESUME_ROUNDS} 轮预算\
+             让你完成任务：基于已有进展继续，尽快收尾并输出收尾 JSON（schema 见任务包装末尾）；\
+             不要重新开始已完成的步骤，也不要展开与收尾无关的新探索。"
+        ),
+    }));
+    let Some(text2) = run_rounds(msgs.clone(), RESUME_ROUNDS).await else {
+        return FusedRecovery::NotRecovered;
+    };
+    if !text2.contains(FUSE_MARKER) && !text2.contains(ROUNDS_FUSE_MARKER) {
+        // 续跑正文交给调用方既有补答链（不可解析时 repair_final_json_once 兜）
+        return FusedRecovery::Recovered {
+            text: text2,
+            via: "resumed",
+        };
+    }
+    let stripped2 = strip_fuse_marker(&text2);
+    if parse_final_json(stripped2).is_some() {
+        return FusedRecovery::Recovered {
+            text: stripped2.to_string(),
+            via: "resumed_fuse_tail",
+        };
+    }
+    if let Some(text) = disk_verdict_text(ctx) {
+        return FusedRecovery::Recovered {
+            text,
+            via: "resumed_disk_verdict",
+        };
+    }
+    if !stop.stopped() {
+        if let Some(out) = forced_submit_round(msgs, &mut run_rounds).await {
+            return FusedRecovery::Recovered {
+                text: out,
+                via: "resumed_forced_submit",
+            };
+        }
+    }
+    FusedRecovery::NotRecovered
+}
 /// 收尾 JSON 解析失败时的补答（结构化输出三段修复的第 3 段）。
 ///
 /// 业界口径：干净解析 → 本地修复 → 带修正提示重试 LLM。补答只做一次。
@@ -446,4 +633,322 @@ fn classify_verifier_outcome(
     // 这里保持纯函数不写审计——非关键信号，让 caller 在 run_subagent 收尾路径里
     // 决定是否打点（partical-pass 不是错误，重复审计反而拖累日志）。
     (SubagentStatus::Succeeded, None, Some(v.clone()))
+}
+
+#[cfg(test)]
+mod fused_recovery_tests {
+    use super::*;
+    use crate::bot_slash::StopGuard;
+    use std::sync::{Arc, Mutex};
+    use std::time::SystemTime;
+
+    type BoxFut = std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>>>>;
+
+    /// 假轮次执行器：按脚本逐次返回响应，记录每次请求的轮数额度。
+    /// 脚本耗尽后返回 None（模拟 API 报错路径）。
+    fn scripted_runner(
+        responses: Vec<Option<&'static str>>,
+        calls: Arc<Mutex<Vec<usize>>>,
+    ) -> impl FnMut(Vec<serde_json::Value>, usize) -> BoxFut {
+        let idx = Arc::new(Mutex::new(0usize));
+        let responses: Vec<Option<String>> = responses
+            .into_iter()
+            .map(|r| r.map(|s| s.to_string()))
+            .collect();
+        move |history: Vec<serde_json::Value>, rounds: usize| -> BoxFut {
+            calls.lock().unwrap().push(rounds);
+            let _ = history;
+            let i = {
+                let mut g = idx.lock().unwrap();
+                let i = *g;
+                *g += 1;
+                i
+            };
+            let resp = responses.get(i).cloned().flatten();
+            Box::pin(async move { resp })
+        }
+    }
+
+    fn ctx_for<'a>(
+        dir: &'a std::path::Path,
+        required: usize,
+        started: SystemTime,
+    ) -> FusedRecoveryCtx<'a> {
+        FusedRecoveryCtx {
+            required_checks: required,
+            artifact_dir: dir,
+            gen_dir: None,
+            started,
+        }
+    }
+
+    fn base_msgs() -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "task"}),
+        ]
+    }
+
+    const FUSED: &str = "已核对 40+ 个数字\n\n⏹ 已熔断（轮数上限）：对话轮数超过 200 轮上限（安全保护），已停止后续执行";
+    const FUSED_TOOL: &str =
+        "进度记录\n\n⏹ 已熔断：本轮 Function 调用超过 400 次上限（安全保护），过限执行已停";
+    const SUBMIT_JSON: &str = r#"{"status":"succeeded","summary":"12 条验收 11 过 1 不过"}"#;
+
+    #[tokio::test]
+    async fn not_fused_or_stopped_short_circuits() {
+        let dir = tempfile::tempdir().unwrap();
+        let stop = StopGuard::new_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut msgs = base_msgs();
+        // 非熔断正文：整链不进
+        let out = recover_fused_exit(
+            &stop,
+            &mut msgs,
+            "普通正文没有标记",
+            &ctx_for(dir.path(), 0, SystemTime::now()),
+            scripted_runner(vec![Some(SUBMIT_JSON)], calls.clone()),
+        )
+        .await;
+        assert!(matches!(out, FusedRecovery::NotRecovered));
+        assert!(calls.lock().unwrap().is_empty(), "非熔断不烧恢复轮");
+        // 已停止：熔断正文也不烧轮（取消就是取消，不给机会烧钱）
+        let stopped = StopGuard::new_for_test();
+        stopped.force_stop();
+        let out = recover_fused_exit(
+            &stopped,
+            &mut msgs,
+            FUSED,
+            &ctx_for(dir.path(), 0, SystemTime::now()),
+            scripted_runner(vec![Some(SUBMIT_JSON)], calls.clone()),
+        )
+        .await;
+        assert!(matches!(out, FusedRecovery::NotRecovered));
+        assert!(calls.lock().unwrap().is_empty(), "停止态不烧恢复轮");
+    }
+
+    #[tokio::test]
+    async fn fuse_tail_json_recovers_without_llm() {
+        let dir = tempfile::tempdir().unwrap();
+        let stop = StopGuard::new_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut msgs = base_msgs();
+        // 交卷与熔断标记同轮：标记前就是合法收尾 JSON
+        let fused_with_json: &'static str =
+            Box::leak(format!("{SUBMIT_JSON}\n\n{FUSED}").into_boxed_str());
+        let out = recover_fused_exit(
+            &stop,
+            &mut msgs,
+            fused_with_json,
+            &ctx_for(dir.path(), 0, SystemTime::now()),
+            scripted_runner(vec![Some("不该被调用")], calls.clone()),
+        )
+        .await;
+        match out {
+            FusedRecovery::Recovered { text, via } => {
+                assert_eq!(via, "fuse_tail_json");
+                assert!(text.contains("12 条验收"), "剥标记后正文保留：{text}");
+            }
+            _ => panic!("应恢复"),
+        }
+        assert!(calls.lock().unwrap().is_empty(), "零 LLM 成本");
+    }
+
+    #[tokio::test]
+    async fn disk_verdict_recovers_without_llm() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = SystemTime::now();
+        // 本轮新写的完整验收报告（3 条 checks ≥ 判据数 3）
+        let report = dir.path().join("verified.json");
+        std::fs::write(
+            &report,
+            r#"{"checks":[{"criterion":"C1","met":true},{"criterion":"C2","met":true},{"criterion":"C3","met":false}],"summary":"混合"}"#,
+        )
+        .unwrap();
+        let stop = StopGuard::new_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut msgs = base_msgs();
+        let out = recover_fused_exit(
+            &stop,
+            &mut msgs,
+            FUSED,
+            &ctx_for(dir.path(), 3, started),
+            scripted_runner(vec![Some("不该被调用")], calls.clone()),
+        )
+        .await;
+        match out {
+            FusedRecovery::Recovered { text, via } => {
+                assert_eq!(via, "disk_verdict");
+                assert!(text.contains("recovered_from"), "标注来源：{text}");
+                assert!(text.contains("artifact:"), "来源带路径：{text}");
+                let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(v["checks"].as_array().unwrap().len(), 3);
+            }
+            _ => panic!("应从盘上恢复"),
+        }
+        assert!(calls.lock().unwrap().is_empty(), "零 LLM 成本");
+    }
+
+    #[tokio::test]
+    async fn forced_submit_round_runs_one_llm_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let stop = StopGuard::new_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut msgs = base_msgs();
+        let out = recover_fused_exit(
+            &stop,
+            &mut msgs,
+            FUSED,
+            &ctx_for(dir.path(), 0, SystemTime::now()),
+            scripted_runner(vec![Some(SUBMIT_JSON)], calls.clone()),
+        )
+        .await;
+        match out {
+            FusedRecovery::Recovered { via, text } => {
+                assert_eq!(via, "forced_submit");
+                assert!(text.contains("succeeded"));
+            }
+            _ => panic!("应恢复"),
+        }
+        assert_eq!(*calls.lock().unwrap(), vec![1], "恰好一次单轮请求");
+        assert_eq!(msgs.len(), 3, "交卷提示留进历史");
+        assert!(msgs[2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("只输出 JSON 本身"));
+    }
+
+    #[tokio::test]
+    async fn resume_runs_after_failed_submit_and_recovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let stop = StopGuard::new_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut msgs = base_msgs();
+        // 第 1 次（交卷轮）返回不可解析散文 → 进入续跑；第 2 次（续跑）返回正文
+        //（不可解析——交给调用方既有补答链，恢复链按 resumed 交出）
+        let out = recover_fused_exit(
+            &stop,
+            &mut msgs,
+            FUSED_TOOL,
+            &ctx_for(dir.path(), 0, SystemTime::now()),
+            scripted_runner(
+                vec![Some("还在核对中…"), Some("收尾：全部完成")],
+                calls.clone(),
+            ),
+        )
+        .await;
+        match out {
+            FusedRecovery::Recovered { via, text } => {
+                assert_eq!(via, "resumed");
+                assert!(text.contains("全部完成"));
+            }
+            _ => panic!("应经续跑恢复"),
+        }
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![1, 10],
+            "交卷 1 轮 + 续跑 10 轮"
+        );
+        assert_eq!(msgs.len(), 4, "交卷提示 + 续跑提示都留进历史");
+        assert!(msgs[3]["content"].as_str().unwrap().contains("10 轮预算"));
+    }
+
+    #[tokio::test]
+    async fn resume_fuse_tail_recovers_strip_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let stop = StopGuard::new_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut msgs = base_msgs();
+        // 交卷轮散文 → 续跑又熔断（标记前带 JSON）→ 剥标记恢复
+        let resumed_fused: &'static str = Box::leak(
+            format!(
+                "{}\n\n{}",
+                r#"{"status":"succeeded","summary":"done"}"#, FUSED
+            )
+            .into_boxed_str(),
+        );
+        let out = recover_fused_exit(
+            &stop,
+            &mut msgs,
+            FUSED,
+            &ctx_for(dir.path(), 0, SystemTime::now()),
+            scripted_runner(vec![Some("没交卷"), Some(resumed_fused)], calls.clone()),
+        )
+        .await;
+        match out {
+            FusedRecovery::Recovered { via, .. } => assert_eq!(via, "resumed_fuse_tail"),
+            _ => panic!("应恢复"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_then_disk_verdict_when_report_written_late() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = SystemTime::now();
+        let stop = StopGuard::new_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut msgs = base_msgs();
+        // 报告在续跑轮期间才落盘（模型先写完报告后被熔断的实机形态）：
+        // 交卷轮散文 → 续跑熔断、剥标记无 JSON → 盘上 verdict 命中
+        let report = dir.path().join("verified.json");
+        let writer = report.clone();
+        let recorder = calls.clone();
+        let run = move |history: Vec<serde_json::Value>, rounds: usize| -> BoxFut {
+            recorder.lock().unwrap().push(rounds);
+            let _ = history;
+            let w = writer.clone();
+            Box::pin(async move {
+                let _ = std::fs::write(&w, r#"{"checks":[{},{},{}]}"#);
+                Some(FUSED.to_string())
+            })
+        };
+        let out = recover_fused_exit(
+            &stop,
+            &mut msgs,
+            FUSED,
+            &ctx_for(dir.path(), 3, started),
+            run,
+        )
+        .await;
+        match out {
+            FusedRecovery::Recovered { via, text } => {
+                assert_eq!(via, "resumed_disk_verdict");
+                assert!(text.contains("recovered_from"));
+                let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(v["checks"].as_array().unwrap().len(), 3);
+            }
+            _ => panic!("应恢复"),
+        }
+        assert_eq!(*calls.lock().unwrap(), vec![1, 10]);
+    }
+
+    #[tokio::test]
+    async fn total_miss_returns_not_recovered_and_history_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let stop = StopGuard::new_for_test();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut msgs = base_msgs();
+        // 交卷轮熔断、续跑又熔断、二段恢复全空 → NotRecovered；msgs 保留全部追加
+        let out = recover_fused_exit(
+            &stop,
+            &mut msgs,
+            FUSED,
+            &ctx_for(dir.path(), 0, SystemTime::now()),
+            scripted_runner(
+                vec![Some(FUSED), Some(FUSED_TOOL), Some(FUSED), None],
+                calls.clone(),
+            ),
+        )
+        .await;
+        assert!(matches!(out, FusedRecovery::NotRecovered));
+        // 交卷 1 + 续跑 10 + 续跑后交卷 1
+        assert_eq!(*calls.lock().unwrap(), vec![1, 10, 1]);
+        assert_eq!(msgs.len(), 5, "两条恢复提示 + 一次交卷提示追加");
+    }
+
+    #[test]
+    fn strip_fuse_marker_cuts_both_markers() {
+        assert_eq!(strip_fuse_marker(FUSED), "已核对 40+ 个数字");
+        assert_eq!(strip_fuse_marker(FUSED_TOOL), "进度记录");
+        assert_eq!(strip_fuse_marker("无标记正文"), "无标记正文");
+    }
 }

@@ -116,6 +116,22 @@ impl Drop for StopGuard {
     }
 }
 
+#[cfg(test)]
+impl StopGuard {
+    /// 单测造一个不经注册表的 guard：真实构造要 AppHandle（注册进全局
+    /// StopMap + drop 反注册），恢复链等纯逻辑单测只读 `stopped()` 这一位，
+    /// 空注册表 + id=0 即可（drop 时从空表 remove，无害）。
+    pub(crate) fn new_for_test() -> Self {
+        Self {
+            id: 0,
+            flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            interactive: true,
+            session_id: None,
+            registry: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+}
+
 /// 应用退出：置位**全部**执行实例的停止标志——
 /// 与 /stop（只停本会话 interactive 实例）不同，进程都要退了，不存在会话误伤；
 /// 后台定时任务平时没有任何停止入口，退出是唯一叫停机会。返回置位数量。
