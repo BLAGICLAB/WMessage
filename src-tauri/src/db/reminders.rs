@@ -13,6 +13,9 @@
 
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
+use tauri::AppHandle;
+
+use crate::error::{CommandError, CommandResult};
 
 /// 单源 DDL：open_db 与测试建表共用
 pub const REMINDERS_DDL: &str = "CREATE TABLE IF NOT EXISTS reminders (
@@ -239,6 +242,191 @@ pub fn validate_reminder_text(text: &str) -> Result<String, String> {
         return Err(format!("提醒内容超过 {MAX_REMINDER_TEXT} 字上限"));
     }
     Ok(t.to_string())
+}
+
+// ── Tauri 命令（定时任务模块的提醒入口）────────────────────────────────────
+
+/// 新建提醒（定时任务模块「新建提醒」入口）
+///
+/// 到点只发一条系统通知——不建任务卡、不执行任何内容（与内容型作业的分界）。
+#[tauri::command]
+pub async fn reminder_create(
+    app: AppHandle,
+    text: String,
+    schedule: String,
+) -> CommandResult<Reminder> {
+    let text = validate_reminder_text(&text).map_err(|reason| CommandError::InvalidArgument {
+        field: "text".into(),
+        value: text.clone(),
+        reason,
+    })?;
+    let schedule = schedule.trim().to_string();
+    crate::bot::validate_schedule(&schedule).map_err(|reason| CommandError::InvalidArgument {
+        field: "schedule".into(),
+        value: schedule.clone(),
+        reason,
+    })?;
+    let remind_at = crate::bot::next_fire_at(&schedule, chrono::Local::now()).ok_or_else(|| {
+        CommandError::InvalidArgument {
+            field: "schedule".into(),
+            value: schedule.clone(),
+            reason: "提醒时间已过或已无下一次触发点（一次性提醒必须给将来的时间）".into(),
+        }
+    })?;
+    let app_emit = app.clone();
+    let row = tauri::async_runtime::spawn_blocking(move || -> CommandResult<Reminder> {
+        let _g = super::lock_db_write();
+        let conn = super::open_db(&app)?;
+        let now_ms = super::now_ms();
+        let r = Reminder {
+            id: uuid::Uuid::new_v4().simple().to_string(),
+            text,
+            schedule,
+            remind_at: Some(remind_at),
+            enabled: None,
+            created_at: Some(now_ms),
+            updated_at: Some(now_ms),
+            fired_at: None,
+            fired_count: None,
+            expected_updated_at: None,
+        };
+        upsert_reminder(&conn, &r).map_err(CommandError::from)?;
+        Ok(r)
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("提醒创建线程 join 失败：{e}")))??;
+    crate::audit::write_event(
+        &app_emit,
+        crate::audit::AuditLevel::Info,
+        "reminder.create",
+        &[
+            ("reminderId", row.id.clone()),
+            ("schedule", row.schedule.clone()),
+        ],
+    );
+    Ok(row)
+}
+
+/// 编辑提醒（内容 / 时间；None 参数 = 不改该字段）
+///
+/// 改规则 → 下次触发时刻跟着重算（否则改了时间还是按旧点响）。
+/// 带 RMW 基线：读快照后行被其他写者改过（调度器推进过）即拒写。
+#[tauri::command]
+pub async fn reminder_update(
+    app: AppHandle,
+    id: String,
+    text: Option<String>,
+    schedule: Option<String>,
+) -> CommandResult<Reminder> {
+    let new_text = match &text {
+        Some(t) => {
+            Some(
+                validate_reminder_text(t).map_err(|reason| CommandError::InvalidArgument {
+                    field: "text".into(),
+                    value: t.clone(),
+                    reason,
+                })?,
+            )
+        }
+        None => None,
+    };
+    let new_schedule = match &schedule {
+        Some(s) => {
+            let s = s.trim().to_string();
+            crate::bot::validate_schedule(&s).map_err(|reason| CommandError::InvalidArgument {
+                field: "schedule".into(),
+                value: s.clone(),
+                reason,
+            })?;
+            Some(s)
+        }
+        None => None,
+    };
+    let app_emit = app.clone();
+    let row = tauri::async_runtime::spawn_blocking(move || -> CommandResult<Reminder> {
+        let _g = super::lock_db_write();
+        let conn = super::open_db(&app)?;
+        let mut r = load_reminder(&conn, &id)?.ok_or(CommandError::TaskNotFound(id.clone()))?;
+        if let Some(t) = new_text {
+            r.text = t;
+        }
+        if let Some(s) = new_schedule {
+            r.schedule = s;
+            let remind_at = crate::bot::next_fire_at(&r.schedule, chrono::Local::now())
+                .ok_or_else(|| CommandError::InvalidArgument {
+                    field: "schedule".into(),
+                    value: r.schedule.clone(),
+                    reason: "提醒时间已过或已无下一次触发点（一次性提醒必须给将来的时间）".into(),
+                })?;
+            r.remind_at = Some(remind_at);
+        }
+        r.expected_updated_at = r.updated_at; // RMW 基线 = 快照 updated_at
+        r.updated_at = Some(super::now_ms());
+        upsert_reminder(&conn, &r).map_err(CommandError::from)?;
+        Ok(r)
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("提醒更新线程 join 失败：{e}")))??;
+    crate::audit::write_event(
+        &app_emit,
+        crate::audit::AuditLevel::Info,
+        "reminder.update",
+        &[("reminderId", row.id.clone())],
+    );
+    Ok(row)
+}
+
+/// 取消提醒（删除行；二次确认在 UI 侧）
+///
+/// 行不存在返回 false——多半是刚刚到点触发已被消费掉，不是错误。
+#[tauri::command]
+pub async fn reminder_delete(app: AppHandle, id: String) -> CommandResult<bool> {
+    let app_emit = app.clone();
+    let id_for_audit = id.clone();
+    let ok = tauri::async_runtime::spawn_blocking(move || -> CommandResult<bool> {
+        let _g = super::lock_db_write();
+        let conn = super::open_db(&app)?;
+        delete_reminder(&conn, &id).map_err(CommandError::from)
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("提醒删除线程 join 失败：{e}")))??;
+    crate::audit::write_event(
+        &app_emit,
+        crate::audit::AuditLevel::Info,
+        "reminder.delete",
+        &[("reminderId", id_for_audit)],
+    );
+    Ok(ok)
+}
+
+/// 暂停/恢复提醒（只翻 enabled 位，schedule 与 remind_at 原样保留）
+///
+/// 返回是否命中行（false = 行不存在）。
+#[tauri::command]
+pub async fn reminder_set_enabled(
+    app: AppHandle,
+    id: String,
+    enabled: bool,
+) -> CommandResult<bool> {
+    let app_emit = app.clone();
+    let id_for_audit = id.clone();
+    let ok = tauri::async_runtime::spawn_blocking(move || -> CommandResult<bool> {
+        let _g = super::lock_db_write();
+        let conn = super::open_db(&app)?;
+        set_reminder_enabled(&conn, &id, enabled, super::now_ms()).map_err(CommandError::from)
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("提醒暂停线程 join 失败：{e}")))??;
+    crate::audit::write_event(
+        &app_emit,
+        crate::audit::AuditLevel::Info,
+        "reminder.set_enabled",
+        &[
+            ("reminderId", id_for_audit),
+            ("enabled", enabled.to_string()),
+        ],
+    );
+    Ok(ok)
 }
 
 #[cfg(test)]

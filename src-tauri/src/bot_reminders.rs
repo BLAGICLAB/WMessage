@@ -11,7 +11,7 @@
 //! 授权流程在前端启动时发起，与 due_notify 一致）。
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDateTime, NaiveTime};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::bot::registry::ToolResult;
 use crate::db::reminders::Reminder;
@@ -333,6 +333,7 @@ pub async fn reminders_tick(app: &AppHandle) {
             return;
         }
     };
+    let mut changed = false;
     for r in due {
         let at = r.remind_at.unwrap_or(now_ms);
         let late = Duration::milliseconds((now_ms - at).max(0));
@@ -347,19 +348,29 @@ pub async fn reminders_tick(app: &AppHandle) {
                     ),
                 );
                 delete_row(app, &r.id).await;
+                changed = true;
                 continue;
             }
             consume_one_shot(app, &r, now_ms).await;
+            changed = true;
         } else {
             if late > RECUR_GRACE {
                 // 错过太久：只推进到下一次，不打扰（否则每次开机都补一条）
                 let next = crate::bot_scheduler::occurrence_after(&r.schedule, now);
                 advance_row(app, &r.id, now_ms, next.map(|t| t.timestamp_millis())).await;
+                changed = true;
                 continue;
             }
             let next = crate::bot_scheduler::occurrence_after(&r.schedule, now);
             advance_and_enqueue(app, &r, now_ms, next.map(|t| t.timestamp_millis())).await;
+            changed = true;
         }
+    }
+    // 提醒状态变了 → 广播：前端「定时」页据此刷新（一次性提醒触发后行会消失、
+    // 周期提醒的触发次数会涨、暂停态也要跟着反映）。不广播的话界面永远停在
+    // 旧快照上——提醒是唯一在用户视线外自己变化的一类条目。
+    if changed {
+        let _ = app.emit("reminders-changed", serde_json::json!({}));
     }
 }
 

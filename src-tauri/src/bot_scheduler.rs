@@ -215,6 +215,13 @@ pub(crate) fn occurrence_after(
     None
 }
 
+/// 规范定时串 → 下次触发时刻（epoch ms）。
+///
+/// 一次性已过或格式无效返回 None（写入口据此拒绝：过期提醒写进去也永远不会响）。
+pub(crate) fn next_fire_at(schedule: &str, now: chrono::DateTime<chrono::Local>) -> Option<i64> {
+    occurrence_after(schedule, now).map(|t| t.timestamp_millis())
+}
+
 /// 定时串格式校验（写入口单源）：只验格式合法性，不判过去/未来——
 /// 过期的 at: 由调度器 at_expired 清理语义消费。作业写路径共用，防格式规则漂移。
 pub(crate) fn validate_schedule(s: &str) -> Result<(), String> {
@@ -1135,13 +1142,26 @@ async fn scheduler_tick(app: &AppHandle) {
 // 定时任务模块命令
 
 /// 定时任务模块列表条目（schedule_overview 返回）。
-/// nextRunAt 由 Rust 端 occurrence_after 单源计算（前端不重写解析器——
-/// weekly:NaN 双端解析漂移事故的教训，见 src/format.ts 注释）。
+///
+/// 两类条目字段集不同（作业有执行结果/重试/执行档，提醒有触发次数/一次性标记），
+/// 合成一个平铺结构会让前端在提醒行上读到作业专属字段——判别联合把这件事交给
+/// 编译器（前端 `e.kind` 一判即收窄）。
+///
+/// nextRunAt 由 Rust 端单源计算（前端不重写解析器——weekly:NaN 双端解析漂移
+/// 事故的教训，见 src/format.ts 注释）。
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ScheduleEntry {
+    /// 内容型作业：到点新建任务卡并执行
+    Job(JobEntry),
+    /// 提醒：到点发系统通知，不执行任何内容
+    Reminder(ReminderEntry),
+}
+
+/// 作业条目（kind="job"）
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScheduleEntry {
-    /// "job"（内容型，到点新建任务卡并执行）
-    pub kind: &'static str,
+pub struct JobEntry {
     pub target_id: String,
     pub title: String,
     /// 任务卡 note 截断
@@ -1166,8 +1186,28 @@ pub struct ScheduleEntry {
     pub mode: Option<String>,
 }
 
-fn build_schedule_entry(
-    kind: &'static str,
+/// 提醒条目（kind="reminder"）
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderEntry {
+    pub target_id: String,
+    /// 提醒内容（到点原样通知用户）
+    pub title: String,
+    pub schedule: String,
+    /// 最近一次触发时间（作业那边是「上次执行」，语义同位）
+    pub sched_last: Option<i64>,
+    /// 下次触发时间（epoch ms）：取持久化的 remind_at，不现算——调度器推进时
+    /// 写的就是这一列，现算会与「暂停后保留旧值」打架
+    pub next_run_at: Option<i64>,
+    /// false = 暂停（配置保留）
+    pub enabled: bool,
+    /// 已触发次数
+    pub fired_count: Option<i64>,
+    /// 一次性提醒（触发即删，没有下次可暂停——前端据此不给「暂停」钮）
+    pub one_shot: bool,
+}
+
+fn build_job_entry(
     target_id: String,
     title: String,
     detail: Option<String>,
@@ -1175,15 +1215,14 @@ fn build_schedule_entry(
     sched_last: Option<i64>,
     enabled: bool,
     now: chrono::DateTime<chrono::Local>,
-) -> ScheduleEntry {
-    ScheduleEntry {
-        kind,
+) -> JobEntry {
+    JobEntry {
         target_id,
         title,
         detail,
         schedule: sched.to_string(),
         sched_last,
-        next_run_at: occurrence_after(sched, now).map(|t| t.timestamp_millis()),
+        next_run_at: next_fire_at(sched, now),
         missed: matches!(classify_due(sched, sched_last, now), DueVerdict::Missed)
             || at_expired(sched, sched_last, now),
         enabled,
@@ -1195,7 +1234,7 @@ fn build_schedule_entry(
     }
 }
 
-/// 定时任务模块列表（内容型作业）。
+/// 定时任务模块列表（内容型作业 + 提醒）。
 #[tauri::command]
 pub async fn schedule_overview(app: AppHandle) -> CommandResult<Vec<ScheduleEntry>> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1208,8 +1247,7 @@ pub async fn schedule_overview(app: AppHandle) -> CommandResult<Vec<ScheduleEntr
             if sched.is_empty() {
                 continue;
             }
-            let mut e = build_schedule_entry(
-                "job",
+            let mut e = build_job_entry(
                 j.id.clone(),
                 j.content.clone(),
                 None,
@@ -1223,7 +1261,20 @@ pub async fn schedule_overview(app: AppHandle) -> CommandResult<Vec<ScheduleEntr
             e.retry_max = j.retry_max_or_zero();
             e.pause_on_failure = j.pause_on_failure == Some(true);
             e.mode = j.mode.clone();
-            out.push(e);
+            out.push(ScheduleEntry::Job(e));
+        }
+        // 提醒（到点发系统通知，不建卡不执行）
+        for r in crate::db::load_reminders(&conn).map_err(CommandError::from)? {
+            out.push(ScheduleEntry::Reminder(ReminderEntry {
+                target_id: r.id.clone(),
+                title: r.text.clone(),
+                schedule: r.schedule.trim().to_string(),
+                sched_last: r.fired_at,
+                next_run_at: r.remind_at,
+                enabled: r.enabled(),
+                fired_count: r.fired_count,
+                one_shot: r.one_shot(),
+            }));
         }
         Ok(out)
     })

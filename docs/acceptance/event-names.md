@@ -182,9 +182,13 @@
 - `rmw_conflict`
 - `rules.import_confirmed`
 - `rules.import_rejected`
+- `reminder.create`
+- `reminder.delete`
 - `reminder.enqueue_failed`
 - `reminder.fire_failed`
 - `reminder.fired`
+- `reminder.set_enabled`
+- `reminder.update`
 - `rules.json.tmp`
 - `runtime_files_migrated`
 - `sched_enabled`
@@ -298,6 +302,7 @@
 - `chat-open-session`
 - `profile-changed`
 - `sched-status`
+- `reminders-changed`
 - `notifications-changed`
 - `mcp-status-changed`
 - `subagent-activity`

@@ -387,3 +387,81 @@ fn classify_due_not_due() {
     // 坏格式
     assert_eq!(classify_due("junk", None, now), DueVerdict::NotDue);
 }
+
+/// next_fire_at：规范定时串 → 下次触发时刻。四档都要覆盖——
+/// 提醒的写入口靠它算「下一次何时响」，漏一档就是一类提醒建不出下次时间。
+#[test]
+fn next_fire_at_covers_all_four_formats() {
+    let now = dt(2026, 8, 16, 12, 0);
+    let at = next_fire_at("at:2026-08-20T14:00", now).unwrap();
+    assert_eq!(at, ms(2026, 8, 20, 14, 0));
+    // 今天 10:00 已过 → 下一次是明天 10:00
+    let daily = next_fire_at("daily:10:00", now).unwrap();
+    assert_eq!(daily, ms(2026, 8, 17, 10, 0));
+    // 2026-08-16 是周日（1=周一 → 7=周日）
+    let weekly = next_fire_at("weekly:3:08:00", now).unwrap();
+    assert_eq!(weekly, ms(2026, 8, 19, 8, 0));
+    let monthly = next_fire_at("monthly:20:14:00", now).unwrap();
+    assert_eq!(monthly, ms(2026, 8, 20, 14, 0));
+}
+
+#[test]
+fn next_fire_at_rejects_expired_one_shot_and_bad_format() {
+    let now = dt(2026, 8, 16, 12, 0);
+    assert!(
+        next_fire_at("at:2026-08-10T14:00", now).is_none(),
+        "一次性已过 → None（写入口据此拒绝）"
+    );
+    assert!(next_fire_at("junk", now).is_none(), "格式非法 → None");
+    assert!(next_fire_at("", now).is_none(), "空串 → None");
+}
+
+/// schedule_overview 的线协议契约：kind 标签 + camelCase 字段名。
+/// 前端按 kind 分流并读各自专属字段，形状变了前端就该立刻崩——这里把它锁住。
+#[test]
+fn schedule_entry_serializes_kind_tagged_variants() {
+    let job = ScheduleEntry::Job(JobEntry {
+        target_id: "j1".into(),
+        title: "整理昨日进展".into(),
+        detail: None,
+        schedule: "daily:09:00".into(),
+        sched_last: None,
+        next_run_at: Some(123),
+        missed: false,
+        enabled: true,
+        last_status: Some("ok".into()),
+        last_error: None,
+        retry_max: 2,
+        pause_on_failure: true,
+        mode: Some("auto".into()),
+    });
+    let v = serde_json::to_value(&job).unwrap();
+    assert_eq!(v["kind"], "job");
+    assert_eq!(v["targetId"], "j1");
+    assert_eq!(v["nextRunAt"], 123);
+    assert_eq!(v["lastStatus"], "ok");
+    assert_eq!(v["retryMax"], 2);
+
+    let rem = ScheduleEntry::Reminder(ReminderEntry {
+        target_id: "r1".into(),
+        title: "喝水".into(),
+        schedule: "daily:11:00".into(),
+        sched_last: Some(456),
+        next_run_at: Some(789),
+        enabled: false,
+        fired_count: Some(3),
+        one_shot: false,
+    });
+    let v = serde_json::to_value(&rem).unwrap();
+    assert_eq!(v["kind"], "reminder");
+    assert_eq!(v["targetId"], "r1");
+    assert_eq!(v["schedLast"], 456);
+    assert_eq!(v["nextRunAt"], 789);
+    assert_eq!(v["firedCount"], 3);
+    assert_eq!(v["oneShot"], false);
+    assert_eq!(v["enabled"], false);
+    // 提醒条目不带作业专属字段（前端按 kind 收窄，不该在这里读到它们）
+    assert!(v.get("retryMax").is_none());
+    assert!(v.get("lastStatus").is_none());
+    assert!(v.get("missed").is_none());
+}
