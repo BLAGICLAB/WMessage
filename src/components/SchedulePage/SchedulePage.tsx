@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
+import { isPermissionGranted } from "@tauri-apps/plugin-notification";
 import { AlarmClock, Bell, Plus } from "lucide-react";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
@@ -55,6 +56,8 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
   /** 分组标签：定时任务 / 提醒。默认作业——作业会自己做事，失败与错过需要人看；
    *  提醒只是响一声。标签不记忆：每次进来都回到作业 tab，作业的失败不会被漏看。 */
   const [tab, setTab] = useState<"jobs" | "reminders">("jobs");
+  /** 系统通知未授权（提醒到点会静默失败）：只在提醒 tab 提示——作业不依赖系统通知 */
+  const [notifyBlocked, setNotifyBlocked] = useState(false);
   //  执行透明：sched-status 事件驱动的「执行中」作业（started 入集，done/failed 出集）
   const [liveJobIds, setLiveJobIds] = useState<Set<string>>(new Set());
   /** job id → 最近一次执行会话（sched-status 携带；「会话」按钮跳聊天页围观） */
@@ -102,6 +105,22 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
   useTauriListen("reminders-changed", () => {
     void reload();
   });
+
+  /** 系统通知授权状态：提醒到点的唯一效果就是那声通知，未授权时静默失败，
+   *  用户只会觉得「提醒坏了」。查不到状态 ≠ 未授权（插件不可用时不报假警）。 */
+  const checkNotifyPermission = useCallback(async () => {
+    try {
+      setNotifyBlocked(!(await isPermissionGranted()));
+    } catch {
+      setNotifyBlocked(false);
+    }
+  }, []);
+  useEffect(() => {
+    if (tab !== "reminders") return;
+    // setState 在 await 之后（授权查询是异步的），lint 误报同步 setState
+    // oxlint-disable-next-line react/set-state-in-effect
+    void checkNotifyPermission();
+  }, [tab, checkNotifyPermission]);
 
   //  执行透明：sched-status 实时驱动「执行中」徽标 + 会话跳转锚点；
   // done/failed 时刷新列表（lastStatus/sched_last 已在任务行更新）
@@ -520,7 +539,7 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
     <div className="flex flex-col gap-4">
       {/* 顶栏：标题 + 新建入口（新建按钮文案随标签变） */}
       <div className="flex shrink-0 flex-wrap items-center gap-2 pb-1">
-        <h2 className="text-base font-semibold text-[var(--t1)]">定时任务</h2>
+        <h2 className="text-base font-semibold text-[var(--t1)]">定时</h2>
         <div className="flex-1" />
         <button
           className="flex h-8 items-center gap-1.5 whitespace-nowrap rounded-[var(--r-sm)] px-3 text-sm text-[var(--t3)] nm-outset"
@@ -569,6 +588,22 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
           <span className="text-[var(--t1)]">{upcoming.title}</span>
           ，{untilTime(upcoming.nextRunAt!)}
         </p>
+      )}
+
+      {/* 通知未授权提示：只在提醒 tab 出现（作业不靠系统通知）。提醒到点只有
+          那声通知，未授权 = 静默失败，用户只会以为功能坏了。 */}
+      {tab === "reminders" && notifyBlocked && (
+        <div className="nm-inset flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-[var(--t2)]">
+          <span className="min-w-0 flex-1">
+            系统通知未授权——提醒到点不会响。请到系统设置的通知面板里允许本应用发送通知。
+          </span>
+          <button
+            className="nm-btn shrink-0 px-2 py-0.5 text-[11px] text-[var(--t3)]"
+            onClick={() => void checkNotifyPermission()}
+          >
+            重新检查
+          </button>
+        </div>
       )}
 
       {/* 新建流程：写内容 → 设频率 → 预览确认 */}
@@ -631,25 +666,19 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
         )
       ) : tab === "jobs" ? (
         jobEntries.length > 0 && (
-          <section>
-            <p className="mb-2 text-xs font-medium text-[var(--t5)]">定时任务</p>
-            <div className="flex flex-col gap-2">{jobEntries.map(renderJobRow)}</div>
-          </section>
+          <div className="flex flex-col gap-2">{jobEntries.map(renderJobRow)}</div>
         )
       ) : (
         remEntries.length > 0 && (
-          <section>
-            <p className="mb-2 text-xs font-medium text-[var(--t5)]">提醒</p>
-            <div className="flex flex-col gap-2">
-              {remEntries.map((r) => (
-                <ReminderRow
-                  key={r.targetId}
-                  entry={r}
-                  onChanged={() => void reload()}
-                />
-              ))}
-            </div>
-          </section>
+          <div className="flex flex-col gap-2">
+            {remEntries.map((r) => (
+              <ReminderRow
+                key={r.targetId}
+                entry={r}
+                onChanged={() => void reload()}
+              />
+            ))}
+          </div>
         )
       )}
       {/* 执行痕迹弹层（按本次执行新建的任务卡查 trace；TracePanel 自带 portal） */}

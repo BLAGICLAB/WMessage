@@ -15,6 +15,12 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
   emit: vi.fn(async () => {}),
 }));
+// 系统通知授权状态（提醒到点靠它；默认已授权——未授权的用例单独改桩）
+const notifyPermMock = vi.hoisted(() => vi.fn(async () => true));
+vi.mock("@tauri-apps/plugin-notification", () => ({
+  isPermissionGranted: notifyPermMock,
+  requestPermission: vi.fn(async () => "granted"),
+}));
 
 const jobEntry: JobEntry = {
   kind: "job",
@@ -59,6 +65,8 @@ function stubInvoke(overview: ScheduleEntry[]) {
 
 beforeEach(() => {
   invokeMock.mockReset();
+  notifyPermMock.mockReset();
+  notifyPermMock.mockResolvedValue(true);
 });
 
 /** onOpenChat 是切视图的出口，列表渲染用例不关心它 */
@@ -478,5 +486,42 @@ describe("SchedulePage 提醒分组", () => {
     expect(
       screen.getByText(/到点发系统通知，不建任务卡、不执行任何内容/),
     ).toBeInTheDocument();
+  });
+});
+
+describe("SchedulePage 通知授权提示", () => {
+  it("页标题是「定时」（不与标签「定时任务」重名）", async () => {
+    stubInvoke([]);
+    render(<SchedulePage onOpenChat={noop} />);
+    expect(await screen.findByRole("heading", { name: "定时" })).toBeInTheDocument();
+  });
+
+  it("通知未授权 → 提醒 tab 顶部出现提示条；授权后不出现", async () => {
+    const user = userEvent.setup();
+    notifyPermMock.mockResolvedValue(false);
+    stubInvoke([jobEntry, remEntry]);
+    render(<SchedulePage onOpenChat={noop} />);
+    // 任务 tab 不查授权（作业不靠系统通知）
+    await screen.findByTestId("schedule-row-job:j1");
+    expect(notifyPermMock).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("tab", { name: /提醒/ }));
+    expect(
+      await screen.findByText(/系统通知未授权——提醒到点不会响/),
+    ).toBeInTheDocument();
+    // 用户去系统设置里授权后回来点「重新检查」→ 提示条消失
+    notifyPermMock.mockResolvedValue(true);
+    await user.click(screen.getByText("重新检查"));
+    await waitFor(() =>
+      expect(screen.queryByText(/系统通知未授权/)).not.toBeInTheDocument(),
+    );
+  });
+
+  it("通知已授权 → 提醒 tab 不出提示条", async () => {
+    const user = userEvent.setup();
+    stubInvoke([remEntry]);
+    render(<SchedulePage onOpenChat={noop} />);
+    await user.click(screen.getByRole("tab", { name: /提醒/ }));
+    await screen.findByTestId("schedule-row-reminder:r1");
+    expect(screen.queryByText(/系统通知未授权/)).not.toBeInTheDocument();
   });
 });
