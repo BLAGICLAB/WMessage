@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>定时模块 · 提醒怎么分组 · 设计小样</title>
+<style>
+  /* ═══════ token（与 src/ui/main.css 对齐：浅/深两套独立定义） ═══════ */
+  :root {
+    --bg: #eef1f6; --surface: #fafbfd; --surface-raised: #ffffff;
+    --edge: #e2e7ef; --edge-strong: #cbd4e1;
+    --inset-bg: rgba(23, 32, 51, 0.075);
+    --input-bg: rgba(23, 32, 51, 0.03);
+    --hover-bg: rgba(23, 32, 51, 0.055);
+    --shadow-sm: 0 1px 2px rgba(23, 32, 51, 0.06);
+    --shadow-lg: 0 8px 24px rgba(23, 32, 51, 0.14);
+    --t1: #182031; --t2: #2b3548; --t3: #45506a; --t4: #525e7a; --t5: #5d6984; --t6: #606c88;
+    --brand: #5f6f94; --brand-strong: #4a5879;
+    --success: #16a34a; --danger: #dc2626; --info: #3b82f6;
+    --accent: #5b64d8;
+    --r-sm: 8px; --r-md: 12px; --r-lg: 16px;
+    --dur-chip: 100ms; --dur-card: 150ms;
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  html.dark {
+    --bg: #14161d; --surface: #1b1f29; --surface-raised: #232836;
+    --edge: #272d3b; --edge-strong: #3a4254;
+    --inset-bg: rgba(0, 0, 0, 0.3);
+    --input-bg: rgba(255, 255, 255, 0.04);
+    --hover-bg: rgba(255, 255, 255, 0.06);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.55);
+    --t1: #eef1f7; --t2: #dbe1ec; --t3: #b6bfd0; --t4: #8d97ac; --t5: #808a9e; --t6: #7d879b;
+    --brand: #a3b6dd; --brand-strong: #c0cdea;
+    --success: #4ade80; --danger: #f87171; --info: #60a5fa;
+    --accent: #8a91f0;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--t2);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .num { font-variant-numeric: tabular-nums; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  /* ═══════ 文档骨架（与 task-card-density-mock.html 同源） ═══════ */
+  .doc { max-width: 1180px; margin: 0 auto; padding: 36px 28px 72px; }
+  .hd h1 { font-size: 22px; font-weight: 700; color: var(--t1); letter-spacing: -0.01em; }
+  .hd .meta { font-size: 12px; color: var(--t5); margin-top: 4px; }
+  .hd .meta b { color: var(--t2); font-weight: 600; }
+  .lede { margin: 16px 0 22px; max-width: 780px; font-size: 13.5px; line-height: 1.7; color: var(--t3); }
+  .lede b { color: var(--t2); }
+  .lede code, .why code { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; padding: 1px 5px; border-radius: 3px; background: var(--inset-bg); color: var(--t2); }
+
+  .toolbar { display: flex; gap: 8px; margin-bottom: 26px; flex-wrap: wrap; }
+  .toolbar .seg { display: inline-flex; padding: 2px; border-radius: 999px; background: var(--inset-bg); }
+  .toolbar .seg b { padding: 5px 12px; border-radius: 999px; font-size: 12px; color: var(--t3); cursor: pointer; user-select: none; transition: background-color var(--dur-chip) var(--ease-out); }
+  .toolbar .seg b.on { background: var(--surface-raised); color: var(--t1); box-shadow: var(--shadow-sm); }
+
+  .sec { margin-top: 38px; }
+  .sec h2 {
+    font-size: 15px; font-weight: 600; color: var(--t1);
+    padding-bottom: 8px; margin-bottom: 12px; border-bottom: 1px solid var(--edge);
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  }
+  .sec h2 .tag { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 999px; background: var(--inset-bg); color: var(--t4); }
+  .sec .why {
+    font-size: 12.5px; color: var(--t4); line-height: 1.7;
+    background: var(--inset-bg); border-radius: var(--r-md);
+    padding: 12px 14px; margin-bottom: 16px;
+  }
+  .sec .why b { color: var(--t2); }
+
+  .scene { background: var(--surface); border: 1px solid var(--edge); border-radius: var(--r-lg); padding: 16px 20px 20px; box-shadow: var(--shadow-sm); }
+  .scene + .scene { margin-top: 14px; }
+  .scene-label { font-size: 11px; color: var(--t5); margin-bottom: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .scene-label .pill { padding: 2px 8px; border-radius: 999px; background: var(--inset-bg); font-size: 10.5px; color: var(--t3); }
+  .scene-label .pill.rec { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+
+  /* ═══════ 候选方案卡 ═══════ */
+  .opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(248px, 1fr)); gap: 12px; }
+  .opt { background: var(--surface); border: 1px solid var(--edge); border-radius: var(--r-lg); padding: 14px; box-shadow: var(--shadow-sm); }
+  .opt.rec { border-color: color-mix(in srgb, var(--accent) 45%, var(--edge)); }
+  .opt h3 { font-size: 13px; font-weight: 600; color: var(--t1); display: flex; align-items: center; gap: 7px; }
+  .opt h3 .badge { font-size: 10px; font-weight: 500; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+  .opt h3 .badge.no { background: color-mix(in srgb, var(--danger) 13%, transparent); color: var(--danger); }
+  .opt p { font-size: 11.5px; color: var(--t4); line-height: 1.65; margin-top: 6px; }
+  .opt p .cost { display: block; margin-top: 7px; padding-top: 7px; border-top: 1px dashed var(--edge); color: var(--t3); }
+  .opt p .cost b { color: var(--danger); font-weight: 600; }
+
+  /* 缩略线框图（纯 CSS，不用字符画） */
+  .mini { margin-top: 11px; background: var(--bg); border: 1px solid var(--edge); border-radius: var(--r-md); padding: 9px 10px; }
+  .mini-tabs { display: flex; gap: 4px; margin-bottom: 7px; }
+  .mini-tabs i { font-style: normal; font-size: 9.5px; padding: 2px 7px; border-radius: 999px; background: var(--inset-bg); color: var(--t4); }
+  .mini-tabs i.on { background: var(--surface-raised); color: var(--t1); box-shadow: var(--shadow-sm); }
+  .mini-sec { font-size: 9.5px; color: var(--t5); margin: 6px 0 4px; }
+  .mini-row { background: var(--surface); border: 1px solid var(--edge); border-radius: 7px; padding: 5px 7px; margin-bottom: 5px; }
+  .mini-row .l1 { height: 5px; width: 62%; background: var(--t5); opacity: .5; border-radius: 3px; }
+  .mini-row .l2 { height: 4px; width: 42%; background: var(--t5); opacity: .28; border-radius: 3px; margin-top: 4px; }
+  .mini-row .l3 { height: 4px; width: 54%; background: var(--t5); opacity: .2; border-radius: 3px; margin-top: 5px; }
+  .mini-pager { display: flex; align-items: center; justify-content: space-between; margin-top: 7px; }
+  .mini-pager u { text-decoration: none; font-size: 9.5px; color: var(--t5); }
+  .mini-badge { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 999px; background: var(--inset-bg); color: var(--t4); margin-right: 4px; }
+
+  /* ═══════ 应用内控件（照抄真实类语义：nm-card / nm-inset / nm-btn / nm-outset） ═══════ */
+  .nm-card { background: var(--surface); border: 1px solid var(--edge); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); }
+  .nm-inset { background: var(--inset-bg); border: 1px solid var(--edge); border-radius: var(--r-md); }
+  .nm-outset { background: var(--surface); border: 1px solid var(--edge); border-radius: var(--r-md); }
+  .nm-btn { background: var(--surface); border: 1px solid var(--edge); border-radius: var(--r-sm); transition: background-color var(--dur-chip) var(--ease-out), border-color var(--dur-chip) var(--ease-out); }
+  .nm-btn:hover { background: var(--hover-bg); border-color: var(--edge-strong); }
+  .nm-btn.pri { color: var(--t1); }
+  .nm-btn.danger { color: var(--danger); }
+
+  /* 应用窗体（模拟 SchedulePage 真实结构） */
+  .app { background: var(--bg); border: 1px solid var(--edge); border-radius: var(--r-lg); overflow: hidden; }
+  .app-body { padding: 14px 16px 16px; background: var(--bg); }
+  .app-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .app-head h3 { font-size: 14px; font-weight: 600; color: var(--t1); }
+  .app-head .sp { flex: 1; }
+  .app-new { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border-radius: var(--r-sm); font-size: 12px; color: var(--t3); background: var(--surface); border: 1px solid var(--edge); }
+  .app-new:hover { background: var(--hover-bg); border-color: var(--edge-strong); }
+
+  /* 标签行：照 NotificationsPage 的 role=tablist 配方（选中 = 凹陷） */
+  .tabs { display: flex; gap: 4px; margin-top: 10px; border-bottom: 1px solid var(--edge); padding-bottom: 8px; }
+  .tabs button {
+    font-family: inherit; font-size: 12px; padding: 4px 9px; border-radius: var(--r-sm);
+    border: 1px solid transparent; background: transparent; color: var(--t3); cursor: pointer;
+    transition: background-color var(--dur-chip) var(--ease-out), color var(--dur-chip) var(--ease-out);
+  }
+  .tabs button:hover { background: var(--hover-bg); color: var(--t2); }
+  .tabs button[aria-selected="true"] { background: var(--inset-bg); border-color: var(--edge); color: var(--t1); font-weight: 500; }
+  .tabs button .n { font-size: 10px; color: var(--t5); margin-left: 4px; }
+  .tabs button[aria-selected="true"] .n { color: var(--t3); }
+
+  .upcoming { margin-top: 10px; padding: 8px 11px; border-radius: var(--r-md); background: var(--inset-bg); font-size: 12px; color: var(--t3); }
+  .upcoming b { color: var(--t1); font-weight: 500; }
+
+  .rows { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .notice {
+    display: flex; align-items: center; gap: 8px; margin-top: 8px;
+    padding: 7px 10px; border-radius: var(--r-md);
+    background: color-mix(in srgb, var(--danger) 9%, transparent);
+    border: 1px solid color-mix(in srgb, var(--danger) 26%, transparent);
+    font-size: 11.5px; color: var(--t2);
+  }
+  .notice svg { color: var(--danger); flex: none; }
+  .notice-btn {
+    font-family: inherit; font-size: 11px; padding: 3px 9px; flex: none;
+    border-radius: var(--r-sm); background: var(--surface);
+    border: 1px solid var(--edge); color: var(--t2); cursor: pointer;
+  }
+  .notice-btn:hover { background: var(--hover-bg); border-color: var(--edge-strong); }
+  .row { padding: 10px 12px; }
+  .row.off { opacity: .55; }
+  .row-top { display: flex; align-items: center; gap: 7px; }
+  .kind { font-size: 10px; padding: 2px 6px; border-radius: 999px; background: var(--inset-bg); color: var(--t4); flex: none; }
+  .kind.rem { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+  .row-title { font-size: 13px; font-weight: 500; color: var(--t1); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .flag { font-size: 10px; padding: 2px 6px; border-radius: 999px; background: var(--inset-bg); color: var(--t5); flex: none; }
+  .flag.ok { color: var(--success); }
+  .flag.bad { color: var(--danger); }
+  .flag.warn { color: var(--danger); }
+  .row-meta { display: flex; flex-wrap: wrap; gap: 3px 11px; margin-top: 5px; font-size: 11px; color: var(--t4); }
+  .row-meta .when { color: var(--accent); }
+  .row-meta .fired { color: var(--t5); }
+  .row-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .row-acts button {
+    font-family: inherit; font-size: 11px; line-height: 1; padding: 5px 8px;
+    border-radius: var(--r-sm); background: var(--surface); border: 1px solid var(--edge);
+    color: var(--t3); cursor: pointer;
+    transition: background-color var(--dur-chip) var(--ease-out), border-color var(--dur-chip) var(--ease-out);
+  }
+  .row-acts button:hover { background: var(--hover-bg); border-color: var(--edge-strong); }
+  .row-acts button.danger { color: var(--danger); }
+  .row-acts button.on { background: var(--inset-bg); color: var(--t1); }
+
+  /* 编辑面板（提醒） */
+  .editor { margin-top: 10px; padding: 11px 12px; }
+  .editor .ta { width: 100%; resize: none; padding: 7px 8px; font-family: inherit; font-size: 12px; color: var(--t2); background: var(--inset-bg); border: 1px solid var(--edge); border-radius: var(--r-sm); }
+  .editor .ta::placeholder { color: var(--t5); }
+  .freq { margin-top: 8px; }
+  .freq .dt { font-family: inherit; font-size: 12px; color: var(--t2); padding: 5px 8px; background: var(--surface); border: 1px solid var(--edge); border-radius: var(--r-sm); }
+  .freq .kinds { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+  .freq .kinds button {
+    font-family: inherit; font-size: 11px; padding: 4px 10px; border-radius: 999px;
+    background: var(--surface); border: 1px solid var(--edge); color: var(--t3); cursor: pointer;
+  }
+  .freq .kinds button:hover { background: var(--hover-bg); border-color: var(--edge-strong); }
+  .freq .kinds button.on { background: var(--inset-bg); border-color: var(--edge-strong); color: var(--t1); font-weight: 500; }
+  .preview { margin-top: 9px; padding: 8px 11px; border-radius: var(--r-md); background: var(--inset-bg); font-size: 12px; color: var(--t3); }
+  .preview b { color: var(--t1); font-weight: 500; }
+  .editor .acts { display: flex; gap: 8px; margin-top: 9px; }
+  .editor .acts button { font-family: inherit; font-size: 12px; padding: 6px 12px; border-radius: var(--r-sm); background: var(--surface); border: 1px solid var(--edge); color: var(--t3); cursor: pointer; }
+  .editor .acts button.pri { color: var(--t1); }
+  .editor .acts button:hover { background: var(--hover-bg); border-color: var(--edge-strong); }
+
+  .empty { text-align: center; padding: 26px 12px; color: var(--t5); font-size: 12px; }
+  .empty b { display: block; color: var(--t3); font-size: 13px; margin-bottom: 4px; font-weight: 500; }
+
+  /* 解剖标注 */
+  .anat { display: grid; grid-template-columns: 1fr 300px; gap: 18px; align-items: start; }
+  @media (max-width: 820px) { .anat { grid-template-columns: 1fr; } }
+  .kv { display: grid; grid-template-columns: 96px 1fr; gap: 7px 12px; font-size: 11.5px; }
+  .kv dt { color: var(--t4); }
+  .kv dd { margin: 0; color: var(--t2); }
+  .kv dd code { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--accent); }
+  .note { font-size: 12px; color: var(--t4); line-height: 1.7; margin-top: 12px; }
+  .note li { margin: 5px 0 5px 16px; }
+  .note b { color: var(--t2); }
+
+  .cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 820px) { .cols2 { grid-template-columns: 1fr; } }
+  .panel { padding: 12px 14px; }
+  .panel h4 { font-size: 12.5px; font-weight: 600; color: var(--t1); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .panel h4 span { font-size: 10.5px; font-weight: 500; padding: 1px 7px; border-radius: 999px; background: var(--inset-bg); color: var(--t4); }
+
+  .lists { font-size: 12.5px; color: var(--t4); line-height: 1.8; }
+  .lists li { margin: 4px 0 4px 16px; }
+  .lists b { color: var(--t2); }
+  .lists .cmd { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--accent); }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="doc">
+  <header class="hd">
+    <h1>定时模块 · 提醒怎么分组</h1>
+    <div class="meta">2026-11-10 · 设计小样 · 结论：<b>标签切换</b>，不用分页</div>
+  </header>
+
+  <p class="lede">
+    提醒与定时作业是同一条 30s tick 上的两条并列链路：作业到点<b>做事</b>（建卡交机器人执行），
+    提醒到点<b>说话</b>（发一条系统通知）。两者共用同一套定时串格式，存储与触发路径各走各的。
+    放进同一个「定时」模块时，问题只有一个：<b>怎么把这两类分开给用户看</b>。
+    <br />
+    结论是<b>顶部标签切换</b>（定时任务 / 提醒，各带计数），不用分页、不用分区列表、不用混排。
+    下面先给四个候选的取舍，再给推荐稿的高保真。
+  </p>
+
+  <div class="toolbar">
+    <div class="seg" id="theme">
+      <b class="on" data-mode="dark">暗色</b>
+      <b data-mode="light">亮色</b>
+    </div>
+  </div>
+
+  <!-- ═══════ 一、四个候选 ═══════ -->
+  <section class="sec">
+    <h2>一、四个候选 <span class="tag">分组形态</span></h2>
+    <div class="why">
+      <b>为什么不是分页：</b>本仓的 pagination 已有固定语义——<code>PoolPager</code> 的 8 页是
+      「本周 7 天 + 未排期池」，翻页 = <b>换时间段</b>。拿它切「作业 / 提醒」会让用户误以为在按时间翻，
+      而这两类之间<b>没有时间关系</b>。而且两类各自的量级是「个位数到十几条」，翻页的成本远高于一次点击。
+      结论：分页在这个模块里是错误控件。
+    </div>
+
+    <div class="opts">
+      <div class="opt rec">
+        <h3>A · 顶部标签切换 <span class="badge">推荐</span></h3>
+        <div class="mini">
+          <div class="mini-tabs"><i class="on">定时任务 6</i><i>提醒 3</i></div>
+          <div class="mini-row"><div class="l1"></div><div class="l2"></div></div>
+          <div class="mini-row"><div class="l1" style="width:48%"></div><div class="l2" style="width:38%"></div></div>
+          <div class="mini-row"><div class="l1" style="width:55%"></div><div class="l2" style="width:46%"></div></div>
+        </div>
+        <p>两类互斥、各带一套操作，各自规模小 → 一次点击切视角。
+          <span class="cost"><b>代价：</b>提醒不在当前屏时看不见 → 用标签上的<b>计数</b>兜住（3 条提醒不会被忘）。</span>
+        </p>
+      </div>
+
+      <div class="opt">
+        <h3>B · 分区列表（同屏两段）</h3>
+        <div class="mini">
+          <div class="mini-sec">定时任务</div>
+          <div class="mini-row"><div class="l1"></div><div class="l2"></div></div>
+          <div class="mini-row"><div class="l1" style="width:52%"></div><div class="l2" style="width:40%"></div></div>
+          <div class="mini-sec">提醒</div>
+          <div class="mini-row"><div class="l1" style="width:44%"></div><div class="l2" style="width:34%"></div></div>
+        </div>
+        <p>一屏看全两类，不用来回切。
+          <span class="cost"><b>代价：</b>下半段像"附录"；两类行的操作按钮不同（作业有「立即执行/历史」，提醒没有），
+            同屏出现两套按钮语义 = 噪音。</span>
+        </p>
+      </div>
+
+      <div class="opt">
+        <h3>C · 混排一行一徽标</h3>
+        <div class="mini">
+          <div class="mini-row"><div class="l1"></div><div class="l2"></div><div class="l3"></div></div>
+          <div class="mini-row"><div class="l1" style="width:47%"></div><div class="l2"></div><div class="l3" style="width:40%"></div></div>
+          <div class="mini-row"><div class="l1" style="width:58%"></div><div class="l2"></div><div class="l3" style="width:50%"></div></div>
+        </div>
+        <p>按下次时间排成一条时间线，"接下来会发生什么"。
+          <span class="cost"><b>代价：</b>行模板必须按类型分叉（提醒无「执行中/历史/预演/痕迹」），
+            一行要在两种按钮集之间切换；顶部「最近将执行」摘要也失去单一含义。</span>
+        </p>
+      </div>
+
+      <div class="opt">
+        <h3>D · 分页 <span class="badge no">否决</span></h3>
+        <div class="mini">
+          <div class="mini-row"><div class="l1"></div><div class="l2"></div></div>
+          <div class="mini-row"><div class="l1" style="width:50%"></div><div class="l2"></div></div>
+          <div class="mini-pager"><u>‹</u><u class="mono">1 / 2</u><u>›</u></div>
+        </div>
+        <p>翻页看下一批。
+          <span class="cost"><b>代价：</b>与本仓 pagination 的既有语义（换时间段）冲突，用户会误读成"翻到明天"；
+            十几条量级用不上翻页，还多一次点击才能知道另一边有什么。</span>
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════ 二、推荐稿 ═══════ -->
+  <section class="sec">
+    <h2>二、推荐稿 <span class="tag">高保真 · 可点击</span></h2>
+    <div class="why">
+      沿用 <code>SchedulePage</code> 现有结构（标题 + 新建按钮 + 摘要条 + nm-card 行），
+      只在标题与列表之间<b>插入一行标签</b>，并把行模板按 <code>kind</code> 分叉。
+      标签配方照 <code>NotificationsPage</code> 的 <code>role=tablist</code>（选中态 = 凹陷），
+      计数用 <code>&lt;span class="n"&gt;</code>，与仓库已有两处先例一致（通知页「待处理/全部」、程序页「运行/版本」）。
+      <br />
+      <b>一处措辞选择：</b>导航项已叫「定时」，所以页标题从「定时任务」改回<b>「定时」</b>，
+      两个标签才叫「定时任务 / 提醒」——否则页面上「定时任务」会同时出现在标题和标签里。
+      想零改动也行：标题留「定时任务」，第一个标签改叫「自动执行」（但「自动执行」已是执行档的名，会撞）。
+    </div>
+
+    <div class="scene">
+      <div class="scene-label"><span class="pill rec">方案 A</span> 定时任务面板（现状 + 标签行）</div>
+      <div class="app">
+        <div class="app-body">
+          <div class="app-head">
+            <h3>定时</h3>
+            <span class="sp"></span>
+            <button class="app-new" id="new-btn">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+              <span id="new-label">新建定时</span>
+            </button>
+          </div>
+          <div class="tabs" role="tablist" aria-label="定时类型">
+            <button role="tab" aria-selected="true" data-panel="jobs">定时任务<span class="n">6</span></button>
+            <button role="tab" aria-selected="false" data-panel="rems">提醒<span class="n">3</span></button>
+          </div>
+
+          <div id="panel-jobs">
+            <div class="upcoming">最近将执行：<b>整理昨日进展写站会稿</b>，3 小时后</div>
+            <div class="rows">
+              <div class="row nm-card">
+                <div class="row-top">
+                  <span class="kind">定时任务</span>
+                  <span class="row-title">整理昨日进展写站会稿</span>
+                  <span class="flag ok">成功</span>
+                </div>
+                <div class="row-meta">
+                  <span class="when">每天 09:00</span>
+                  <span>下次 3 小时后</span>
+                  <span>上次 昨天 09:00</span>
+                </div>
+                <div class="row-acts">
+                  <button>立即执行</button><button>暂停</button><button>自动</button><button>修改</button><button>历史</button><button class="danger">取消定时</button>
+                </div>
+              </div>
+              <div class="row nm-card">
+                <div class="row-top">
+                  <span class="kind">定时任务</span>
+                  <span class="row-title">每周汇总失败作业并发给我</span>
+                  <span class="flag warn">已错过</span>
+                  <span class="flag bad">失败</span>
+                </div>
+                <div class="row-meta">
+                  <span class="when">每周一 10:00</span>
+                  <span>下次 2 天后</span>
+                  <span>上次 4 天前</span>
+                </div>
+                <div class="row-acts">
+                  <button>立即执行</button><button>暂停</button><button>自动</button><button>修改</button><button>历史</button><button class="danger">取消定时</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="panel-rems" class="hidden">
+            <div class="upcoming">最近会提醒：<b>站起来活动一下</b>，42 分钟后</div>
+            <div class="notice">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></svg>
+              <span class="min-w-0 flex-1">系统通知未授权，提醒到点不会响。</span>
+              <button class="notice-btn">授权</button>
+            </div>
+            <div class="rows" style="margin-top:12px">
+              <div class="row nm-card">
+                <div class="row-top">
+                  <span class="kind rem">提醒</span>
+                  <span class="row-title">站起来活动一下</span>
+                </div>
+                <div class="row-meta">
+                  <span class="when">每天 11:00</span>
+                  <span>下次 42 分钟后</span>
+                  <span class="fired">已触发 12 次</span>
+                </div>
+                <div class="row-acts">
+                  <button>暂停</button><button>修改</button><button class="danger">取消</button>
+                </div>
+              </div>
+              <div class="row nm-card">
+                <div class="row-top">
+                  <span class="kind rem">提醒</span>
+                  <span class="row-title">取快递</span>
+                </div>
+                <div class="row-meta">
+                  <span class="when">11-11 18:00</span>
+                  <span>下次 明天 18:00</span>
+                </div>
+                <div class="row-acts">
+                  <button>修改</button><button class="danger">取消</button>
+                </div>
+              </div>
+              <div class="row nm-card off">
+                <div class="row-top">
+                  <span class="kind rem">提醒</span>
+                  <span class="row-title">牙医复诊</span>
+                  <span class="flag">已暂停</span>
+                </div>
+                <div class="row-meta">
+                  <span class="when">每周五 14:30</span>
+                  <span>下次 4 天后</span>
+                  <span class="fired">已触发 3 次</span>
+                </div>
+                <div class="row-acts">
+                  <button class="on">恢复</button><button>修改</button><button class="danger">取消</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="scene">
+      <div class="scene-label">提醒面板的新建 / 修改（面板复用作业的频率四档，只换文案）</div>
+      <div class="app">
+        <div class="app-body">
+          <div class="editor nm-inset">
+            <textarea class="ta" rows="2" placeholder="提醒我什么？（200 字以内，到点发一条系统通知）"></textarea>
+            <div class="freq">
+              <input class="dt" type="text" value="2026-11-10 11:00" readonly aria-label="提醒时间" />
+              <div class="kinds">
+                <button>一次</button><button class="on">每天</button><button>每周</button><button>每月</button>
+              </div>
+            </div>
+            <div class="preview">每天 11:00，到点<b>发一条系统通知</b>提醒你（只说话，不做事）</div>
+            <div class="acts">
+              <button class="pri">确认保存</button>
+              <button>放弃</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="scene">
+      <div class="scene-label">提醒面板的空态</div>
+      <div class="app">
+        <div class="app-body">
+          <div class="empty">
+            <b>还没有提醒</b>
+            设一个到点响一声的事——到点发系统通知，不建任务卡、不执行任何内容。
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════ 三、提醒行解剖 ═══════ -->
+  <section class="sec">
+    <h2>三、提醒行的字段与动作 <span class="tag">解剖</span></h2>
+    <div class="anat">
+      <div class="row nm-card">
+        <div class="row-top">
+          <span class="kind rem">提醒</span>
+          <span class="row-title">站起来活动一下</span>
+        </div>
+        <div class="row-meta">
+          <span class="when">每天 11:00</span>
+          <span>下次 42 分钟后</span>
+          <span class="fired">已触发 12 次</span>
+        </div>
+        <div class="row-acts">
+          <button>暂停</button><button>修改</button><button class="danger">取消</button>
+        </div>
+      </div>
+      <dl class="kv">
+        <dt>标题</dt><dd>提醒内容（<code>text</code>，≤200 字）</dd>
+        <dt>频率</dt><dd><code>schedule</code>：daily: / weekly: / monthly: / at:</dd>
+        <dt>下次</dt><dd><code>remindAt</code>，Rust 端算（前端不解析 schedule）</dd>
+        <dt>已触发</dt><dd><code>firedCount</code> / <code>firedAt</code>（已落库，无出口）</dd>
+        <dt>暂停态</dt><dd><code>enabled=false</code>（<b>目前无写路径</b>，见下）</dd>
+        <dt>动作</dt><dd>暂停/恢复 · 修改 · 取消</dd>
+      </dl>
+    </div>
+    <ul class="note">
+      <li><b>一次性提醒（at:）不显示「暂停」</b>——它触发即删，没有下次可暂停；周期提醒才有。行模板要按 <code>oneShot</code> 再分一次叉，这是「两类不能混排」的具体代价。</li>
+      <li><b>提醒行没有「立即执行」</b>：提醒不做任何事，没有"试跑"这回事。也没有预演档——预演是给「到点做事」用的中间态，提醒没有事可预演。</li>
+      <li><b>没有执行历史</b>：提醒不执行，没有 run 记录；只有「已触发 N 次」这一个计数。</li>
+      <li><b>「已触发 N 次」是新出口</b>：<code>firedCount</code> 早就落库了，但没有出口——提醒行是它第一次有地方显示。</li>
+    </ul>
+  </section>
+
+  <!-- ═══════ 四、控件复用 ═══════ -->
+  <section class="sec">
+    <h2>四、控件复用 <span class="tag">0 新组件</span></h2>
+    <div class="why">
+      提醒的重复档与作业的定时档<b>逐档同构</b>——提醒的 <code>repeat</code>（none/daily/weekly/monthly）
+      与作业的 <code>schedule</code>（at:/daily:/weekly:/monthly:）是同一套定时串格式，
+      <code>ScheduleEditorPanel</code> 的四档按钮直接可用，只需换 preview 文案。
+    </div>
+    <div class="cols2">
+      <div class="panel nm-card">
+        <h4>作业 <span>到点做事</span></h4>
+        <div class="freq">
+          <div class="kinds"><button>一次</button><button>每天</button><button>每周</button><button>每月</button></div>
+          <div class="preview">每天 09:00，到点<b>自动新建任务卡</b>并交给机器人执行</div>
+        </div>
+        <p class="note" style="margin-top:10px">额外两个旋钮：<b>失败重试</b> / <b>失败自动暂停</b>——作业会失败，提醒不会。</p>
+      </div>
+      <div class="panel nm-card">
+        <h4>提醒 <span>到点说话</span></h4>
+        <div class="freq">
+          <div class="kinds"><button>一次</button><button class="on">每天</button><button>每周</button><button>每月</button></div>
+          <div class="preview">每天 11:00，到点<b>发一条系统通知</b>提醒你（只说话，不做事）</div>
+        </div>
+        <p class="note" style="margin-top:10px">去掉两个失败旋钮——提醒没有执行，就没有失败。preview 是唯一必须改的文案。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════ 五、落地要点 ═══════ -->
+  <section class="sec">
+    <h2>五、落地要点 <span class="tag">实现清单</span></h2>
+    <ul class="lists">
+      <li><b>后端补 enabled 写路径</b>：新增 <span class="cmd">reminder_set_enabled</span>——<code>reminders.enabled</code> 列已存在、<code>load_due_reminders</code> 已按它过滤、<code>list_reminders</code> 已渲染「已暂停」，但<b>没有任何写路径能把它置 false</b>（插入恒为 <code>None</code>）。这才是真洞：周期提醒今天无法暂停。</li>
+      <li><b>概览命令追加提醒条目</b>：<span class="cmd">schedule_overview</span> 现在只回 <code>kind="job"</code>；追加 <code>kind="reminder"</code>（<code>load_reminders</code> 已存在，一行查询）。</li>
+      <li><b>kind 分支沿用既有写法</b>：前端 <code>ScheduleEntry.kind</code> 现为字面量 <code>"job"</code>，放宽成 <code>"job" | "reminder"</code>；行模板按 <code>kind</code> 分支（页面里已有 <code>e.kind === "job"</code> 的分叉先例）。</li>
+      <li><b>提醒的编辑/新建</b>：复用 <code>ScheduleEditorPanel</code>，新面板只换 preview 文案与去掉两个失败旋钮；后端补 <span class="cmd">reminder_update</span>（改内容/时间）与 <span class="cmd">reminder_create</span>（前端建提醒）——目前提醒只有工具能建。</li>
+      <li><b>不新建导航项</b>：不触发 SPEC 新功能条目 + 验收卡 + 追踪矩阵的全套改动。</li>
+      <li><b>顺带</b>：<code>list_reminders</code> 工具仍在（聊天里问也能答），两者共用同一张表，不构成两个真相源。</li>
+    </ul>
+  </section>
+</div>
+
+<script>
+  // 主题切换（沿用同目录 mock 的 .seg 配方）
+  const themeSeg = document.getElementById('theme');
+  themeSeg.addEventListener('click', (e) => {
+    const b = e.target.closest('b');
+    if (!b) return;
+    themeSeg.querySelectorAll('b').forEach((x) => x.classList.toggle('on', x === b));
+    document.documentElement.classList.toggle('dark', b.dataset.mode === 'dark');
+  });
+
+  // 高保真稿里的标签切换
+  const tabs = document.querySelectorAll('.tabs [role="tab"]');
+  const newLabel = document.getElementById('new-label');
+  tabs.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      tabs.forEach((t) => t.setAttribute('aria-selected', String(t === btn)));
+      const p = btn.dataset.panel;
+      document.getElementById('panel-jobs').classList.toggle('hidden', p !== 'jobs');
+      document.getElementById('panel-rems').classList.toggle('hidden', p !== 'rems');
+      // 新建按钮文案随 tab（作业=定时，提醒=提醒）
+      newLabel.textContent = p === 'jobs' ? '新建定时' : '新建提醒';
+    });
+  });
+</script>
+</body>
+</html>
