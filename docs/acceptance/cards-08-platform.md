@@ -1,6 +1,6 @@
 # ACC-P · 数据、集成与平台（L2 实机卡）
 
-> 覆盖 `SPEC.md`「6. 数据、集成与平台」9 条功能（6-106 ~ 6-114），对应矩阵 `docs/acceptance/matrix.csv` 的 D6 域。
+> 覆盖 `SPEC.md`「6. 数据、集成与平台」22 条功能（6-106 ~ 6-127），对应矩阵 `docs/acceptance/matrix.csv` 的 D6 域。
 > 判据写法与证据规范见 `docs/ACCEPTANCE-PLAN-2026-10-30.md`；审计事件名取自 `docs/acceptance/event-names.md` 白名单。
 > 数据目录（macOS）：`~/Library/Application Support/com.renshi.wmessage/`（恒定落点，不随 exe 走，机制见 ACC-P-03）。下文的 `<data_dir>` 指该目录。
 > 日志检索统一写法：`grep -F "<事件名>" "<data_dir>/bot.log" | tail -20`。
@@ -389,3 +389,31 @@
 - **证据**：cargo 输出 + 实机录屏（浏览器授权往返）
 - **失败处置**：先查授权服务器是否发布 /.well-known 元数据（无则报人话错误）；DCR 失败 → 配置 oauthClientId 手动档；refresh 401 → token 已清，重新登录。
 - **缺口补验**：实机全流程（浏览器授权 → 回调 → token → Bearer 调用 → 401 刷新重连）未验；client_secret 型 IdP 不支持（偏离 12）；Windows 回调端口防火墙提示未验。
+
+### ACC-P-22 · 提醒接入定时模块（顶部标签切换）
+
+- **SPEC**：6-127
+- **层级**：L1+L2（自动档 `src-tauri/src/db/reminders.rs` 4 例 + `src-tauri/src/bot_scheduler/sched_tests.rs` 3 例 + `src/components/SchedulePage/SchedulePage.test.tsx` 9 例）+ 实机观察
+- **历史卡**：—（方案与设计小样见 `docs/SCHEDULE-REMINDER-GROUPING-DESIGN-2026-11-10.md`）
+- **前置**：应用已启动；系统通知已授权（macOS 未授权时提醒到点静默失败——本卡验条目行为，不验通知送达）
+- **步骤**：
+  1. 打开定时模块 → 顶部两组标签「定时任务 N」/「提醒 M」各带计数徽标；默认停在「定时任务」。
+  2. 建一个每日提醒（内容「喝水」、daily:09:30）→ 切到「提醒」标签 → 列表出现该行（「提醒」徽标 + 下次时间 + 暂停/修改/取消三钮）。
+  3. 点「暂停」→ 行变灰 + 出现「已暂停」标签；查库 `SELECT enabled, schedule, remind_at FROM reminders WHERE id='…';` → enabled=0，而 schedule 与 remind_at 原样保留（定点 UPDATE，不带 RMW）。
+  4. 点「恢复」→ 灰态解除；点「修改」改内容与频率 → 保存后内容与下次时间都变（改规则要重算下次触发时刻）。
+  5. 取消两步确认：点「取消提醒」→ 按钮变「确认取消？」，3 秒内不再点则自动复位；第二次点击才真删（行消失、计数减一）。
+  6. 建一个 `at:+2m` 的一次性提醒 → 该行**没有**「暂停」钮（触发即删、没有下次可暂停）；到点后行自动消失、计数减一。
+  7. 周期提醒到点触发 → 行还在、「已触发 N 次」计数上涨；**不手动刷新页面**也能看到（提醒触发后广播 `reminders-changed` → 前端重拉）。
+  8. 切到「定时任务」标签 → 作业列表不受提醒操作影响；「立即执行 / 预演 / 历史 / 痕迹 / 会话」只在任务 tab 有，提醒 tab 没有。
+  9. 审计：`grep -F "reminder." "<data_dir>/bot.log" | tail -20` → 建/改/删/暂停各有对应事件行。
+- **判据**：
+  1. 【可观测】步骤 1-2：两标签各带计数（**含已暂停项**）；默认任务 tab；提醒 tab 空态文案是「还没有提醒」、新建钮文案是「新建提醒」；切标签时新建面板与行内编辑一并收起。
+  2. 【可核对】步骤 3：暂停只翻 enabled 一列——`grep -n "fn set_reminder_enabled" -A 12 src-tauri/src/db/reminders.rs` 命中单列定点 UPDATE；暂停后不再进入待触发清单（`grep -n "enabled IS NOT 0" src-tauri/src/db/reminders.rs` 命中）。
+  3. 【可核对】步骤 4：编辑带 RMW 基线——快照后行被调度器推进过则写回被拒（`grep -n "fn upsert_reminder" -A 20 src-tauri/src/db/reminders.rs` 命中 expected_updated_at 比对）。
+  4. 【可核对】步骤 6：一次性提醒无「暂停」钮（`grep -n "oneShot" src/components/SchedulePage/ReminderRow.tsx` 命中）。
+  5. 【可核对】步骤 9：bot.log 有 `reminder.create` / `reminder.update` / `reminder.delete` / `reminder.set_enabled` 四类事件（`grep -n "reminder.create" src-tauri/src/db/reminders.rs` 命中）。
+  6. 【可核对】线协议为判别联合——`schedule_overview` 的条目按 `kind` 分两套字段集（`grep -n "enum ScheduleEntry" -A 8 src-tauri/src/bot_scheduler.rs` 命中 Job/Reminder 两支）。
+  7. 【可核对】提醒行的下次时间取持久化的 remind_at，不在前端解析 schedule（`grep -n "fn next_fire_at" -A 4 src-tauri/src/bot_scheduler.rs` 命中后端单源计算）。
+- **证据**：两个标签的截图（含计数）+ 提醒行截图（灰态/已暂停/编辑面板）+ reminders 表查询输出 + bot.log 事件行
+- **失败处置**：先分清「应用坏了」还是「卡片过期」——`grep -n "reminder_set_enabled" src-tauri/src/lib.rs` 命中 = 命令注册在；不命中 = 卡片过期
+- **缺口补验**：实机全流程未跑（标签切换、计数、增删改、到点自动刷新）；系统通知未授权时的静默失败未验；提醒到点实际响铃未验
