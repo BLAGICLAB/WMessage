@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SchedulePage } from "./SchedulePage";
-import type { ScheduleEntry } from "../../types";
+import type { JobEntry, ReminderEntry, ScheduleEntry } from "../../types";
 
 // 返回值类型按命令而异，用 unknown 宽松签名（mockImplementation 分发各命令桩）
 const invokeMock = vi.hoisted(() =>
@@ -16,7 +16,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn(async () => {}),
 }));
 
-const jobEntry: ScheduleEntry = {
+const jobEntry: JobEntry = {
   kind: "job",
   targetId: "j1",
   title: "整理昨日进展写站会稿",
@@ -30,6 +30,19 @@ const jobEntry: ScheduleEntry = {
   lastError: null,
   retryMax: 0,
   pauseOnFailure: false,
+};
+
+/** 提醒条目：周期提醒（每天 11:00），已触发 12 次 */
+const remEntry: ReminderEntry = {
+  kind: "reminder",
+  targetId: "r1",
+  title: "站起来活动一下",
+  schedule: "daily:11:00",
+  schedLast: Date.now() - 3_600_000,
+  nextRunAt: Date.now() + 40 * 60_000,
+  enabled: true,
+  firedCount: 12,
+  oneShot: false,
 };
 
 /** invoke 默认分发：overview 给入参列表，其余 null */
@@ -311,5 +324,159 @@ describe("SchedulePage 失败策略配置", () => {
         pauseOnFailure: true,
       }),
     );
+  });
+});
+
+describe("SchedulePage 提醒分组", () => {
+  it("默认停在定时任务 tab；两个标签各带计数", async () => {
+    stubInvoke([jobEntry, remEntry]);
+    render(<SchedulePage onOpenChat={noop} />);
+    expect(await screen.findByTestId("schedule-row-job:j1")).toBeInTheDocument();
+    // 提醒不在当前 tab：默认看不见（这是标签切换的语义，不是漏渲染）
+    expect(screen.queryByTestId("schedule-row-reminder:r1")).not.toBeInTheDocument();
+    const jobsTab = screen.getByRole("tab", { name: /定时任务/ });
+    expect(jobsTab).toHaveAttribute("aria-selected", "true");
+    expect(jobsTab).toHaveTextContent("1");
+    expect(screen.getByRole("tab", { name: /提醒/ })).toHaveTextContent("1");
+  });
+
+  it("切到提醒 tab → 显示提醒行；摘要条换成「最近会提醒」", async () => {
+    const user = userEvent.setup();
+    stubInvoke([jobEntry, remEntry]);
+    render(<SchedulePage onOpenChat={noop} />);
+    await user.click(screen.getByRole("tab", { name: /提醒/ }));
+    const row = await screen.findByTestId("schedule-row-reminder:r1");
+    expect(within(row).getByText("站起来活动一下")).toBeInTheDocument();
+    expect(within(row).getByText("每天 11:00")).toBeInTheDocument();
+    expect(within(row).getByText(/已触发 12 次/)).toBeInTheDocument();
+    // 摘要条只取当前 tab 的条目：提醒 tab 下不说「最近将执行」（提醒不执行）
+    expect(screen.getByText(/最近会提醒：/)).toBeInTheDocument();
+    expect(screen.queryByText(/最近将执行：/)).not.toBeInTheDocument();
+  });
+
+  it("提醒行没有作业专属动作（立即执行/预演/历史）", async () => {
+    const user = userEvent.setup();
+    stubInvoke([remEntry]);
+    render(<SchedulePage onOpenChat={noop} />);
+    await user.click(screen.getByRole("tab", { name: /提醒/ }));
+    const row = await screen.findByTestId("schedule-row-reminder:r1");
+    expect(within(row).queryByText("立即执行")).not.toBeInTheDocument();
+    expect(within(row).queryByText("历史")).not.toBeInTheDocument();
+    expect(within(row).queryByText("预演")).not.toBeInTheDocument();
+    // 只有提醒自己的三个动作
+    expect(within(row).getByText("暂停")).toBeInTheDocument();
+    expect(within(row).getByText("修改")).toBeInTheDocument();
+    expect(within(row).getByText("取消提醒")).toBeInTheDocument();
+  });
+
+  it("一次性提醒不显示「暂停」（触发即删，没有下次可停）", async () => {
+    const user = userEvent.setup();
+    stubInvoke([{ ...remEntry, oneShot: true, firedCount: null }]);
+    render(<SchedulePage onOpenChat={noop} />);
+    await user.click(screen.getByRole("tab", { name: /提醒/ }));
+    const row = await screen.findByTestId("schedule-row-reminder:r1");
+    expect(within(row).queryByText("暂停")).not.toBeInTheDocument();
+    expect(within(row).getByText("修改")).toBeInTheDocument();
+  });
+
+  it("暂停提醒 → reminder_set_enabled(id, enabled=false)", async () => {
+    const user = userEvent.setup();
+    stubInvoke([remEntry]);
+    render(<SchedulePage onOpenChat={noop} />);
+    await user.click(screen.getByRole("tab", { name: /提醒/ }));
+    const row = await screen.findByTestId("schedule-row-reminder:r1");
+    await user.click(within(row).getByText("暂停"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("reminder_set_enabled", {
+        id: "r1",
+        enabled: false,
+      }),
+    );
+  });
+
+  it("取消提醒：两步确认 → reminder_delete(id)", async () => {
+    const user = userEvent.setup();
+    // reminder_delete 回 true（真的删掉了）；回 false 是「行不存在」的另一条路径
+    invokeMock.mockImplementation(async (cmd: string) => {
+      switch (cmd) {
+        case "schedule_overview":
+          return [remEntry];
+        case "reminder_delete":
+          return true;
+        default:
+          return null;
+      }
+    });
+    render(<SchedulePage onOpenChat={noop} />);
+    await user.click(screen.getByRole("tab", { name: /提醒/ }));
+    const row = await screen.findByTestId("schedule-row-reminder:r1");
+    await user.click(within(row).getByText("取消提醒"));
+    // 第一次点击只 arm，不落库
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "reminder_delete",
+      expect.anything(),
+    );
+    await user.click(within(row).getByText("确认取消？"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("reminder_delete", { id: "r1" }),
+    );
+  });
+
+  it("新建提醒 → reminder_create(text, schedule)", async () => {
+    const user = userEvent.setup();
+    stubInvoke([]);
+    render(<SchedulePage onOpenChat={noop} />);
+    await user.click(screen.getByRole("tab", { name: /提醒/ }));
+    // 顶栏与空态各有一个「新建提醒」
+    await user.click((await screen.findAllByText("新建提醒"))[0]);
+    await user.type(screen.getByLabelText("提醒内容"), "站起来活动一下");
+    await user.click(screen.getByText("每天"));
+    // 预览文案说清到点语义：只说话，不做事
+    expect(
+      screen.getByText(/每天 09:00，到点发一条系统通知提醒你（只说话，不做事）/),
+    ).toBeInTheDocument();
+    // 提醒没有失败策略（不执行就没有失败）
+    expect(screen.queryByLabelText("失败重试次数")).not.toBeInTheDocument();
+    await user.click(screen.getByText("确认保存"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("reminder_create", {
+        text: "站起来活动一下",
+        schedule: "daily:09:00",
+      }),
+    );
+  });
+
+  it("修改提醒 → reminder_update(id, text, schedule)", async () => {
+    const user = userEvent.setup();
+    stubInvoke([remEntry]);
+    render(<SchedulePage onOpenChat={noop} />);
+    await user.click(screen.getByRole("tab", { name: /提醒/ }));
+    const row = await screen.findByTestId("schedule-row-reminder:r1");
+    await user.click(within(row).getByText("修改"));
+    const input = within(row).getByLabelText("提醒内容");
+    expect(input).toHaveValue("站起来活动一下");
+    await user.clear(input);
+    await user.type(input, "改成喝水");
+    // 编辑态预填原规则，不重选频率也能提交
+    await user.click(within(row).getByText("确认修改"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("reminder_update", {
+        id: "r1",
+        text: "改成喝水",
+        schedule: "daily:11:00",
+      }),
+    );
+  });
+
+  it("两个 tab 的空态文案不同（提醒不做事，得说清）", async () => {
+    const user = userEvent.setup();
+    stubInvoke([]);
+    render(<SchedulePage onOpenChat={noop} />);
+    expect(await screen.findByText("暂无定时任务")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /提醒/ }));
+    expect(await screen.findByText("还没有提醒")).toBeInTheDocument();
+    expect(
+      screen.getByText(/到点发系统通知，不建任务卡、不执行任何内容/),
+    ).toBeInTheDocument();
   });
 });

@@ -1,29 +1,37 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
-import { AlarmClock, Plus } from "lucide-react";
+import { AlarmClock, Bell, Plus } from "lucide-react";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { formatMsShort, formatSchedule, relativeTime, untilTime } from "../../format";
 import { useRaceSeq } from "../../lib/useRaceSeq";
 import { EmptyState } from "../EmptyState";
 import { TracePanel } from "../TracePanel";
-import { ScheduleEditorPanel } from "./ScheduleEditorPanel";
-import type { ScheduleEntry, ScheduledJobRun } from "../../types";
+import { ScheduleEntryEditor } from "./ScheduleEntryEditor";
+import { ReminderRow } from "./ReminderRow";
+import type {
+  JobEntry,
+  ReminderEntry,
+  ScheduleEntry,
+  ScheduledJobRun,
+} from "../../types";
 
 /**
- * 定时任务模块：列表 = 状态面板（不是设置表单的集合）。
+ * 定时模块：列表 = 状态面板（不是设置表单的集合）。
  * 数据单源：schedule_overview（nextRunAt/missed 由 Rust 端计算——不在前端重写
  * schedule 解析器，weekly:NaN 双端解析漂移是历史事故）。
- * 定时作业（kind="job"）：用户写「要做什么」，到点后端新建任务卡并交给机器人执行
- * （scheduled_job_create/update/delete/fire 四命令，作业即配置，取消 = 删作业）。
+ *
+ * 两类条目用标签切换分开看（不用分页：分页在本仓的语义是「换时间段」，作业与
+ * 提醒之间没有时间关系）：
+ * - 定时任务（kind="job"）：用户写「要做什么」，到点后端新建任务卡并交给机器人执行
+ *   （scheduled_job_create/update/delete/fire 四命令，作业即配置，取消 = 删作业）。
+ * - 提醒（kind="reminder"）：到点只发一条系统通知，不建卡不执行
+ *   （reminder_create/update/delete/set_enabled 四命令）。
  */
 
 /** 行/目标的稳定键（带 kind 前缀，与后端条目键一致） */
 const keyOf = (kind: ScheduleEntry["kind"], id: string) => `${kind}:${id}`;
-
-/** 作业内容上限（与后端 scheduled_job_create 校验一致；超限后端会 reject，前端先拦） */
-const JOB_CONTENT_MAX = 500;
 
 export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
   const [entries, setEntries] = useState<ScheduleEntry[]>([]);
@@ -44,6 +52,9 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
   const [busyKeys, setBusyKeys] = useState<Set<string>>(new Set());
   /** 新建流程展开态（写内容 → 面板 → 预览确认） */
   const [creating, setCreating] = useState<boolean>(false);
+  /** 分组标签：定时任务 / 提醒。默认作业——作业会自己做事，失败与错过需要人看；
+   *  提醒只是响一声。标签不记忆：每次进来都回到作业 tab，作业的失败不会被漏看。 */
+  const [tab, setTab] = useState<"jobs" | "reminders">("jobs");
   //  执行透明：sched-status 事件驱动的「执行中」作业（started 入集，done/failed 出集）
   const [liveJobIds, setLiveJobIds] = useState<Set<string>>(new Set());
   /** job id → 最近一次执行会话（sched-status 携带；「会话」按钮跳聊天页围观） */
@@ -86,6 +97,11 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
   useTauriListen("tasks-changed", () => {
     void reload();
   });
+  // 提醒到点触发/删除 → reminders-changed 广播。提醒是唯一在用户视线外自己变化的
+  // 一类条目（一次性提醒触发后行会消失、周期提醒触发次数会涨），不订阅就停在旧快照上。
+  useTauriListen("reminders-changed", () => {
+    void reload();
+  });
 
   //  执行透明：sched-status 实时驱动「执行中」徽标 + 会话跳转锚点；
   // done/failed 时刷新列表（lastStatus/sched_last 已在任务行更新）
@@ -121,7 +137,7 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
 
   // 行操作
 
-  const runNow = async (e: ScheduleEntry) => {
+  const runNow = async (e: JobEntry) => {
     const key = keyOf(e.kind, e.targetId);
     if (busyKeys.has(key)) return;
     setBusyKeys((prev) => new Set(prev).add(key));
@@ -139,7 +155,7 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
     }
   };
 
-  const toggleEnabled = async (e: ScheduleEntry) => {
+  const toggleEnabled = async (e: JobEntry) => {
     try {
       await invoke("schedule_set_enabled", {
         kind: e.kind,
@@ -153,7 +169,7 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
   };
 
   /** 执行档切换：auto ↔ preview（预演 = 到点只建提案卡+通知，确认后「立即执行」真跑） */
-  const toggleMode = async (e: ScheduleEntry) => {
+  const toggleMode = async (e: JobEntry) => {
     const next = e.mode === "preview" ? "auto" : "preview";
     try {
       await invoke("scheduled_job_update", { id: e.targetId, mode: next });
@@ -189,7 +205,7 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
   };
 
   /** 取消定时：两步确认，3s 未确认自动复位。作业 = 删作业 */
-  const cancelSchedule = (e: ScheduleEntry) => {
+  const cancelSchedule = (e: JobEntry) => {
     const key = keyOf(e.kind, e.targetId);
     if (cancelArmed !== key) {
       setCancelArmed(key);
@@ -246,16 +262,37 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
     }
   };
 
+  /** 新建提醒（落库后重拉列表） */
+  const saveReminder = async (content: string, schedule: string) => {
+    try {
+      await invoke("reminder_create", { text: content, schedule });
+      setCreating(false);
+      void reload();
+    } catch (e) {
+      handleCommandError(e, "新建提醒");
+    }
+  };
+
+  /** 切标签：收起新建面板与行内编辑——面板形态随标签变，半途切会把作业内容写成提醒 */
+  const switchTab = (k: "jobs" | "reminders") => {
+    setTab(k);
+    setCreating(false);
+    setEditKey(null);
+  };
+
   // 渲染
 
-  const jobEntries = entries.filter((e) => e.kind === "job");
-  // 即将执行摘要：启用项按 nextRunAt 升序取第一条
-  const upcoming = entries
+  const jobEntries = entries.filter((e): e is JobEntry => e.kind === "job");
+  const remEntries = entries.filter((e): e is ReminderEntry => e.kind === "reminder");
+  // 摘要条只取当前标签的条目：作业「最近将执行」、提醒「最近会提醒」——
+  // 混在一起会出现「最近将执行：站起来活动一下」，文案撒谎（提醒不执行）。
+  const shownEntries = tab === "jobs" ? jobEntries : remEntries;
+  const upcoming = shownEntries
     .filter((e) => e.enabled && e.nextRunAt !== null)
     .sort((a, b) => a.nextRunAt! - b.nextRunAt!)[0];
 
-  const renderEntry = (e: ScheduleEntry) => {
-    const key = keyOf(e.kind, e.targetId);
+  const renderJobRow = (e: JobEntry) => {
+    const key = keyOf("job", e.targetId);
     const busy = busyKeys.has(key);
     return (
       <div
@@ -281,7 +318,7 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
             </span>
           )}
           {/* 作业执行中（sched-status started → done/failed 移除） */}
-          {e.kind === "job" && liveJobIds.has(e.targetId) && (
+          {liveJobIds.has(e.targetId) && (
             <span className="nm-inset shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--brand)]">
               执行中…
             </span>
@@ -307,12 +344,12 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
           )}
           {/* 最近执行结果徽标（仅 job 有此字段；null=从未跑不显示）：
               静默失败是调度器最大敌人，结果必须在列表一眼可见 */}
-          {e.kind === "job" && e.lastStatus === "ok" && (
+          {e.lastStatus === "ok" && (
             <span className="nm-inset px-1.5 py-0.5 text-[10px] text-[var(--success)]">
               成功
             </span>
           )}
-          {e.kind === "job" && e.lastStatus === "fail" && (
+          {e.lastStatus === "fail" && (
             <span
               className="nm-inset px-1.5 py-0.5 text-[10px] text-[var(--danger)]"
               title={e.lastError ?? undefined}
@@ -339,7 +376,7 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
           >
             {e.enabled ? "暂停" : "恢复"}
           </button>
-          {e.kind === "job" && (
+          {
             <button
               className={`nm-btn px-2 py-0.5 text-[11px] leading-none ${
                 e.mode === "preview"
@@ -355,21 +392,21 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
             >
               {e.mode === "preview" ? "预演" : "自动"}
             </button>
-          )}
+          }
           <button
             className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)]"
             onClick={() => setEditKey(editKey === key ? null : key)}
           >
             修改
           </button>
-          {e.kind === "job" && (
+          {
             <button
               className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)]"
               onClick={() => void toggleHistory(e.targetId)}
             >
               {historyOpenId === e.targetId ? "收起历史" : "历史"}
             </button>
-          )}
+          }
           <button
             className={`nm-btn px-2 py-0.5 text-[11px] leading-none ${
               cancelArmed === key
@@ -390,19 +427,20 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
         {editKey === key && (
           <div className="mt-2">
             {/* 作业编辑：内容 + 频率 + 重试配置都可改，一次提交 */}
-            <JobEditor
+            <ScheduleEntryEditor
+              variant="job"
               initialContent={e.title}
               initialSchedule={e.schedule}
               initialRetryMax={e.retryMax}
               initialPauseOnFailure={e.pauseOnFailure}
               submitLabel="确认修改"
-              onSubmit={(content, schedule, retryMax, pauseOnFailure) =>
+              onSubmit={(v) =>
                 void saveJob(
                   e.targetId,
-                  content,
-                  schedule,
-                  retryMax,
-                  pauseOnFailure,
+                  v.content,
+                  v.schedule,
+                  v.retryMax ?? 0,
+                  v.pauseOnFailure ?? false,
                 )
               }
               onCancel={() => setEditKey(null)}
@@ -410,7 +448,7 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
           </div>
         )}
         {/* 执行历史（XXL-JOB 调度日志式排障视角）：倒序，最新在前 */}
-        {e.kind === "job" && historyOpenId === e.targetId && (
+        {historyOpenId === e.targetId && (
           <div className="mt-2 nm-inset rounded-lg p-2">
             <p className="text-[10px] text-[var(--t5)]">
               执行历史（最近 20 条）
@@ -480,7 +518,7 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* 顶栏：标题 + 新建入口 */}
+      {/* 顶栏：标题 + 新建入口（新建按钮文案随标签变） */}
       <div className="flex shrink-0 flex-wrap items-center gap-2 pb-1">
         <h2 className="text-base font-semibold text-[var(--t1)]">定时任务</h2>
         <div className="flex-1" />
@@ -488,14 +526,47 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
           className="flex h-8 items-center gap-1.5 whitespace-nowrap rounded-[var(--r-sm)] px-3 text-sm text-[var(--t3)] nm-outset"
           onClick={startCreate}
         >
-          <Plus size={14} aria-hidden /> 新建定时
+          <Plus size={14} aria-hidden /> {tab === "jobs" ? "新建定时" : "新建提醒"}
         </button>
       </div>
 
-      {/* 即将执行摘要条：只高亮最近一条（可见性 = 对自动执行信任的来源） */}
+      {/* 分组标签：两类条目语义互斥（做事 vs 说话），各带一套操作 → 分开看。
+          不用分页：分页在本仓的语义是「换时间段」，两类之间没有时间关系。
+          标签带计数——提醒不在当前屏时，计数是「别忘了它」的唯一提示。 */}
+      <div
+        role="tablist"
+        aria-label="定时类型"
+        className="flex items-center gap-1 border-b border-[var(--edge)] pb-2"
+      >
+        {(
+          [
+            ["jobs", "定时任务", jobEntries.length],
+            ["reminders", "提醒", remEntries.length],
+          ] as const
+        ).map(([key, label, n]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={tab === key}
+            onClick={() => switchTab(key)}
+            className={`rounded-[var(--r-sm)] px-2.5 py-1 text-xs transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
+              tab === key
+                ? "nm-inset text-[var(--t1)]"
+                : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+            }`}
+          >
+            {label}
+            <span className="num ml-1 text-[10px] text-[var(--t5)]">{n}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* 摘要条：只高亮当前标签最近的一条（可见性 = 对自动执行信任的来源） */}
       {upcoming && (
         <p className="nm-inset rounded-lg px-3 py-2 text-xs text-[var(--t3)]">
-          最近将执行：<span className="text-[var(--t1)]">{upcoming.title}</span>
+          {tab === "jobs" ? "最近将执行：" : "最近会提醒："}
+          <span className="text-[var(--t1)]">{upcoming.title}</span>
           ，{untilTime(upcoming.nextRunAt!)}
         </p>
       )}
@@ -503,12 +574,23 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
       {/* 新建流程：写内容 → 设频率 → 预览确认 */}
       {creating && (
         <div className="nm-card p-3">
-          <p className="text-xs font-medium text-[var(--t2)]">新建定时</p>
+          <p className="text-xs font-medium text-[var(--t2)]">
+            {tab === "jobs" ? "新建定时" : "新建提醒"}
+          </p>
           <div className="mt-2">
-            <JobEditor
+            <ScheduleEntryEditor
+              variant={tab === "jobs" ? "job" : "reminder"}
               submitLabel="确认保存"
-              onSubmit={(content, schedule, retryMax, pauseOnFailure) =>
-                void saveJob(null, content, schedule, retryMax, pauseOnFailure)
+              onSubmit={(v) =>
+                tab === "jobs"
+                  ? void saveJob(
+                      null,
+                      v.content,
+                      v.schedule,
+                      v.retryMax ?? 0,
+                      v.pauseOnFailure ?? false,
+                    )
+                  : void saveReminder(v.content, v.schedule)
               }
               onCancel={() => setCreating(false)}
             />
@@ -531,21 +613,41 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
         </div>
       )}
 
-      {loaded && !loadError && entries.length === 0 && !creating ? (
-        <EmptyState
-          icon={<AlarmClock size={18} aria-hidden />}
-          title="暂无定时任务"
-          description="写下要做什么，到点自动新建任务卡执行。"
-          action={{ label: "新建定时", onClick: startCreate }}
-        />
-      ) : (
+      {loaded && !loadError && !creating && shownEntries.length === 0 ? (
+        tab === "jobs" ? (
+          <EmptyState
+            icon={<AlarmClock size={18} aria-hidden />}
+            title="暂无定时任务"
+            description="写下要做什么，到点自动新建任务卡执行。"
+            action={{ label: "新建定时", onClick: startCreate }}
+          />
+        ) : (
+          <EmptyState
+            icon={<Bell size={18} aria-hidden />}
+            title="还没有提醒"
+            description="设一个到点响一声的事——到点发系统通知，不建任务卡、不执行任何内容。"
+            action={{ label: "新建提醒", onClick: startCreate }}
+          />
+        )
+      ) : tab === "jobs" ? (
         jobEntries.length > 0 && (
           <section>
-            <p className="mb-2 text-xs font-medium text-[var(--t5)]">
-              定时任务
-            </p>
+            <p className="mb-2 text-xs font-medium text-[var(--t5)]">定时任务</p>
+            <div className="flex flex-col gap-2">{jobEntries.map(renderJobRow)}</div>
+          </section>
+        )
+      ) : (
+        remEntries.length > 0 && (
+          <section>
+            <p className="mb-2 text-xs font-medium text-[var(--t5)]">提醒</p>
             <div className="flex flex-col gap-2">
-              {jobEntries.map(renderEntry)}
+              {remEntries.map((r) => (
+                <ReminderRow
+                  key={r.targetId}
+                  entry={r}
+                  onChanged={() => void reload()}
+                />
+              ))}
             </div>
           </section>
         )
@@ -553,127 +655,6 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
       {/* 执行痕迹弹层（按本次执行新建的任务卡查 trace；TracePanel 自带 portal） */}
       {traceCardId && (
         <TracePanel taskId={traceCardId} onClose={() => setTraceCardId(null)} />
-      )}
-    </div>
-  );
-}
-
-/**
- * 定时作业编辑器（新建/行内修改共用）：内容输入 + 频率面板 + 重试配置 + 预览确认。
- * 到点语义：后端按内容新建任务卡并交给机器人执行——预览文案必须说清这一点。
- */
-function JobEditor({
-  initialContent = "",
-  initialSchedule = null,
-  initialRetryMax = 0,
-  initialPauseOnFailure = false,
-  submitLabel,
-  onSubmit,
-  onCancel,
-}: {
-  /** 编辑时回填已有内容；新建为空 */
-  initialContent?: string;
-  /** 编辑时回填已有规则；新建为 null（必须重新选频率才能提交） */
-  initialSchedule?: string | null;
-  /** 编辑时回填重试上限；新建默认 0（不重试） */
-  initialRetryMax?: number;
-  /** 编辑时回填自动暂停开关；新建默认关 */
-  initialPauseOnFailure?: boolean;
-  submitLabel: string;
-  onSubmit: (
-    content: string,
-    schedule: string,
-    retryMax: number,
-    pauseOnFailure: boolean,
-  ) => void;
-  onCancel: () => void;
-}) {
-  const [content, setContent] = useState(initialContent);
-  // 编辑态预填原规则：只改内容不换频率也能直接提交
-  const [draftSchedule, setDraftSchedule] = useState<string | null>(
-    initialSchedule,
-  );
-  const [retryMax, setRetryMax] = useState(initialRetryMax);
-  const [pauseOnFailure, setPauseOnFailure] = useState(initialPauseOnFailure);
-  const canSubmit = content.trim().length > 0 && draftSchedule !== null;
-
-  return (
-    <div className="space-y-2">
-      <textarea
-        aria-label="定时任务内容"
-        className="nm-inset w-full resize-none rounded-lg px-2 py-1.5 text-xs text-[var(--t2)] outline-none placeholder:text-[var(--t5)]"
-        rows={2}
-        maxLength={JOB_CONTENT_MAX}
-        placeholder={`要做什么？（${JOB_CONTENT_MAX} 字以内，到点自动新建任务卡交给机器人）`}
-        value={content}
-        onChange={(e) => setContent(e.target.value)}
-      />
-      <ScheduleEditorPanel
-        initial={initialSchedule}
-        onApply={setDraftSchedule}
-        onCancel={onCancel}
-      />
-      {/* 失败策略（Temporal pauseOnFailure 式）：重试与自动暂停两个独立旋钮 */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-        <label className="flex items-center gap-1.5 text-[11px] text-[var(--t4)]">
-          失败重试
-          <select
-            aria-label="失败重试次数"
-            className="h-7 rounded-[var(--r-sm)] bg-transparent px-1.5 text-xs text-[var(--t2)] nm-outset"
-            value={retryMax}
-            onChange={(e) => setRetryMax(Number(e.target.value))}
-          >
-            <option value={0}>不重试</option>
-            <option value={1}>1 次</option>
-            <option value={2}>2 次</option>
-            <option value={3}>3 次</option>
-          </select>
-        </label>
-        <label className="flex items-center gap-1.5 text-[11px] text-[var(--t4)] cursor-pointer">
-          <input
-            type="checkbox"
-            aria-label="失败自动暂停"
-            className="w-3.5 h-3.5 accent-[var(--brand)]"
-            checked={pauseOnFailure}
-            onChange={(e) => setPauseOnFailure(e.target.checked)}
-          />
-          失败自动暂停
-        </label>
-        <p className="w-full text-[10px] text-[var(--t5)]">
-          失败后 5 分钟自动重试；重试用尽仍失败时
-          {pauseOnFailure ? "暂停此任务并通知" : "保持原节奏"}
-        </p>
-      </div>
-      {/* 保存前预览：人话总结先确认再落库 */}
-      {draftSchedule && (
-        <div className="space-y-2">
-          <p className="nm-inset rounded-lg px-3 py-2 text-xs text-[var(--t3)]">
-            {formatSchedule(draftSchedule)}，到点自动新建任务卡并交给机器人执行
-          </p>
-          <div className="flex gap-2">
-            <button
-              className="nm-btn px-3 py-1 text-xs text-[var(--t1)] disabled:opacity-50"
-              disabled={!canSubmit}
-              title={content.trim() ? undefined : "先填写要做什么"}
-              onClick={() =>
-                onSubmit(
-                  content.trim(),
-                  draftSchedule,
-                  retryMax,
-                  pauseOnFailure,
-                )
-              }
-            >
-              {submitLabel}
-            </button>
-            <button
-              className="nm-btn px-3 py-1 text-xs text-[var(--t4)]"
-              onClick={onCancel}
-            >
-              放弃
-            </button>
-          </div>
-        </div>
       )}
     </div>
   );

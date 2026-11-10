@@ -145,26 +145,29 @@ export interface PeopleEntry {
   isSelf: boolean;
 }
 
-/** schedule_overview 返回的条目（定时作业，字段与 Rust 侧 camelCase 对齐） */
-export interface ScheduleEntry {
-  /** 目标类型：job = 定时作业（到点按内容新建任务卡交机器人） */
-  kind: "job";
-  /** 作业 id */
+/** schedule_overview 返回的条目：两类字段集不同，判别联合——按 kind 收窄后才读得到各自专属字段 */
+interface ScheduleEntryBase {
+  /** 目标 id */
   targetId: string;
-  /** 作业内容（即「要做什么」） */
+  /** 条目标题（作业=要做什么；提醒=提醒内容） */
   title: string;
-  /** 摘要（作业恒为 null） */
-  detail: string | null;
   /** 定时规则串（daily:/weekly:/monthly:/at:） */
   schedule: string;
-  /** 上次定时执行时间（epoch ms），未跑过为 null */
+  /** 上次触发时间（epoch ms），未触发过为 null */
   schedLast: number | null;
-  /** 下次执行时间（epoch ms，Rust 端单源计算，前端不解析 schedule） */
+  /** 下次触发时间（epoch ms，Rust 端单源计算，前端不解析 schedule） */
   nextRunAt: number | null;
-  /** 已错过（超 2h 补跑窗口被跳过，Rust 端判定） */
-  missed: boolean;
   /** 启用开关：false = 已暂停（保留配置） */
   enabled: boolean;
+}
+
+/** 定时作业条目（kind="job"）：到点按内容新建任务卡交机器人执行 */
+export interface JobEntry extends ScheduleEntryBase {
+  kind: "job";
+  /** 摘要（作业恒为 null） */
+  detail: string | null;
+  /** 已错过（超 2h 补跑窗口被跳过，Rust 端判定） */
+  missed: boolean;
   /** 最近一次执行结果（"ok"|"fail"，null=从未跑） */
   lastStatus?: string | null;
   /** 最近失败原因摘要（≤300 字） */
@@ -176,6 +179,17 @@ export interface ScheduleEntry {
   /** 执行档：null/"auto" = 到点直接执行；"preview" = 预演（只建提案卡+通知，确认后「立即执行」真跑） */
   mode?: "auto" | "preview" | null;
 }
+
+/** 提醒条目（kind="reminder"）：到点发一条系统通知，不执行任何内容 */
+export interface ReminderEntry extends ScheduleEntryBase {
+  kind: "reminder";
+  /** 已触发次数（null=从未触发） */
+  firedCount: number | null;
+  /** 一次性提醒（触发即删，没有下次可暂停——不给「暂停」钮） */
+  oneShot: boolean;
+}
+
+export type ScheduleEntry = JobEntry | ReminderEntry;
 
 /** scheduled_job_history 返回的单次执行记录（倒序，最新在前；与 Rust 侧 camelCase 对齐） */
 export interface ScheduledJobRun {
