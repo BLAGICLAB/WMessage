@@ -193,8 +193,9 @@ pub async fn tool_schedule_reminder(app: &AppHandle, args: &str) -> ToolResult {
             updated_at: Some(now_ms),
             fired_at: None,
             fired_count: None,
+            expected_updated_at: None,
         };
-        crate::db::reminders::insert_reminder(&conn, &r)?;
+        crate::db::reminders::upsert_reminder(&conn, &r)?;
         Ok(r)
     })
     .await

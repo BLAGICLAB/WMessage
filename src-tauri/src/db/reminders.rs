@@ -6,8 +6,10 @@
 //! （`bot_scheduler::occurrence_after`），但存储与触发路径各走各的——提醒不进
 //! 执行历史、不占重试与自动暂停语义。
 //!
-//! 不做 RMW 基线：提醒只由机器人工具建/取消，没有并发编辑入口（RMW 是给
-//! 「UI 边看边改」的行准备的，字段加了没人用就是死字段）。
+//! 写路径：新建/编辑走 upsert（带 RMW 基线——提醒有了 UI 编辑入口，改内容与
+//! 改时间会互相覆盖，基线不匹配即拒写）；暂停/恢复是单列操作，走定点
+//! UPDATE，不带基线（携带整行快照反而会让「界面显示旧值 → 用户改内容 →
+//! 把 enabled 覆盖回去」成为可能）。
 
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -50,6 +52,9 @@ pub struct Reminder {
     /// 已触发次数
     #[serde(default)]
     pub fired_count: Option<i64>,
+    /// RMW 基线（并发编辑防护；写入口用，不序列化给前端）
+    #[serde(default, skip_serializing)]
+    pub expected_updated_at: Option<i64>,
 }
 
 impl Reminder {
@@ -76,6 +81,7 @@ fn reminder_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Reminder> {
         updated_at: r.get(6)?,
         fired_at: r.get(7)?,
         fired_count: r.get(8)?,
+        expected_updated_at: None,
     })
 }
 
@@ -127,15 +133,41 @@ pub fn load_reminder(conn: &rusqlite::Connection, id: &str) -> Result<Option<Rem
     .map_err(|e| e.to_string())
 }
 
-/// 新建提醒（调用方持 lock_db_write）
-pub fn insert_reminder(conn: &rusqlite::Connection, r: &Reminder) -> Result<(), String> {
+/// 新建/覆盖写（调用方持 lock_db_write；RMW 基线检查同 upsert_tasks）
+///
+/// 基线不匹配（行已被其他写者改/删）拒绝写，防并发编辑互相覆盖；
+/// 基线为 None 时退化为纯新建（机器人工具建提醒走这条）。
+pub fn upsert_reminder(conn: &rusqlite::Connection, r: &Reminder) -> Result<(), String> {
     debug_assert!(
         super::holding_db_write(),
-        "insert_reminder 必须在持有 DB_WRITE_LOCK（lock_db_write()）时调用"
+        "upsert_reminder 必须在持有 DB_WRITE_LOCK（lock_db_write()）时调用"
     );
+    if let Some(expected) = r.expected_updated_at {
+        let cur: Option<Option<i64>> = conn
+            .query_row(
+                "SELECT updated_at FROM reminders WHERE id = ?1",
+                [&r.id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let conflict = super::tasks::rmw_conflict(expected, cur);
+        if conflict {
+            return Err(format!(
+                "{}：提醒 {} 读快照后已被其他写者修改，写回被拒",
+                super::tasks::CONFLICT_ERR_PREFIX,
+                r.id
+            ));
+        }
+    }
     conn.execute(
-        "INSERT INTO reminders (id, text, schedule, remind_at, enabled, created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        "INSERT INTO reminders (id, text, schedule, remind_at, enabled, created_at, updated_at, fired_at, fired_count)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+         ON CONFLICT(id) DO UPDATE SET
+           text=excluded.text, schedule=excluded.schedule,
+           remind_at=excluded.remind_at, enabled=excluded.enabled,
+           fired_at=excluded.fired_at, fired_count=excluded.fired_count,
+           updated_at=excluded.updated_at",
         rusqlite::params![
             r.id,
             r.text,
@@ -144,10 +176,30 @@ pub fn insert_reminder(conn: &rusqlite::Connection, r: &Reminder) -> Result<(), 
             r.enabled.map(|b| b as i64),
             r.created_at,
             r.updated_at,
+            r.fired_at,
+            r.fired_count,
         ],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// 暂停/恢复提醒（定点更新：只动 enabled + updated_at）
+///
+/// 返回是否命中行（false = 行不存在）。
+pub fn set_reminder_enabled(
+    conn: &rusqlite::Connection,
+    id: &str,
+    enabled: bool,
+    updated_at: i64,
+) -> Result<bool, String> {
+    let n = conn
+        .execute(
+            "UPDATE reminders SET enabled = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![enabled as i64, updated_at, id],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
 }
 
 /// 触发后推进：写最近触发时间 + 下次触发时间（remind_at = None 的行交给调用方删除）
@@ -210,14 +262,15 @@ mod tests {
             updated_at: Some(1),
             fired_at: None,
             fired_count: None,
+            expected_updated_at: None,
         }
     }
 
     #[test]
-    fn insert_and_load_roundtrip() {
+    fn upsert_and_load_roundtrip() {
         let conn = mem_conn();
         let _g = crate::db::lock_db_write();
-        insert_reminder(&conn, &sample("r1", Some(1_000))).unwrap();
+        upsert_reminder(&conn, &sample("r1", Some(1_000))).unwrap();
         let all = load_reminders(&conn).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].text, "喝水");
@@ -229,11 +282,11 @@ mod tests {
     fn due_reminders_only_returns_reached_enabled_rows() {
         let conn = mem_conn();
         let _g = crate::db::lock_db_write();
-        insert_reminder(&conn, &sample("due", Some(500))).unwrap();
-        insert_reminder(&conn, &sample("later", Some(5_000))).unwrap();
+        upsert_reminder(&conn, &sample("due", Some(500))).unwrap();
+        upsert_reminder(&conn, &sample("later", Some(5_000))).unwrap();
         let mut paused = sample("paused", Some(500));
         paused.enabled = Some(false);
-        insert_reminder(&conn, &paused).unwrap();
+        upsert_reminder(&conn, &paused).unwrap();
         let due = load_due_reminders(&conn, 1_000).unwrap();
         assert_eq!(due.len(), 1, "只有到点且启用的行");
         assert_eq!(due[0].id, "due");
@@ -243,7 +296,7 @@ mod tests {
     fn advance_moves_next_fire_and_counts() {
         let conn = mem_conn();
         let _g = crate::db::lock_db_write();
-        insert_reminder(&conn, &sample("r1", Some(500))).unwrap();
+        upsert_reminder(&conn, &sample("r1", Some(500))).unwrap();
         advance_reminder(&conn, "r1", 600, Some(900)).unwrap();
         let row = load_reminder(&conn, "r1").unwrap().unwrap();
         assert_eq!(row.remind_at, Some(900));
@@ -255,7 +308,7 @@ mod tests {
     fn delete_reminder_reports_whether_row_existed() {
         let conn = mem_conn();
         let _g = crate::db::lock_db_write();
-        insert_reminder(&conn, &sample("r1", Some(1))).unwrap();
+        upsert_reminder(&conn, &sample("r1", Some(1))).unwrap();
         assert!(delete_reminder(&conn, "r1").unwrap());
         assert!(!delete_reminder(&conn, "r1").unwrap(), "重复删除返回 false");
     }
@@ -270,5 +323,87 @@ mod tests {
             "喝水",
             "两端空白裁掉"
         );
+    }
+
+    // ── 暂停/恢复：单列定点更新 ──
+
+    #[test]
+    fn set_enabled_toggles_flag_and_reports_missing_row() {
+        let conn = mem_conn();
+        let _g = crate::db::lock_db_write();
+        upsert_reminder(&conn, &sample("r1", Some(500))).unwrap();
+        assert!(set_reminder_enabled(&conn, "r1", false, 900).unwrap());
+        let row = load_reminder(&conn, "r1").unwrap().unwrap();
+        assert_eq!(row.enabled, Some(false), "暂停位写进去了");
+        assert!(!row.enabled(), "enabled=false 即暂停");
+        assert_eq!(row.updated_at, Some(900), "updated_at 跟着动");
+        // 恢复
+        assert!(set_reminder_enabled(&conn, "r1", true, 901).unwrap());
+        assert!(load_reminder(&conn, "r1").unwrap().unwrap().enabled());
+        // 行不存在
+        assert!(
+            !set_reminder_enabled(&conn, "nope", false, 902).unwrap(),
+            "行不存在返回 false（不是静默成功）"
+        );
+    }
+
+    /// 暂停的全部价值就在这一条：调度器按 enabled 过滤，暂停即不再到点触发。
+    #[test]
+    fn paused_reminder_is_never_due() {
+        let conn = mem_conn();
+        let _g = crate::db::lock_db_write();
+        upsert_reminder(&conn, &sample("r1", Some(500))).unwrap();
+        assert_eq!(load_due_reminders(&conn, 1_000).unwrap().len(), 1);
+        set_reminder_enabled(&conn, "r1", false, 900).unwrap();
+        assert!(
+            load_due_reminders(&conn, 1_000).unwrap().is_empty(),
+            "暂停后不再进入待触发清单"
+        );
+    }
+
+    // ── RMW 基线：并发编辑防护 ──
+
+    #[test]
+    fn upsert_rejects_stale_baseline() {
+        let conn = mem_conn();
+        let _g = crate::db::lock_db_write();
+        upsert_reminder(&conn, &sample("r1", Some(500))).unwrap();
+        // 读快照（基线 = updated_at = 1）
+        let mut snapshot = load_reminder(&conn, "r1").unwrap().unwrap();
+        assert_eq!(snapshot.updated_at, Some(1));
+        // 期间调度器推进了这条提醒（updated_at 变了）
+        advance_reminder(&conn, "r1", 600, Some(900)).unwrap();
+        // 拿旧快照写回 → 拒
+        snapshot.text = "改内容".into();
+        snapshot.expected_updated_at = snapshot.updated_at;
+        snapshot.updated_at = Some(700);
+        let err = upsert_reminder(&conn, &snapshot).unwrap_err();
+        assert!(
+            err.contains("写冲突"),
+            "基线不匹配必须报写冲突，实际：{err}"
+        );
+        // 行内容未被旧快照覆盖
+        let cur = load_reminder(&conn, "r1").unwrap().unwrap();
+        assert_eq!(cur.text, "喝水", "被拒的写回不得改内容");
+        assert_eq!(cur.fired_count, Some(1), "触发计数不受影响");
+    }
+
+    #[test]
+    fn upsert_edit_preserves_trigger_counters() {
+        let conn = mem_conn();
+        let _g = crate::db::lock_db_write();
+        upsert_reminder(&conn, &sample("r1", Some(500))).unwrap();
+        advance_reminder(&conn, "r1", 600, Some(900)).unwrap();
+        // 编辑：改内容，基线取快照的 updated_at
+        let mut row = load_reminder(&conn, "r1").unwrap().unwrap();
+        row.text = "改内容".into();
+        row.expected_updated_at = row.updated_at;
+        row.updated_at = Some(700);
+        upsert_reminder(&conn, &row).unwrap();
+        let cur = load_reminder(&conn, "r1").unwrap().unwrap();
+        assert_eq!(cur.text, "改内容");
+        assert_eq!(cur.fired_count, Some(1), "编辑不得清掉触发计数");
+        assert_eq!(cur.fired_at, Some(600), "编辑不得清掉最近触发时间");
+        assert_eq!(cur.remind_at, Some(900), "编辑不得改下次触发时间");
     }
 }
