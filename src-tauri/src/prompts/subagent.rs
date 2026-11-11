@@ -66,6 +66,10 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
   contextSummary，禁止从零重烧——从零重烧等于把刚才那段时间全扔了。
 - error=result_json_unparseable：服务端已经自动补答过一次；仍失败说明子 agent
   连收尾格式都没给，重派前先把验收标准写具体些。
+- **跨进程续跑**：check_subagent 返回 status=budget_exceeded 且 error=max_turns 时，
+  优先调 resume_subagent（subagentId）原地续跑——装载上次执行的全量对话历史
+  追加 10 轮继续完成并交卷，比重派省掉重烧已跑部分的成本；无续跑历史时工具
+  会响亮报错，那时再走重派（带残留摘要）。
 - 预算触顶收尾（工具调用、轮数，或子 agent 被熔断）时，汇报必须
   说明还剩什么没做、进行到哪一步——不得只交成品就收笔，用户要能从汇报里
   看出任务的真实完成度。

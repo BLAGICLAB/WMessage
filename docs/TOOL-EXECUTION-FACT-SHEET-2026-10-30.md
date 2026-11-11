@@ -57,9 +57,9 @@
    确认被拒 / skill 熔断 / 子 agent 白名单外 / arguments 非法 JSON。工具本体的拒绝不在这
    8 处计数里。
 
-## 三、事实表 A：68 个工具逐条
+## 三、事实表 A：69 个工具逐条
 
-> 工具数 68 = `bot::registry::TOOLS_TABLE` 条目数（2026-11-11 +1 submit_result 终局提交，仅子 agent 可见）；
+> 工具数 69 = `bot::registry::TOOLS_TABLE` 条目数（2026-11-11 +2：submit_result 终局提交（仅子 agent 可见）+ resume_subagent 跨进程续跑（仅主 agent 可见））；
 > `read_own_card` / `write_artifact_file` 仅子 agent 可见，不进主 agent 清单。
 
 ### G1 任务卡（10 个）
@@ -126,6 +126,7 @@
 | `spawn_subagent` / `check_subagent` / `cancel_subagent` | 宿主进程内（起子会话） | 子 agent 拿到的工具 = profile ∩ per-onion `allowed` | dispatch 1.6 兜底（**递归禁用**：子 agent 调 spawn/check/cancel 一律拒） | 无 |
 | `read_own_card` | 宿主进程内 | 读自己的任务卡 | 子 agent 专属 | 无 |
 | `submit_result` | 宿主进程内（纯校验） | 参数即收尾 JSON（status/summary 校验，其余键透传） | 子 agent 专属 + 模型循环终局分支（成功即回合结束）+ 收尾窗放行 + onion 交集豁免 | 收尾分类器按结构识别 |
+| `resume_subagent` | 宿主进程内（事务：行翻 queued + 派发待办同事务） | 读 sidecar（session_history.json）校验原料 | 主 agent 专属（子 agent 递归禁用同款）+ 仅 budget_exceeded 行 + sidecar 可装载 | reopen_subagent_for_resume（终态转移的唯一显式例外） |
 
 
 ### G9 桌面与系统（10 个）
@@ -213,7 +214,7 @@ stdlib）。按「能力面 × 强制缺口」排，真正排在前面的是 `st
 
 ## 七、核查口径与已知空白
 
-- 工具清单以 `bot::registry::TOOLS_TABLE` 为准（68 条，其中 `submit_result` 不入休眠组）；本文按 13 组归类，组内同名工具
+- 工具清单以 `bot::registry::TOOLS_TABLE` 为准（69 条，其中 `submit_result` 不入休眠组）；本文按 13 组归类，组内同名工具
   共用一行闸与边界。
 - 闸序以 `bot/dispatch.rs` 的 `execute_tool_impl` 为准；早退点数 8 由
   `dispatch/pre_tool_hook_tests.rs` 的计数断言锁住。

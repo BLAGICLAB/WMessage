@@ -562,6 +562,35 @@ pub fn update_subagent_status(
     load_subagent(conn, id)?.ok_or_else(|| format!("subagent 回读失败：{id}"))
 }
 
+/// 跨进程续跑的唯一行状态入口（resume_subagent 工具调用）：预算熔断行翻回
+/// queued 重入派发管线。`transition_allowed` 对终态恒 false——续跑是显式的、
+/// 审计留痕的例外：error 字段保留作历史（熔断原因不抹），finished_at 清空
+/// （新一轮时长口径从续跑起算），部分结果已落库的事实不动。
+pub fn reopen_subagent_for_resume(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<SubagentRow, String> {
+    let row = load_subagent(conn, id)?.ok_or_else(|| format!("subagent 不存在：{id}"))?;
+    match row.status {
+        SubagentStatus::BudgetExceeded => {}
+        SubagentStatus::Running | SubagentStatus::Queued => {
+            return Err("该子 agent 正在跑或排队中，无需续跑".into());
+        }
+        SubagentStatus::Succeeded | SubagentStatus::Failed | SubagentStatus::Cancelled => {
+            return Err(format!(
+                "只有预算熔断的子 agent 可以续跑（当前 {}）",
+                row.status.as_str()
+            ));
+        }
+    }
+    conn.execute(
+        "UPDATE subagents SET status='queued', finished_at=NULL WHERE id=?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    load_subagent(conn, id)?.ok_or_else(|| format!("subagent 回读失败：{id}"))
+}
+
 /// 回填子 agent 执行会话 id（runner 建会话后调）。目标行不存在 → 响亮失败
 /// （防 runner 拿过期 id 静默 no-op。
 pub fn set_subagent_session(

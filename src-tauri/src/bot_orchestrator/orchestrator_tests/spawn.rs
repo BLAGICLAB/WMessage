@@ -1006,9 +1006,58 @@ fn onion_prompt_note_is_injected_into_subagent_system() {
         .find("let system = format!(")
         .expect("子 agent system 拼装点");
     let arm = &body[system_at..];
-    let arm = &arm[..arm.find("let msgs = vec![").unwrap_or(arm.len())];
+    let arm = &arm[..arm.find("let mut msgs = vec![").unwrap_or(arm.len())];
     assert!(
         arm.contains("onion_note"),
         "system 格式串必须带上配置档段，无配置档时为空串占位：{arm}"
     );
+}
+
+/// 跨进程续跑的行状态入口（二期）：只有 budget_exceeded 行可翻回 queued；
+/// queued/running 拒绝（无需续跑）；其余终态拒绝（重跑 = 重新 spawn）。
+/// error 字段保留（熔断原因不抹）、finished_at 清空（新一轮时长口径重起）。
+#[test]
+fn reopen_subagent_for_resume_transitions_and_guards() {
+    let mut conn = test_conn();
+    let _g = crate::db::lock_db_write();
+    let ack = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+    let id = ack.subagent_id.clone();
+    // queued → running → budget_exceeded：合法熔断路径
+    crate::db::update_subagent_status(&conn, &id, crate::db::SubagentStatus::Running, 6_000, None)
+        .unwrap();
+    let fused = crate::db::update_subagent_status(
+        &conn,
+        &id,
+        crate::db::SubagentStatus::BudgetExceeded,
+        7_000,
+        Some("max_turns"),
+    )
+    .unwrap();
+    assert!(fused.finished_at.is_some(), "熔断终态带收尾时刻");
+    assert_eq!(fused.error.as_deref(), Some("max_turns"));
+
+    // 续跑翻行：queued + finished_at 清空 + error 保留
+    let reopened = crate::db::reopen_subagent_for_resume(&conn, &id).unwrap();
+    assert_eq!(reopened.status, crate::db::SubagentStatus::Queued);
+    assert_eq!(reopened.finished_at, None, "新一轮时长口径从续跑起算");
+    assert_eq!(reopened.error.as_deref(), Some("max_turns"), "熔断原因不抹");
+
+    // queued 行再续跑：拒绝（无需续跑）
+    assert!(crate::db::reopen_subagent_for_resume(&conn, &id).is_err());
+
+    // succeeded 行续跑：拒绝（重跑 = 重新 spawn）
+    crate::db::update_subagent_status(&conn, &id, crate::db::SubagentStatus::Running, 8_000, None)
+        .unwrap();
+    crate::db::update_subagent_status(
+        &conn,
+        &id,
+        crate::db::SubagentStatus::Succeeded,
+        9_000,
+        None,
+    )
+    .unwrap();
+    let err = crate::db::reopen_subagent_for_resume(&conn, &id).expect_err("succeeded 行不可续跑");
+    assert!(err.contains("只有预算熔断"), "{err}");
+    // 不存在的行
+    assert!(crate::db::reopen_subagent_for_resume(&conn, "sa_missing").is_err());
 }

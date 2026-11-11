@@ -27,6 +27,7 @@ pub use crate::bot::subagent_spawn::MAX_PER_SESSION_RUNNING;
 pub use crate::bot::subagent_tools::tool_cancel_subagent;
 pub use crate::bot::subagent_tools::tool_check_subagent;
 pub use crate::bot::subagent_tools::tool_read_own_card;
+pub use crate::bot::subagent_tools::tool_resume_subagent;
 pub use crate::bot::subagent_tools::tool_spawn_subagent;
 pub use crate::bot::subagent_tools::tool_write_artifact_file;
 // 跨模块共用的私有项：门面内的实现与模块内测试都要经这里取。

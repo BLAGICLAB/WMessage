@@ -250,7 +250,7 @@ pub(crate) struct FusedRecoveryCtx<'a> {
 
 /// 续跑小额度：熔断后原会话自动续跑一次的轮数。不重置满额（业界口径：
 /// 重试消耗同一份预算），只给「把已完成的工作收尾」所需的量。
-const RESUME_ROUNDS: usize = 10;
+pub(crate) const RESUME_ROUNDS: usize = 10;
 
 /// 剥掉熔断标记取回正文。两种标记（工具 / 轮数）共用 `⏹ 已熔断` 前缀，
 /// 切短标记即覆盖两者。正文本身可能是合法收尾 JSON（模型交卷与熔断写标记

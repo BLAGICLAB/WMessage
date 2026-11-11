@@ -327,6 +327,15 @@ pub(super) fn call_cancel_subagent<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> T
     )
 }
 
+pub(super) fn call_resume_subagent<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let app = ctx.app.clone();
+    let args = args.to_string();
+    let session_id = ctx.session_id.map(|s| s.to_string());
+    Box::pin(
+        async move { crate::bot_orchestrator::tool_resume_subagent(&app, &args, session_id).await },
+    )
+}
+
 pub(super) fn call_write_artifact_file<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     let app = ctx.app.clone();
     let args = args.to_string();

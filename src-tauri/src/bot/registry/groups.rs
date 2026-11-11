@@ -327,14 +327,17 @@ mod tests {
     use super::*;
 
     /// 组清单覆盖完整性：TOOL_GROUPS 并集 == TOOLS_TABLE 全集（新增工具忘入组
-    /// 会在这红）。submit_result 例外：子 agent 终局提交是运行时契约——子
-    /// agent 专属且恒激活，不属于任何可挂载/可休眠组。
+    /// 会在这红）。例外两个：submit_result（子 agent 终局提交，运行时契约，
+    /// 子 agent 专属且恒激活）与 resume_subagent（主 agent 专属续跑入口）——
+    /// 都不属于任何可挂载/可休眠组。
     #[test]
     fn groups_cover_every_builtin_tool() {
+        const NOT_GROUPED: [&str; 2] =
+            [crate::bot::registry::SUBMIT_RESULT_TOOL, "resume_subagent"];
         let table: HashSet<&str> = crate::bot::registry::TOOLS_TABLE
             .iter()
             .map(|t| t.name)
-            .filter(|n| *n != crate::bot::registry::SUBMIT_RESULT_TOOL)
+            .filter(|n| !NOT_GROUPED.contains(n))
             .collect();
         assert_eq!(
             &table,

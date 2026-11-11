@@ -593,10 +593,39 @@ pub(crate) async fn run_subagent(
         gen_dir_rule_for(&artifact_dir),
         onion_note,
     );
-    let msgs = vec![
+    let mut msgs = vec![
         serde_json::json!({ "role": "system", "content": system }),
         serde_json::json!({ "role": "user", "content": wrapper }),
     ];
+    // 跨进程续跑（二期）：sidecar 存在且属本行 → 装载全量历史代替新任务包装。
+    // 新行的 id 全局唯一、永远不会带 sidecar，「存在且 id 匹配」即续跑判定；
+    // 不匹配/解析失败按正常启动（审计留痕，不静默）。system 消息沿用 sidecar
+    // 里那份（角色提示词/工具清单与上次跑一致），onion 绑定由 bind_session
+    // 从会话元数据重挂，白名单闸与上次同源。
+    let resume_sidecar = artifact_dir.join("session_history.json");
+    let resume_loaded = crate::bot::subagent_tools::load_resume_history(&resume_sidecar, &row.id);
+    let mut max_rounds = max_rounds;
+    if let Some(history) = resume_loaded {
+        msgs = history;
+        msgs.push(serde_json::json!({
+            "role": "user",
+            "content": format!(
+                "【系统提示】这是跨进程续跑：你此前一次执行因预算触顶被中断，未交出收尾。\
+                 现追加 {} 轮预算完成任务：基于上面已有进展继续，尽快收尾并经 submit_result 提交；\
+                 不要重新开始已完成的步骤，也不要展开与收尾无关的新探索。",
+                crate::bot::subagent_repair::RESUME_ROUNDS
+            ),
+        }));
+        max_rounds = crate::bot::subagent_repair::RESUME_ROUNDS.min(max_rounds);
+        crate::bot::audit_log(
+            &app,
+            &format!(
+                "subagent_resumed_cross_process | id: {} | 历史消息 {} 条",
+                row.id,
+                msgs.len()
+            ),
+        );
+    }
 
     // 工具循环：轮数预算（熔断→budget_exceeded；排队不计——running 起算）。
     // 没有墙钟：时间兜底在工具级超时与停滞判定，不在整条 future 上掐。
@@ -709,6 +738,30 @@ pub(crate) async fn run_subagent(
                             ),
                         );
                     }
+                }
+            }
+        } else {
+            // 非熔断收尾（交卷/补答成功/失败带 JSON）：sidecar 已无续跑价值
+            // （只有 budget_exceeded 行可续跑），清掉——「存在且 id 匹配」就是
+            // 续跑判定，残留旧文件会让下一次同名误判失真。
+            let sidecar = artifact_dir.join("session_history.json");
+            if sidecar.exists() {
+                match std::fs::remove_file(&sidecar) {
+                    Ok(()) => crate::bot::audit_log(
+                        &app,
+                        &format!(
+                            "subagent_history_sidecar_cleared | id: {} | {}",
+                            row.id,
+                            sidecar.display()
+                        ),
+                    ),
+                    Err(e) => crate::bot::audit_log(
+                        &app,
+                        &format!(
+                            "subagent_history_sidecar_clear_failed | id: {} | {e}",
+                            row.id
+                        ),
+                    ),
                 }
             }
         }

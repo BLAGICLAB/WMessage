@@ -346,6 +346,9 @@ pub const SCHEMA_SUBMIT_RESULT: &str = r##"{"type":"function","function":{"name"
   "blockers":{"type":"array","items":{"type":"string"},"description":"阻塞项（有才带）"}
 },"required":["status","summary"]}}}"##;
 
+/// 跨进程续跑（二期）：主 agent 专属——预算熔断行装载 sidecar 历史原地续跑。
+pub const SCHEMA_RESUME_SUBAGENT: &str = r##"{"type":"function","function":{"name":"resume_subagent","description":"跨进程续跑一个预算熔断（budget_exceeded）的子 agent：装载其上次执行的完整对话历史，同 id 追加 10 轮预算继续完成并交卷。仅当行已终态 budget_exceeded 且留有续跑历史时可用；成功/失败/取消的行不可续跑（要重跑请重新 spawn）。排队中/在跑的行调用会被拒绝。","parameters":{"type":"object","properties":{"subagentId":{"type":"string","description":"要续跑的子 agent id"}},"required":["subagentId"]}}}"##;
+
 pub const SCHEMA_UPDATE_PLAN: &str = r##"{"type":"function","function":{"name":"update_plan","description":"更新本会话的执行计划（整表替换：每次调用都要交出完整清单，不要只交增量）。用途：多步任务开工前先列出步骤；每完成一步立刻调用一次更新该步状态，不要攒到最后一起补。状态三态：pending 未开始 / in_progress 正在做 / completed 已完成，任一时刻至多一条 in_progress。不要为了好看而虚报完成：completed 只给真正做完的步骤。什么时候建计划（命中任意一条就建）：要产出多份文件或多个交付物、任务要分阶段推进、用户给了多份材料要合并整合、技能文档里有多个阶段——读完技能文档、看清它有哪几个阶段之后再建也算来得及。什么时候不要用：单一目标的小任务、琐碎操作、纯信息问答——这类直接做，别建计划","parameters":{"type":"object","properties":{
     "explanation":{"type":"string","description":"相对上一版改了什么（可选）：新增/删除/调整了哪些步骤、为什么改；只写变更说明，不要把清单再抄一遍"},
     "plan":{"type":"array","description":"完整步骤清单（整表替换：调用一次即覆盖上一次的全部内容）","items":{"type":"object","properties":{
@@ -367,7 +370,7 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
 /// 内置工具总数（= TOOLS_TABLE 条目数 = SCHEMA_* 常量数）。
 /// 注释与文档一律引用本常量而不另写数字；增删工具时只改这里一处，
 /// `builtin_tool_count_matches_table` 单测负责在数目对不上时红灯。
-pub const BUILTIN_TOOL_COUNT: usize = 68;
+pub const BUILTIN_TOOL_COUNT: usize = 69;
 
 // TOOLS_TABLE（内置工具单源真相：BUILTIN_TOOL_COUNT 个，其中 SUBAGENT_ONLY_TOOLS
 // 那几个仅子 agent 可见，主 agent 少这么多）
@@ -1016,6 +1019,16 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         claims_patterns: &[],
         max_output_bytes: 4096,
         call: call_submit_result,
+    },
+    // 跨进程续跑（二期）：预算熔断行装载 sidecar 历史原地续跑。仅主 agent
+    // 可见（不在任何 profile 白名单、不在 SUBAGENT_ONLY——主可见数 +1）。
+    ToolDef {
+        name: "resume_subagent",
+        schema: SCHEMA_RESUME_SUBAGENT,
+        mutating: true,
+        claims_patterns: &["已续跑"],
+        max_output_bytes: 8192,
+        call: call_resume_subagent,
     },
 ];
 /// TOOLS JSON 由 TOOLS_TABLE 顺序拼装（schema 常量原文直拼，不做 parse + re-serialize）。

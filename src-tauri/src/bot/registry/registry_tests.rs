@@ -208,6 +208,7 @@ fn tools_table_count_matches_constant() {
         "list_services",
         "update_plan",
         "activate_tools",
+        "resume_subagent",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -290,6 +291,7 @@ fn tools_table_count_matches_constant() {
         "list_services",
         "update_plan",
         "activate_tools",
+        "resume_subagent",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -335,6 +337,8 @@ fn mutating_tools_matches_baseline() {
         "start_service",
         "stop_service",
         "screenshot",
+        // 终局提交不 mutating（只校验+透传）；跨进程续跑 mutating（翻行+派发待办）
+        "resume_subagent",
     ]
     .into_iter()
     .collect();
@@ -390,8 +394,8 @@ fn tools_json_matches_baseline() {
     );
     assert_eq!(
         der_arr.len(),
-        base_arr.len() + 37,
-        "主可见应为 28+3+4+2+1+1+3+1+13+3+2+1+1+1+1（末位 +13 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具 + UI 六件套；+3 = 受管服务三工具；+2 = 远程技能安装与搜索两工具；+1 = 凭证召回工具 lookup_receipt；+1 = 计划工具 update_plan；+1 = 专用 HTTP 工具 http_request；+1 = 组挂载元工具 activate_tools）"
+        base_arr.len() + 38,
+        "主可见应为 28+3+4+2+1+1+3+1+13+3+2+1+1+1+1+1（末位 +13 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具 + UI 六件套；+3 = 受管服务三工具；+2 = 远程技能安装与搜索两工具；+1 = 凭证召回工具 lookup_receipt；+1 = 计划工具 update_plan；+1 = 专用 HTTP 工具 http_request；+1 = 组挂载元工具 activate_tools；+1 = 跨进程续跑 resume_subagent）"
     );
 }
 

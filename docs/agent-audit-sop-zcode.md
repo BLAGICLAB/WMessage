@@ -131,7 +131,7 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 <!-- sop-counts:start -->
 
 ```
-工具总数 = 68
+工具总数 = 69
 调度早退点数 = 8
 子 agent profile 档数 = 3
 内置 onion 配置档数 = 3
@@ -139,7 +139,7 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 
 <!-- sop-counts:end -->
 
-- **工具总数 68**（2026-11-11 +1：submit_result 子 agent 终局提交，仅子 agent 可见） = `src-tauri/src/bot/registry/schemas.rs` 的 `TOOLS_TABLE` 条目数
+- **工具总数 69**（2026-11-11 +2：submit_result 子 agent 终局提交（仅子 agent 可见）+ resume_subagent 跨进程续跑（仅主 agent 可见）） = `src-tauri/src/bot/registry/schemas.rs` 的 `TOOLS_TABLE` 条目数
   （= `SCHEMA_*` 常量数；含组挂载元工具 `activate_tools`）。`read_own_card` / `write_artifact_file` 仅子 agent 可见，不进主 agent 清单。
 - **调度早退点数 8** = `src-tauri/src/bot/dispatch.rs` 生产段 `ToolResult::denied(` 的出现次数。
   由 `src-tauri/src/bot/dispatch/pre_tool_hook_tests.rs` 的计数断言锁住（断言值 8）。

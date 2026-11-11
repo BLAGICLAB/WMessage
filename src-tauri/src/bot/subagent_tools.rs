@@ -8,6 +8,7 @@ use crate::bot_orchestrator::{
 };
 use crate::db::{SubagentProfile, SubagentStatus};
 use crate::error::CommandError;
+use crate::error::CommandResult;
 use std::path::PathBuf;
 use tauri::AppHandle;
 
@@ -20,6 +21,23 @@ pub(crate) fn gen_dir_rule_for(artifact_dir: &std::path::Path) -> String {
 }
 fn parse_tool_args(args: &str) -> serde_json::Value {
     serde_json::from_str(args).unwrap_or(serde_json::Value::Null)
+}
+
+/// 装载跨进程续跑历史（resume 工具与 runner 共用同一口径）：文件可读 +
+/// subagent_id 匹配 + messages 数组 ≥2 条（system + 至少一条 user）才返回。
+/// 任一不满足 → None（工具报「只能重派」，runner 按正常启动）。
+pub(crate) fn load_resume_history(
+    sidecar: &std::path::Path,
+    subagent_id: &str,
+) -> Option<Vec<serde_json::Value>> {
+    std::fs::read_to_string(sidecar)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .filter(|v| v.get("subagent_id").and_then(|s| s.as_str()) == Some(subagent_id))
+        .and_then(|v| {
+            let m = v.get("messages").and_then(|m| m.as_array()).cloned()?;
+            (m.len() >= 2).then_some(m)
+        })
 }
 
 /// 三段式派发的配置档自动挂载：stage 带出对应内置档（见
@@ -216,6 +234,96 @@ pub async fn tool_cancel_subagent(
             Vec::new(),
         ),
         Err(e) => ToolResult::error(format!("cancel 失败：{}", e.message()), Vec::new()),
+    }
+}
+
+/// resume_subagent 工具（二期）：跨进程续跑预算熔断的子 agent——装载
+/// session_history.json 全量历史，同 id 翻回 queued 重入派发管线（派发器
+/// 拿到 queued 行起 runner，runner 见 sidecar 即续跑模式）。
+/// 仅主 agent 可调；只有 budget_exceeded 行可续跑；sidecar 缺失/不匹配
+/// → 响亮报错（没有原料的续跑等于重派，不如明说）。
+pub async fn tool_resume_subagent(
+    app: &AppHandle,
+    args: &str,
+    session_id: Option<String>,
+) -> crate::bot::registry::ToolResult {
+    use crate::bot::registry::ToolResult;
+    if crate::tool_guard::is_subagent_session(session_id.as_deref()) {
+        return ToolResult::error("子 agent 不得续跑其他子 agent。", Vec::new());
+    }
+    let v = parse_tool_args(args);
+    let Some(id) = v["subagentId"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+    else {
+        return ToolResult::error("resume 失败：必须提供 subagentId", Vec::new());
+    };
+    // 续跑原料前置校验（翻行之前）：sidecar 存在、属本行、messages 可用。
+    // 行状态本身的校验在 reopen 里做（事务内再验一次，防校验与翻转间隙漂移）。
+    let sidecar = match crate::db::gen_dir(app) {
+        Ok(g) => artifact_dir_of(&g, &id).join("session_history.json"),
+        Err(e) => {
+            return ToolResult::error(format!("resume 失败：产物目录不可用（{e}）"), Vec::new())
+        }
+    };
+    let history_len = load_resume_history(&sidecar, &id).map(|m| m.len());
+    match history_len {
+        Some(n) if n >= 2 => {}
+        _ => {
+            return ToolResult::error(
+                format!(
+                    "resume 失败：没有可装载的续跑历史（{}）。该子任务只能重派（spawn）。",
+                    sidecar.display()
+                ),
+                Vec::new(),
+            );
+        }
+    }
+    // 翻行（queued）+ 派发待办：同一事务——「有 queued 行无待办」的中间态
+    // 不存在（与 spawn 同款）。stage/onion 不带：角色提示词沿用 sidecar 里
+    // 那份，onion 由 runner 的 bind_session 从会话元数据重挂。
+    let id_for_db = id.clone();
+    let outcome = db_locked(app, move |conn| -> CommandResult<i64> {
+        let tx = conn
+            .transaction()
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        crate::db::reopen_subagent_for_resume(&tx, &id_for_db).map_err(CommandError::DbError)?;
+        let payload = serde_json::json!({
+            "subagentId": id_for_db,
+            "stage": serde_json::Value::Null,
+            "onion": serde_json::Value::Null,
+        })
+        .to_string();
+        crate::db::effects::enqueue(
+            &tx,
+            crate::bot::effects::KIND_SUBAGENT_DISPATCH,
+            &crate::bot::effects::subagent_dispatch_key(&id_for_db),
+            &payload,
+            crate::db::now_ms(),
+        )
+        .map_err(CommandError::DbError)?;
+        tx.commit()
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        Ok(history_len.unwrap_or_default() as i64)
+    })
+    .await;
+    match outcome {
+        Ok(n) => {
+            crate::bot::audit_log(
+                app,
+                &format!("subagent_resume | id: {id} | 历史消息 {n} 条 | by 主会话"),
+            );
+            crate::bot::effects::kick();
+            ToolResult::ok(
+                format!(
+                    "已续跑（跨进程）：subagentId={id} status=queued，上次执行的全量对话历史（{n} 条消息）已装载，追加 10 轮预算继续完成。用 check_subagent 轮询结果。"
+                ),
+                Vec::new(),
+            )
+        }
+        Err(e) => ToolResult::error(format!("resume 失败：{}", e.message()), Vec::new()),
     }
 }
 /// write_artifact_file 工具：仅限子 agent 会话 + 产物目录内（设计 §6 产物目录隔离）。
@@ -421,4 +529,38 @@ pub(crate) fn safe_rel_path(raw: &str) -> Option<&str> {
 /// 产物目录（设计 §6 隔离）：gen_dir/subagents/{subagent_id}/。
 pub(crate) fn artifact_dir_of(gen_root: &std::path::Path, subagent_id: &str) -> std::path::PathBuf {
     gen_root.join("subagents").join(subagent_id)
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+
+    /// 装载口径三道闸：id 匹配、messages ≥2、可解析——任一不满足即 None。
+    #[test]
+    fn load_resume_history_validates_all_gates() {
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar = dir.path().join("session_history.json");
+        // 正常：id 匹配 + system/user 两条
+        std::fs::write(
+            &sidecar,
+            r#"{"subagent_id":"sa_x","messages":[{"role":"system","content":"s"},{"role":"user","content":"t"}]}"#,
+        )
+        .unwrap();
+        let got = load_resume_history(&sidecar, "sa_x").expect("合法 sidecar 应装载");
+        assert_eq!(got.len(), 2);
+        // id 不匹配（复制错行/跨任务残留）
+        assert!(load_resume_history(&sidecar, "sa_other").is_none());
+        // messages 只有 1 条（半截 sidecar）
+        std::fs::write(
+            &sidecar,
+            r#"{"subagent_id":"sa_x","messages":[{"role":"system","content":"s"}]}"#,
+        )
+        .unwrap();
+        assert!(load_resume_history(&sidecar, "sa_x").is_none());
+        // 坏 JSON
+        std::fs::write(&sidecar, "{half").unwrap();
+        assert!(load_resume_history(&sidecar, "sa_x").is_none());
+        // 文件不存在
+        assert!(load_resume_history(&dir.path().join("nope.json"), "sa_x").is_none());
+    }
 }
