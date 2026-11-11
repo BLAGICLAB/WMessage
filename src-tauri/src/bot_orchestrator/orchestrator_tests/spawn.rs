@@ -252,7 +252,6 @@ fn cancel_sets_cancelled_and_terminal_noop() {
     let _g = crate::db::lock_db_write();
     let ack = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
     let c = cancel_subagent_locked(&conn, &ack.subagent_id, "用户取消", 6_000).unwrap();
-    assert!(c.ok);
     assert!(!c.already_terminal);
     assert_eq!(c.status, SubagentStatus::Cancelled);
     let row = crate::db::load_subagent(&conn, &ack.subagent_id)

@@ -306,16 +306,14 @@ pub(crate) fn gate() -> &'static SubagentGate {
             per_session: HashMap::new(),
             waiting: HashMap::new(),
         }),
-        notify: tokio::sync::Notify::new(),
     })
 }
 /// 进程级并发闸。FIFO 口径勘误 采纳后的简化）：
 /// 持久队列 + notified().await 在 future 被 drop 时会泄漏队列项（取消不安全），
-/// 改为「RAII 等待计数 + 轮询/唤醒重试」——同会话内先到先得（严格），
+/// 改为「RAII 等待计数 + 轮询重试」——同会话内先到先得（严格），
 /// 跨会话近似公平（3 槽争用面极小，A 期接受）。
 pub(crate) struct SubagentGate {
     pub(crate) state: std::sync::Mutex<GateState>,
-    pub(crate) notify: tokio::sync::Notify,
 }
 impl SubagentGate {
     /// 可取消排队——每轮 50ms 退避后调 `should_abort`，true 即退队返回
@@ -365,8 +363,7 @@ impl SubagentGate {
             if outcome == Some(true) {
                 return Some(GateTicket { parent_session });
             }
-            // 没轮到：等唤醒或 50ms 退避重试（无持久队列项，取消安全）
-            gate().notify.notify_one();
+            // 没轮到：50ms 退避重试（无持久队列项，取消安全）
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     }
@@ -404,8 +401,6 @@ impl Drop for GateTicket {
                 }
             }
         }
-        drop(st);
-        gate().notify.notify_one();
     }
 }
 /// 等待席位：Drop 递减 waiting 计数（waiter future 被 drop 也安全）。

@@ -335,19 +335,18 @@ pub async fn tool_resume_subagent(
             return ToolResult::error(format!("resume 失败：产物目录不可用（{e}）"), Vec::new())
         }
     };
+    // load_resume_history 返回 Some 已内建 messages ≥ 2 的装载口径，这里只区分
+    // 「可装载 / 不可装载」
     let history_len = load_resume_history(&sidecar, &id).map(|m| m.len());
-    match history_len {
-        Some(n) if n >= 2 => {}
-        _ => {
-            return ToolResult::error(
-                format!(
-                    "resume 失败：没有可装载的续跑历史（{}）。该子任务只能重派（spawn）。",
-                    sidecar.display()
-                ),
-                Vec::new(),
-            );
-        }
-    }
+    let Some(n) = history_len else {
+        return ToolResult::error(
+            format!(
+                "resume 失败：没有可装载的续跑历史（{}）。该子任务只能重派（spawn）。",
+                sidecar.display()
+            ),
+            Vec::new(),
+        );
+    };
     // 翻行（queued）+ 派发待办（携原会话配置档）：同一事务——「有 queued 行
     // 无待办」的中间态不存在（与 spawn 同款）。stage 不带：角色提示词沿用
     // sidecar 里那份；onion 从原会话元列搬运——runner 给行建的是新会话，
@@ -363,7 +362,7 @@ pub async fn tool_resume_subagent(
                 app,
                 &format!(
                     "subagent_resume | id: {id} | 历史消息 {} 条 | 配置档: {} | by 主会话",
-                    history_len.unwrap_or_default(),
+                    n,
                     onion.as_ref().map(|o| o.config.as_str()).unwrap_or("-"),
                 ),
             );
@@ -371,7 +370,7 @@ pub async fn tool_resume_subagent(
             ToolResult::ok(
                 format!(
                     "已续跑（跨进程）：subagentId={id} status=queued，上次执行的全量对话历史（{} 条消息）已装载，追加 {} 轮预算继续完成。用 check_subagent 轮询结果。",
-                    history_len.unwrap_or_default(),
+                    n,
                     crate::bot::subagent_repair::RESUME_ROUNDS,
                 ),
                 Vec::new(),

@@ -22,8 +22,6 @@ use tauri::AppHandle;
 // ── subagent-split: begin ──
 // 拆分后的子模块 re-export：旧路径 `crate::bot_orchestrator::<name>` 1:1 保持可用。
 pub use crate::bot::subagent_spawn::spawn_subagent;
-pub use crate::bot::subagent_spawn::MAX_GLOBAL_RUNNING;
-pub use crate::bot::subagent_spawn::MAX_PER_SESSION_RUNNING;
 pub use crate::bot::subagent_tools::tool_cancel_subagent;
 pub use crate::bot::subagent_tools::tool_check_subagent;
 pub use crate::bot::subagent_tools::tool_read_own_card;
@@ -218,7 +216,6 @@ pub struct CheckState {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CancelAck {
-    pub ok: bool,
     pub subagent_id: String,
     pub status: SubagentStatus,
     pub already_terminal: bool,
@@ -295,7 +292,6 @@ pub(crate) fn cancel_subagent_locked(
     let row = resolve_row(conn, key)?;
     if row.status.is_terminal() {
         return Ok(CancelAck {
-            ok: true,
             subagent_id: row.id,
             status: row.status,
             already_terminal: true,
@@ -304,7 +300,6 @@ pub(crate) fn cancel_subagent_locked(
     crate::db::update_subagent_status(conn, &row.id, SubagentStatus::Cancelled, now, Some(reason))
         .map_err(CommandError::DbError)?;
     Ok(CancelAck {
-        ok: true,
         subagent_id: row.id,
         status: SubagentStatus::Cancelled,
         already_terminal: false,
