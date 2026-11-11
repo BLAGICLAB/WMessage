@@ -458,18 +458,28 @@ pub(super) fn call_activate_tools<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> To
 }
 
 /// 终局提交（二期乙）：校验参数后把收尾 JSON 原文作为结果返回。模型循环
-/// 见「成功 + 本工具」即以该 JSON 结束回合——此处只做准入校验（对象形态 /
-/// status 枚举 / summary 非空），其余键（acceptance_check / checks /
-/// artifacts / blockers 及任何额外键）原样透传，verifier 的 checks 键由
-/// 收尾分类器按结构识别。
-pub(super) fn call_submit_result<'a>(_ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
-    Box::pin(async move {
-        use crate::bot::registry::ToolResult;
-        match validate_submit_args(args) {
-            Ok(canonical) => ToolResult::ok(canonical, Vec::new()),
-            Err(e) => ToolResult::error(e, Vec::new()),
-        }
-    })
+/// 见「成功 + 本工具」即以该 JSON 结束回合——此处做会话闸（仅子 agent 执行
+/// 会话可交卷，与 write_artifact_file / read_own_card 同一面）+ 参数准入校验
+/// （对象形态 / status 枚举 / summary 非空），其余键（acceptance_check /
+/// checks / artifacts / blockers 及任何额外键）原样透传，verifier 的 checks
+/// 键由收尾分类器按结构识别。
+pub(super) fn call_submit_result<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let session_id = ctx.session_id;
+    // 本体无 await：闸与校验都是同步短路径，收敛到不绑 Runtime 的入口
+    //（测试可直驱，与「工具本体不绑 Runtime」同口径）
+    Box::pin(async move { submit_result_checked(session_id, args) })
+}
+
+/// submit_result 本体（不绑 Runtime）：会话闸 + 参数准入校验。
+fn submit_result_checked(session_id: Option<&str>, args: &str) -> crate::bot::registry::ToolResult {
+    use crate::bot::registry::ToolResult;
+    if !crate::tool_guard::is_subagent_session(session_id) {
+        return ToolResult::error("submit_result 仅子 agent 执行会话可用。", Vec::new());
+    }
+    match validate_submit_args(args) {
+        Ok(canonical) => ToolResult::ok(canonical, Vec::new()),
+        Err(e) => ToolResult::error(e, Vec::new()),
+    }
 }
 
 /// 终局提交参数校验（纯函数，单测不打 ToolCtx）：
@@ -509,6 +519,55 @@ mod submit_result_tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["status"], "succeeded");
         assert_eq!(v["checks"][0]["met"], false, "checks 原样透传");
+    }
+
+    /// 会话闸：submit_result 只认子 agent 执行会话。主会话模型硬猜工具名调
+    /// 过来必须在工具体被拒——否则收尾 JSON 会以 Submitted 终结主回合。
+    #[test]
+    fn submit_result_denied_outside_subagent_sessions() {
+        let args = r#"{"status":"succeeded","summary":"done"}"#;
+        let out = super::submit_result_checked(Some("sess-submit-gate-main"), args);
+        assert!(!out.status.is_success(), "主会话调用必须被拒");
+        assert!(out.text.contains("仅子 agent 执行会话可用"), "{}", out.text);
+
+        // 已注册的子 agent 执行会话：闸放行，参数校验照常通过
+        let sid = "sess-submit-gate-sub";
+        crate::tool_guard::register_subagent_session(sid, submit_gate_ctx());
+        let out2 = super::submit_result_checked(Some(sid), args);
+        assert!(
+            out2.status.is_success(),
+            "子 agent 会话应放行：{}",
+            out2.text
+        );
+        crate::tool_guard::unregister_subagent_session(sid);
+    }
+
+    /// 参数不合法时即便会话闸放行也照旧报错（闸不替代参数校验）
+    #[test]
+    fn submit_result_keeps_param_validation_inside_subagent_sessions() {
+        let sid = "sess-submit-gate-params";
+        crate::tool_guard::register_subagent_session(sid, submit_gate_ctx());
+        let out = super::submit_result_checked(Some(sid), r#"{"status":"done","summary":"x"}"#);
+        assert!(!out.status.is_success());
+        assert!(out.text.contains("status 必须"), "{}", out.text);
+        crate::tool_guard::unregister_subagent_session(sid);
+    }
+
+    fn submit_gate_ctx() -> crate::tool_guard::SubagentSessionCtx {
+        use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+        use std::sync::Arc;
+        crate::tool_guard::SubagentSessionCtx {
+            subagent_id: "sa_submit_gate".into(),
+            task_id: None,
+            profile: crate::db::SubagentProfile::Research,
+            tools: Arc::new(Vec::new()),
+            artifact_dir: std::path::PathBuf::from("/tmp/sa_submit_gate"),
+            acceptance_criteria_count: 0,
+            used_tool_calls: Arc::new(AtomicUsize::new(0)),
+            used_rounds: Arc::new(AtomicUsize::new(0)),
+            last_progress_ms: Arc::new(AtomicU64::new(0)),
+            tool_in_flight: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     #[test]

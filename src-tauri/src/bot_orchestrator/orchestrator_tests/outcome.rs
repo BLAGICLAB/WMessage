@@ -601,3 +601,20 @@ fn task_wrapper_omits_absent_context_summary() {
     let w = render_task_wrapper(&row, std::path::Path::new("/a"));
     assert!(!w.contains("上下文摘要"));
 }
+
+/// 递归禁用第二层的对称性守卫：四个编排工具（spawn/check/cancel/resume）的
+/// 工具体内都要有 is_subagent_session 身份闸——dispatch 1.6 白名单闸之外的
+/// 兜底层。新工具进这族时这里会红，提醒补闸；SUBAGENT_ONLY 的 submit_result
+/// 由工具体自己的会话闸守，不经此族白名单。
+#[test]
+fn subagent_orchestration_tools_carry_their_own_recursion_gate() {
+    let body = orch_prod_src();
+    for marker in [
+        "不得派发子 agent",
+        "不得查询其他子 agent",
+        "不得取消其他子 agent",
+        "不得续跑其他子 agent",
+    ] {
+        assert!(body.contains(marker), "工具体缺第二层递归闸：{marker}");
+    }
+}

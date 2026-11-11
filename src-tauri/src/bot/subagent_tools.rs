@@ -184,6 +184,12 @@ pub async fn tool_check_subagent(
     session_id: Option<String>,
 ) -> crate::bot::registry::ToolResult {
     use crate::bot::registry::ToolResult;
+    if crate::tool_guard::is_subagent_session(session_id.as_deref()) {
+        return ToolResult::error(
+            "子 agent 不得查询其他子 agent；自己的执行契约与实时余量用 read_own_card 看。",
+            Vec::new(),
+        );
+    }
     let v = parse_tool_args(args);
     let key = v["subagentId"]
         .as_str()
