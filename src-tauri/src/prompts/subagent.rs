@@ -66,9 +66,9 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
   contextSummary，禁止从零重烧——从零重烧等于把刚才那段时间全扔了。
 - error=result_json_unparseable：服务端已经自动补答过一次；仍失败说明子 agent
   连收尾格式都没给，重派前先把验收标准写具体些。
-- **跨进程续跑**：check_subagent 返回 status=budget_exceeded 且 error=max_turns 时，
-  优先调 resume_subagent（subagentId）原地续跑——装载上次执行的全量对话历史
-  追加 10 轮继续完成并交卷，比重派省掉重烧已跑部分的成本；无续跑历史时工具
+- **跨进程续跑**：check_subagent 返回 status=budget_exceeded 时，优先调
+  resume_subagent（subagentId）原地续跑——装载上次执行的全量对话历史追加
+  10 轮继续完成并交卷，比重派省掉重烧已跑部分的成本；无续跑历史时工具
   会响亮报错，那时再走重派（带残留摘要）。
 - 预算触顶收尾（工具调用、轮数，或子 agent 被熔断）时，汇报必须
   说明还剩什么没做、进行到哪一步——不得只交成品就收笔，用户要能从汇报里
@@ -518,5 +518,26 @@ mod subagent_prompt_tests {
             MAIN_AGENT_ADDENDUM.contains("禁止从零重烧"),
             "addendum 缺「禁止从零重烧」硬约束"
         );
+    }
+
+    /// 续跑引导按行状态判据（status=budget_exceeded），不按 error 串——工具
+    /// 熔断（error=max_tool_calls）的行同样可续跑且有 sidecar，按 error 判据
+    /// 会把主 agent 引去重派、白扔已跑的全程历史。reopen 的实际语义只认
+    /// status，这条对齐两侧口径。
+    #[test]
+    fn main_agent_addendum_promotes_resume_by_status_not_error_string() {
+        assert!(MAIN_AGENT_ADDENDUM.contains("status=budget_exceeded 时，优先调"));
+        assert!(
+            !MAIN_AGENT_ADDENDUM.contains("error=max_turns"),
+            "resume 引导不得按 error 串判据（工具熔断行会被排除在续跑外）"
+        );
+    }
+
+    /// 续跑轮数双源闸：主 agent addendum 与 resume_subagent 的 schema
+    /// description 里写死的「10 轮」必须与 RESUME_ROUNDS 一致——改常量时
+    /// 两处静态文案要同步，这条测试就是那个同步闸。
+    #[test]
+    fn resume_rounds_constant_matches_the_numbers_in_static_texts() {
+        assert_eq!(crate::bot::subagent_repair::RESUME_ROUNDS, 10);
     }
 }
