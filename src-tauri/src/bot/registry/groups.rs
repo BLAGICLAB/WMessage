@@ -108,8 +108,6 @@ pub const TOOL_GROUPS: &[(&str, &[&str])] = &[
             "unpack_archive",
             "pack_archive",
             "manage_file",
-            "write_artifact_file",
-            "read_own_card",
         ],
     ),
 ];
@@ -201,8 +199,8 @@ fn leak_group_name(g: &str) -> Result<&'static str, String> {
 
 /// dispatch 兜底闸（0.55 allowed-tools 之后、0.6 规则闸之前插）：开关关或
 /// 非休眠工具 → None 放行；休眠且该会话未激活 → Denied（文案含 activate_tools
-/// 指引，模型可自愈）。子 agent 会话永远拒（休眠工具不在其白名单，0.55 已拒，
-/// 这里是纵深）。
+/// 指引，模型可自愈）。子 agent 会话永远拒——它没有激活组记录，休眠工具在此
+/// 即拒；其后的 1.6 白名单闸还有一层纵深。
 pub fn deferred_gate(
     name: &str,
     session_id: Option<&str>,
@@ -327,13 +325,25 @@ mod tests {
     use super::*;
 
     /// 组清单覆盖完整性：TOOL_GROUPS 并集 == TOOLS_TABLE 全集（新增工具忘入组
-    /// 会在这红）。例外两个：submit_result（子 agent 终局提交，运行时契约，
-    /// 子 agent 专属且恒激活）与 resume_subagent（主 agent 专属续跑入口）——
-    /// 都不属于任何可挂载/可休眠组。
+    /// 会在这红）。例外四个：submit_result（子 agent 终局提交，运行时契约）与
+    /// resume_subagent（主 agent 专属续跑入口）不属于任何可挂载/可休眠组；
+    /// write_artifact_file / read_own_card 是子 agent 专属工具，组挂载拼装会
+    /// 把 SUBAGENT_ONLY_TOOLS 二次剔除，进组等于「永远被过滤的死项」。
     #[test]
     fn groups_cover_every_builtin_tool() {
-        const NOT_GROUPED: [&str; 2] =
-            [crate::bot::registry::SUBMIT_RESULT_TOOL, "resume_subagent"];
+        const NOT_GROUPED: [&str; 4] = [
+            crate::bot::registry::SUBMIT_RESULT_TOOL,
+            "resume_subagent",
+            "write_artifact_file",
+            "read_own_card",
+        ];
+        // 子 agent 专属工具永不进组：新增 SUBAGENT_ONLY_TOOLS 成员时必须同步登记
+        for t in crate::bot::registry::SUBAGENT_ONLY_TOOLS {
+            assert!(
+                NOT_GROUPED.contains(t),
+                "子 agent 专属工具 {t} 不得进任何组"
+            );
+        }
         let table: HashSet<&str> = crate::bot::registry::TOOLS_TABLE
             .iter()
             .map(|t| t.name)
@@ -342,7 +352,7 @@ mod tests {
         assert_eq!(
             &table,
             all_grouped_names(),
-            "组清单与 TOOLS_TABLE 必须一一对应（submit_result 除外：运行时契约不进组）"
+            "组清单与 TOOLS_TABLE 必须一一对应（子 agent 专属与主 agent 专属四个除外）"
         );
     }
 

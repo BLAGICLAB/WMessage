@@ -1069,8 +1069,8 @@ pub(crate) fn assemble_tools_json_body(keep: impl Fn(&ToolDef) -> bool) -> Strin
     s
 }
 
-/// 仅子 agent 可见的工具（write_artifact_file / read_own_card）不出现在
-/// 主 agent 的默认清单里——主可见数 = BUILTIN_TOOL_COUNT - SUBAGENT_ONLY_TOOLS.len()。
+/// 仅子 agent 可见的工具（write_artifact_file / read_own_card / submit_result）
+/// 不出现在主 agent 的默认清单里——主可见数 = BUILTIN_TOOL_COUNT - SUBAGENT_ONLY_TOOLS.len()。
 pub fn tools_json() -> &'static str {
     static CACHE: OnceLock<String> = OnceLock::new();
     CACHE.get_or_init(|| assemble_tools_json(|t| !SUBAGENT_ONLY_TOOLS.contains(&t.name)))

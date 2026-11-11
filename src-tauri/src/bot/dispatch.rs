@@ -578,7 +578,8 @@ async fn execute_tool_impl(
     if name != "use_skill" {
         // 0.57 休眠组兜底闸（D-3）：schema 层缩面的双保险——分组挂载时休眠工具
         // 在清单里不可见，模型幻觉调它必须拒（文案含 activate_tools 自愈指引）。
-        // 开关关/已激活/非休眠工具都直通；子 agent 在 0.55 白名单闸已被拒，到不了这。
+        // 开关关/已激活/非休眠工具都直通；子 agent 会话没有激活组记录，休眠工具
+        // 在此即拒（其后的 1.6 白名单闸还有一层）。
         if let Some(denied) = crate::bot::registry::groups::deferred_gate(name, session_id) {
             return denied;
         }
