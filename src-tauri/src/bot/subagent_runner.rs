@@ -662,7 +662,8 @@ pub(crate) async fn run_subagent(
         // 恢复成功就把收尾正文换回给下游 classify 照常判定（交出收尾 JSON 判真实
         // 完成，收尾窗同款口径）；恢复失败维持熔断正文走 budget_exceeded 留产。
         // 恢复轮次的 refs / trace 不并回——refs 是主聊天的引用面板数据，恢复轮
-        // 不新增用户可见引用；trace 欠记的轮数在恢复审计事件里有轮数记录。
+        // 不新增用户可见引用；恢复轮与补答轮的轮数与 token 不进 usage 记账，
+        // 恢复出口只有 subagent_fuse_recovered（带 via）一条审计。
         if text.contains(crate::bot_model_loop::FUSE_MARKER)
             || text.contains(crate::bot_model_loop::ROUNDS_FUSE_MARKER)
         {
@@ -1025,8 +1026,13 @@ pub(crate) async fn run_subagent(
     let elapsed = started.elapsed().as_millis() as u64;
     // 行的真实终态优先于 classify_outcome：用户取消走到这里时 classify 只会给出
     // Failed（执行被 StopToken 打断），照它上报 = 每次取消都记一条 subagent_failed
-    // 并沉淀「失败原因：」的空教训。收尾闭包整体失败（finalized=None）才回落到观感值
-    let effective_status = effective_status(finalized.as_ref().map(|r| r.status), status);
+    // 并沉淀「失败原因：」的空教训。收尾闭包整体失败拿不到行时回读一次真实终态
+    //（cancel 抢先后的收尾失败等场景），读不到才回落 classify 的观感值
+    let mut row_status = finalized.as_ref().map(|r| r.status);
+    if row_status.is_none() {
+        row_status = load_subagent_status(&app, &row.id).await;
+    }
+    let effective_status = effective_status(row_status, status);
     let event = match effective_status {
         SubagentStatus::Succeeded => "subagent_done",
         SubagentStatus::BudgetExceeded => "subagent_budget_exceeded",
