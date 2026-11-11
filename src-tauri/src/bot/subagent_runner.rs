@@ -826,19 +826,25 @@ pub(crate) async fn run_subagent(
             }));
         }
     }
-    // 轮数熔断现在也走 Ok 出口（正文带 ROUNDS_FUSE_MARKER），机器验收必须把它
-    // 排除掉：熔断行没有收尾 JSON，等于没交答卷，拿产物文件判它「未通过」只会
-    // 在正文里凭空多出一段子 agent 没说过的话。
-    let fused_on_rounds = matches!(&outcome, Ok((text, _, _))
-        if text.contains(crate::bot_model_loop::ROUNDS_FUSE_MARKER));
+    // 预算熔断（轮数 / 工具共用「⏹ 已熔断」前缀，查短标记即覆盖两者）与停滞
+    // 强停都走 Ok 出口但没有收尾 JSON，等于没交答卷——机器验收必须让开：拿
+    // 产物文件判熔断行「未通过」只会在正文里凭空多出一段子 agent 没说过的话。
+    // 恢复链交出的收尾正文不带标记，照常判定。
+    let outcome_text = match &outcome {
+        Ok((text, _, _)) => Some(text.as_str()),
+        Err(_) => None,
+    };
     let final_text: String = match &outcome {
         Ok((text, _, _)) => text.clone(),
         Err(e) => format!("⚠️ 执行失败：{}", e.message()),
     };
     // 机器可判定验收：verifier 收尾里的 met 是自述，服务端对「产物文件在不在」
     // 这类标准能自己判——判了才覆盖自评，并在正文里点名未通过项。
-    // 只在跑完（有收尾 JSON）时判：预算触顶/异常退出的行没有验收可言。
-    let machine_verdicts = if outcome.is_ok() && !fused_on_rounds {
+    // 只在跑完（有收尾 JSON 或恢复链 verdict）时判：熔断/停滞行没有验收可言。
+    let machine_verdicts = if machine_verdicts_allowed(
+        outcome_text,
+        stalled.load(std::sync::atomic::Ordering::SeqCst),
+    ) {
         eval_machine_criteria(&acceptance_criteria_of(&row), &artifact_dir)
     } else {
         Vec::new()
@@ -1184,6 +1190,16 @@ fn self_judged_criteria_count(row: &SubagentRow) -> usize {
         .count()
 }
 
+/// 机器验收的豁免口径：没有收尾正文（执行返错）、正文带任一熔断标记
+/// （`FUSE_MARKER` 是轮数标记的前缀子串，查短标记即覆盖两者）、或停滞强停
+/// ——没有「跑完」就没有验收可言。恢复链交出的收尾正文不带标记，照常判定。
+fn machine_verdicts_allowed(final_text: Option<&str>, stalled: bool) -> bool {
+    let Some(text) = final_text else {
+        return false;
+    };
+    !stalled && !text.contains(crate::bot_model_loop::FUSE_MARKER)
+}
+
 /// 盘上交付件报告（丙：熔断出口 verdict 推导的数据源；B：轮末提醒的数据源）。
 pub(crate) struct DeliverableReport {
     pub path: std::path::PathBuf,
@@ -1273,6 +1289,47 @@ pub(crate) fn verifier_deliverable_nudge(
         report.path.display(),
         report.checks
     ))
+}
+
+#[cfg(test)]
+mod machine_gate_tests {
+    use super::*;
+
+    /// 熔断（轮数与工具两轴）与停滞行不给机器验收——注释承诺的「预算触顶/
+    /// 异常退出的行没有验收可言」由这条守卫收口。恢复链交出的干净正文照常判。
+    #[test]
+    fn machine_verdicts_skip_fused_and_stalled_runs() {
+        // 轮数熔断正文
+        let rounds = format!(
+            "已核对 40+ 个数字\n\n{}",
+            crate::bot_model_loop::ROUNDS_FUSE_MARKER
+        );
+        assert!(
+            !machine_verdicts_allowed(Some(&rounds), false),
+            "轮数熔断不让验收"
+        );
+        // 工具熔断正文（原守卫只挡轮数标记，这条是本次收口的主目标）
+        let tool = format!(
+            "进度记录\n\n{}：本轮 Function 调用超过上限",
+            crate::bot_model_loop::FUSE_MARKER
+        );
+        assert!(
+            !machine_verdicts_allowed(Some(&tool), false),
+            "工具熔断同样不让验收"
+        );
+        // 停滞强停：没有收尾 JSON，不给验收
+        assert!(
+            !machine_verdicts_allowed(Some("停止前的最后一段正文"), true),
+            "停滞行不让验收"
+        );
+        // 执行返错：没有正文
+        assert!(!machine_verdicts_allowed(None, false));
+        // 恢复链交出的干净收尾 JSON：照常判定
+        assert!(machine_verdicts_allowed(
+            Some(r#"{"status":"succeeded"}"#),
+            false
+        ));
+    }
 }
 
 #[cfg(test)]
