@@ -243,6 +243,67 @@ pub async fn tool_cancel_subagent(
     }
 }
 
+/// 续跑派发携带的原会话配置档（原会话元列的搬运形态，与 SpawnOnion 同形）。
+pub(crate) struct ResumeOnion {
+    pub config: String,
+    pub max_turn: Option<u32>,
+}
+
+/// resume 纯 DB 核心（与 spawn_subagent_locked 同款，内存库可单测）：
+/// 读原会话 onion 元列 → 翻行 → 派发待办携 onion（同一事务）。
+///
+/// onion 必须从原会话搬运：runner 给行建**新**会话，派发 payload 不带 onion
+/// 时新会话没有元数据可挂（bind_session 读的是新会话），配置档的白名单交集 /
+/// max_turn 钳制 / 提示词段与采样温度全部静默丢失——续跑行会比首跑「更宽」。
+pub(crate) fn resume_subagent_locked(
+    conn: &mut rusqlite::Connection,
+    id: &str,
+    now: i64,
+) -> CommandResult<Option<ResumeOnion>> {
+    let tx = conn
+        .transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    // 原会话元列在翻行前读：需要行上的 session_id，而 reopen 只认终态行。
+    // 读元列与翻行同事务，「元列快照」与「行翻转」不会跨事务错位。
+    let row = crate::db::load_subagent(&tx, id)
+        .map_err(CommandError::DbError)?
+        .ok_or_else(|| CommandError::InvalidArgument {
+            field: "subagentId".into(),
+            value: id.to_string(),
+            reason: "subagent 不存在".into(),
+        })?;
+    let onion = match row.session_id.as_deref() {
+        Some(sid) => crate::db::bot_session_onion(&tx, sid)
+            .map_err(CommandError::DbError)?
+            .map(|m| ResumeOnion {
+                config: m.config,
+                max_turn: m.max_turn.map(|t| t as u32),
+            }),
+        None => None,
+    };
+    crate::db::reopen_subagent_for_resume(&tx, id).map_err(CommandError::DbError)?;
+    let payload = serde_json::json!({
+        "subagentId": id,
+        "stage": serde_json::Value::Null,
+        "onion": onion.as_ref().map(|o| serde_json::json!({
+            "config": o.config,
+            "maxTurn": o.max_turn,
+        })),
+    })
+    .to_string();
+    crate::db::effects::enqueue(
+        &tx,
+        crate::bot::effects::KIND_SUBAGENT_DISPATCH,
+        &crate::bot::effects::subagent_dispatch_key(id),
+        &payload,
+        now,
+    )
+    .map_err(CommandError::DbError)?;
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    Ok(onion)
+}
+
 /// resume_subagent 工具（二期）：跨进程续跑预算熔断的子 agent——装载
 /// session_history.json 全量历史，同 id 翻回 queued 重入派发管线（派发器
 /// 拿到 queued 行起 runner，runner 见 sidecar 即续跑模式）。
@@ -287,44 +348,31 @@ pub async fn tool_resume_subagent(
             );
         }
     }
-    // 翻行（queued）+ 派发待办：同一事务——「有 queued 行无待办」的中间态
-    // 不存在（与 spawn 同款）。stage/onion 不带：角色提示词沿用 sidecar 里
-    // 那份，onion 由 runner 的 bind_session 从会话元数据重挂。
+    // 翻行（queued）+ 派发待办（携原会话配置档）：同一事务——「有 queued 行
+    // 无待办」的中间态不存在（与 spawn 同款）。stage 不带：角色提示词沿用
+    // sidecar 里那份；onion 从原会话元列搬运——runner 给行建的是新会话，
+    // payload 不带 onion 时新会话没有元数据可挂，配置档的收窄会静默丢失。
     let id_for_db = id.clone();
-    let outcome = db_locked(app, move |conn| -> CommandResult<i64> {
-        let tx = conn
-            .transaction()
-            .map_err(|e| CommandError::DbError(e.to_string()))?;
-        crate::db::reopen_subagent_for_resume(&tx, &id_for_db).map_err(CommandError::DbError)?;
-        let payload = serde_json::json!({
-            "subagentId": id_for_db,
-            "stage": serde_json::Value::Null,
-            "onion": serde_json::Value::Null,
-        })
-        .to_string();
-        crate::db::effects::enqueue(
-            &tx,
-            crate::bot::effects::KIND_SUBAGENT_DISPATCH,
-            &crate::bot::effects::subagent_dispatch_key(&id_for_db),
-            &payload,
-            crate::db::now_ms(),
-        )
-        .map_err(CommandError::DbError)?;
-        tx.commit()
-            .map_err(|e| CommandError::DbError(e.to_string()))?;
-        Ok(history_len.unwrap_or_default() as i64)
+    let outcome = db_locked(app, move |conn| {
+        resume_subagent_locked(conn, &id_for_db, crate::db::now_ms())
     })
     .await;
     match outcome {
-        Ok(n) => {
+        Ok(onion) => {
             crate::bot::audit_log(
                 app,
-                &format!("subagent_resume | id: {id} | 历史消息 {n} 条 | by 主会话"),
+                &format!(
+                    "subagent_resume | id: {id} | 历史消息 {} 条 | 配置档: {} | by 主会话",
+                    history_len.unwrap_or_default(),
+                    onion.as_ref().map(|o| o.config.as_str()).unwrap_or("-"),
+                ),
             );
             crate::bot::effects::kick();
             ToolResult::ok(
                 format!(
-                    "已续跑（跨进程）：subagentId={id} status=queued，上次执行的全量对话历史（{n} 条消息）已装载，追加 10 轮预算继续完成。用 check_subagent 轮询结果。"
+                    "已续跑（跨进程）：subagentId={id} status=queued，上次执行的全量对话历史（{} 条消息）已装载，追加 {} 轮预算继续完成。用 check_subagent 轮询结果。",
+                    history_len.unwrap_or_default(),
+                    crate::bot::subagent_repair::RESUME_ROUNDS,
                 ),
                 Vec::new(),
             )

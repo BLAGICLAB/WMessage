@@ -564,8 +564,9 @@ pub fn update_subagent_status(
 
 /// 跨进程续跑的唯一行状态入口（resume_subagent 工具调用）：预算熔断行翻回
 /// queued 重入派发管线。`transition_allowed` 对终态恒 false——续跑是显式的、
-/// 审计留痕的例外：error 字段保留作历史（熔断原因不抹），finished_at 清空
-/// （新一轮时长口径从续跑起算），部分结果已落库的事实不动。
+/// 审计留痕的例外：error 字段保留作历史（熔断原因不抹），started_at 与
+/// finished_at 一并清空（时长口径从续跑重起；update_subagent_status 在下一笔
+/// Running 写时重新打 started_at），部分结果已落库的事实不动。
 pub fn reopen_subagent_for_resume(
     conn: &rusqlite::Connection,
     id: &str,
@@ -584,7 +585,7 @@ pub fn reopen_subagent_for_resume(
         }
     }
     conn.execute(
-        "UPDATE subagents SET status='queued', finished_at=NULL WHERE id=?1",
+        "UPDATE subagents SET status='queued', started_at=NULL, finished_at=NULL WHERE id=?1",
         rusqlite::params![id],
     )
     .map_err(|e| e.to_string())?;

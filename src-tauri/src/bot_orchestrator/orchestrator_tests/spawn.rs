@@ -1036,10 +1036,14 @@ fn reopen_subagent_for_resume_transitions_and_guards() {
     assert!(fused.finished_at.is_some(), "熔断终态带收尾时刻");
     assert_eq!(fused.error.as_deref(), Some("max_turns"));
 
-    // 续跑翻行：queued + finished_at 清空 + error 保留
+    // 续跑翻行：queued + started_at/finished_at 清空 + error 保留
     let reopened = crate::db::reopen_subagent_for_resume(&conn, &id).unwrap();
     assert_eq!(reopened.status, crate::db::SubagentStatus::Queued);
     assert_eq!(reopened.finished_at, None, "新一轮时长口径从续跑起算");
+    assert_eq!(
+        reopened.started_at, None,
+        "时长口径从续跑重起：started_at 一并清空，下一笔 Running 写重新打戳"
+    );
     assert_eq!(reopened.error.as_deref(), Some("max_turns"), "熔断原因不抹");
 
     // queued 行再续跑：拒绝（无需续跑）
@@ -1060,4 +1064,106 @@ fn reopen_subagent_for_resume_transitions_and_guards() {
     assert!(err.contains("只有预算熔断"), "{err}");
     // 不存在的行
     assert!(crate::db::reopen_subagent_for_resume(&conn, "sa_missing").is_err());
+}
+
+/// resume 的派发待办必须携带原会话的配置档元列：runner 给行建的是新会话，
+/// payload 不带 onion 时新会话没有元数据可挂——白名单交集 / max_turn 钳制 /
+/// 提示词段与采样温度全部静默丢失，续跑行会比首跑「更宽」。
+#[test]
+fn resume_locked_carries_previous_session_onion_into_dispatch() {
+    let mut conn = test_conn();
+    let _g = crate::db::lock_db_write();
+    // bot_sessions 最小 DDL（生产 DDL 内联在 open_db 批里，无同名常量）
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS bot_sessions (
+           id         TEXT PRIMARY KEY,
+           title      TEXT NOT NULL,
+           created_at INTEGER NOT NULL,
+           updated_at INTEGER NOT NULL,
+           is_subagent INTEGER NOT NULL DEFAULT 0,
+           onion_config TEXT,
+           onion_max_turn INTEGER
+         );",
+    )
+    .unwrap();
+    let ack = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+    let id = ack.subagent_id.clone();
+    crate::db::update_subagent_status(&conn, &id, crate::db::SubagentStatus::Running, 6_000, None)
+        .unwrap();
+    crate::db::update_subagent_status(
+        &conn,
+        &id,
+        crate::db::SubagentStatus::BudgetExceeded,
+        7_000,
+        Some("max_turns"),
+    )
+    .unwrap();
+    // 原会话绑 validator（max_turn=5）：续跑待办必须把这份收窄搬运给新会话
+    let session =
+        crate::db::bot_session_create_subagent_inner(&conn, Some("子任务：续跑".into())).unwrap();
+    crate::db::bot_session_set_onion(&conn, &session.id, Some("validator"), Some(5)).unwrap();
+    crate::db::set_subagent_session(&conn, &id, &session.id).unwrap();
+    let onion = crate::bot::subagent_tools::resume_subagent_locked(&mut conn, &id, 8_000).unwrap();
+    let onion = onion.expect("原会话绑了配置档，续跑待办必须携带");
+    assert_eq!(onion.config, "validator");
+    assert_eq!(onion.max_turn, Some(5));
+    let payload: String = conn
+        .query_row(
+            "SELECT payload FROM effect_queue WHERE kind=?1 AND key=?2",
+            rusqlite::params![
+                crate::bot::effects::KIND_SUBAGENT_DISPATCH,
+                crate::bot::effects::subagent_dispatch_key(&id)
+            ],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap();
+    assert!(payload.contains("\"validator\""), "{payload}");
+    assert!(payload.contains("\"maxTurn\":5"), "{payload}");
+    // 行翻转：queued + 两时刻清空 + error 保留
+    let row = crate::db::load_subagent(&conn, &id).unwrap().unwrap();
+    assert_eq!(row.status, crate::db::SubagentStatus::Queued);
+    assert_eq!(row.started_at, None, "时长口径从续跑重起");
+    assert_eq!(row.finished_at, None);
+    assert_eq!(row.error.as_deref(), Some("max_turns"));
+
+    // 无配置档的行（原会话没绑 onion）：待办里 onion 保持 null，行为不变。
+    // 目标换掉：首行已被翻回 queued（活行），同参会命中幂等键拿回同一行
+    let mut req2 = req(None);
+    req2.objective = "另一个目标，不带配置档".into();
+    let ack2 = spawn_subagent_locked(&mut conn, &req2, 9_000).unwrap();
+    assert_ne!(ack2.subagent_id, id, "不得命中首行幂等键");
+    let id2 = ack2.subagent_id.clone();
+    crate::db::update_subagent_status(
+        &conn,
+        &id2,
+        crate::db::SubagentStatus::Running,
+        10_000,
+        None,
+    )
+    .unwrap();
+    crate::db::update_subagent_status(
+        &conn,
+        &id2,
+        crate::db::SubagentStatus::BudgetExceeded,
+        11_000,
+        Some("max_turns"),
+    )
+    .unwrap();
+    let onion2 =
+        crate::bot::subagent_tools::resume_subagent_locked(&mut conn, &id2, 12_000).unwrap();
+    assert!(
+        onion2.is_none(),
+        "没绑配置档的行续跑不携带 onion，续跑行不得比首跑更宽"
+    );
+    let payload2: String = conn
+        .query_row(
+            "SELECT payload FROM effect_queue WHERE kind=?1 AND key=?2",
+            rusqlite::params![
+                crate::bot::effects::KIND_SUBAGENT_DISPATCH,
+                crate::bot::effects::subagent_dispatch_key(&id2)
+            ],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap();
+    assert!(payload2.contains("\"onion\":null"), "{payload2}");
 }
