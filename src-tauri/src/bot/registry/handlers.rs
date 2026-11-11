@@ -447,3 +447,74 @@ pub(super) fn call_activate_tools<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> To
     let session_id = ctx.session_id;
     Box::pin(async move { crate::bot::registry::groups::tool_activate_tools(session_id, args) })
 }
+
+/// 终局提交（二期乙）：校验参数后把收尾 JSON 原文作为结果返回。模型循环
+/// 见「成功 + 本工具」即以该 JSON 结束回合——此处只做准入校验（对象形态 /
+/// status 枚举 / summary 非空），其余键（acceptance_check / checks /
+/// artifacts / blockers 及任何额外键）原样透传，verifier 的 checks 键由
+/// 收尾分类器按结构识别。
+pub(super) fn call_submit_result<'a>(_ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move {
+        use crate::bot::registry::ToolResult;
+        match validate_submit_args(args) {
+            Ok(canonical) => ToolResult::ok(canonical, Vec::new()),
+            Err(e) => ToolResult::error(e, Vec::new()),
+        }
+    })
+}
+
+/// 终局提交参数校验（纯函数，单测不打 ToolCtx）：
+/// 对象形态 / status 枚举 / summary 非空三道，其余键原样透传。
+fn validate_submit_args(args: &str) -> Result<String, String> {
+    const ALLOWED_STATUS: [&str; 4] = ["succeeded", "failed", "cancelled", "budget_exceeded"];
+    let v: serde_json::Value =
+        serde_json::from_str(args).map_err(|e| format!("收尾参数不是合法 JSON：{e}"))?;
+    if !v.is_object() {
+        return Err("收尾参数必须是 JSON 对象（{\"status\":…,\"summary\":…}）".into());
+    }
+    let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("");
+    if !ALLOWED_STATUS.contains(&status) {
+        return Err(format!(
+            "status 必须只取 succeeded/failed/cancelled/budget_exceeded，收到「{status}」"
+        ));
+    }
+    let summary = v.get("summary").and_then(|s| s.as_str()).unwrap_or("");
+    if summary.trim().is_empty() {
+        return Err("summary 必填且不能为空（结论摘要，不倒原文）".into());
+    }
+    // 规范化序列化（键序归一、空白收敛）后原样交回——模型循环拿它当
+    // 回合最终正文，收尾分类器按结构识别 status / checks。
+    Ok(v.to_string())
+}
+
+#[cfg(test)]
+mod submit_result_tests {
+    use super::validate_submit_args;
+
+    #[test]
+    fn valid_args_pass_through_canonical() {
+        let out = validate_submit_args(
+            r#"{"status":"succeeded" , "summary":"ok","checks":[{"criterion":"C1","met":false}]}"#,
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["status"], "succeeded");
+        assert_eq!(v["checks"][0]["met"], false, "checks 原样透传");
+    }
+
+    #[test]
+    fn invalid_args_are_named_errors() {
+        // 非法 JSON
+        let e = validate_submit_args("{oops").unwrap_err();
+        assert!(e.contains("不是合法 JSON"));
+        // 非 object
+        let e = validate_submit_args("[1,2]").unwrap_err();
+        assert!(e.contains("JSON 对象"));
+        // status 越枚举
+        let e = validate_submit_args(r#"{"status":"done","summary":"x"}"#).unwrap_err();
+        assert!(e.contains("status 必须"));
+        // summary 空
+        let e = validate_submit_args(r#"{"status":"succeeded","summary":"  "}"#).unwrap_err();
+        assert!(e.contains("summary 必填"));
+    }
+}

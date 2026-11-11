@@ -585,8 +585,9 @@ fn task_wrapper_contains_all_sections() {
     assert!(!w.contains("预算:"));
     assert!(w.contains("产物目录:"));
     assert!(w.contains("/tmp/art"));
-    assert!(w.contains("完成后必须输出以下 JSON"));
-    assert!(w.contains("\"succeeded|failed|cancelled|budget_exceeded\""));
+    // 交卷指令（二期乙）：收尾走 submit_result 工具，任务包装不再嵌 schema 文本
+    assert!(w.contains("完成后调用 submit_result 工具提交收尾"));
+    assert!(!w.contains("完成后必须输出以下 JSON"));
 }
 /// 无上下文摘要时包装不带该段（不留空标题噪声）
 #[test]

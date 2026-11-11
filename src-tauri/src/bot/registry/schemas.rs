@@ -334,6 +334,17 @@ pub const SCHEMA_WRITE_FILE: &str = r##"{"type":"function","function":{"name":"w
 /// 组挂载元工具（D-3）：休眠组唯一启用口。schema 短、常挂不省几个字符——
 /// 它是「知道休眠能力存在」的唯一入口。
 pub const SCHEMA_ACTIVATE_TOOLS: &str = r##"{"type":"function","function":{"name":"activate_tools","description":"启用休眠的工具组（desktop 桌面系统 / services 受管服务 / apps 程序）。这三组默认不在你的工具清单里；需要时调用本工具，下一轮起组内工具进入清单。groups 传组名数组，可一次传多个，如 [\"desktop\"] 或 [\"services\",\"apps\"]。用不到就不要启用，省上下文。","parameters":{"type":"object","properties":{"groups":{"type":"array","items":{"type":"string","enum":["desktop","services","apps"]},"description":"要启用的休眠组名"}},"required":["groups"]}}}"##;
+/// 子 agent 终局提交（二期乙）：交卷载体从「末条文本嵌 JSON」改为工具调用。
+/// 工具参数是协议级 JSON——markdown 围栏 / 散文污染 / max_tokens 截断三害
+/// 从载体上消失（入参 JSON 闸 + 本工具校验双保险）。参数即收尾 JSON 原文。
+pub const SCHEMA_SUBMIT_RESULT: &str = r##"{"type":"function","function":{"name":"submit_result","description":"提交任务收尾（唯一的交卷出口）：调用成功即任务结束，不要再输出收尾文本。status 与 summary 必填；有验收标准时逐条结论放 acceptance_check；verifier 的逐条验收数组放 checks（服务端分类器认这个键）；产物清单放 artifacts；阻塞项放 blockers。","parameters":{"type":"object","properties":{
+  "status":{"type":"string","enum":["succeeded","failed","cancelled","budget_exceeded"],"description":"任务终态"},
+  "summary":{"type":"string","description":"结论摘要（必填，不倒原文）"},
+  "acceptance_check":{"type":"array","items":{"type":"object","properties":{"criterion":{"type":"string","description":"验收标准原文"},"met":{"type":"boolean"},"evidence":{"type":"string","description":"依据：文件路径+行号 / 命令输出 / 数字出处"}},"required":["criterion","met"]},"description":"逐条验收结论"},
+  "checks":{"type":"array","items":{"type":"object","properties":{"criterion":{"type":"string"},"met":{"type":"boolean"},"evidence":{"type":"string"}},"required":["criterion","met"]},"description":"verifier 专用：逐条验收结论数组"},
+  "artifacts":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"type":{"type":"string"},"description":{"type":"string"}}},"description":"产物清单（路径 + 类型 + 一句话说明）"},
+  "blockers":{"type":"array","items":{"type":"string"},"description":"阻塞项（有才带）"}
+},"required":["status","summary"]}}}"##;
 
 pub const SCHEMA_UPDATE_PLAN: &str = r##"{"type":"function","function":{"name":"update_plan","description":"更新本会话的执行计划（整表替换：每次调用都要交出完整清单，不要只交增量）。用途：多步任务开工前先列出步骤；每完成一步立刻调用一次更新该步状态，不要攒到最后一起补。状态三态：pending 未开始 / in_progress 正在做 / completed 已完成，任一时刻至多一条 in_progress。不要为了好看而虚报完成：completed 只给真正做完的步骤。什么时候建计划（命中任意一条就建）：要产出多份文件或多个交付物、任务要分阶段推进、用户给了多份材料要合并整合、技能文档里有多个阶段——读完技能文档、看清它有哪几个阶段之后再建也算来得及。什么时候不要用：单一目标的小任务、琐碎操作、纯信息问答——这类直接做，别建计划","parameters":{"type":"object","properties":{
     "explanation":{"type":"string","description":"相对上一版改了什么（可选）：新增/删除/调整了哪些步骤、为什么改；只写变更说明，不要把清单再抄一遍"},
@@ -356,7 +367,7 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
 /// 内置工具总数（= TOOLS_TABLE 条目数 = SCHEMA_* 常量数）。
 /// 注释与文档一律引用本常量而不另写数字；增删工具时只改这里一处，
 /// `builtin_tool_count_matches_table` 单测负责在数目对不上时红灯。
-pub const BUILTIN_TOOL_COUNT: usize = 67;
+pub const BUILTIN_TOOL_COUNT: usize = 68;
 
 // TOOLS_TABLE（内置工具单源真相：BUILTIN_TOOL_COUNT 个，其中 SUBAGENT_ONLY_TOOLS
 // 那几个仅子 agent 可见，主 agent 少这么多）
@@ -994,6 +1005,18 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         max_output_bytes: 8192,
         call: call_activate_tools,
     },
+    // 子 agent 终局提交（二期乙）：交卷从「末条文本嵌 JSON」改为工具调用——
+    // 工具参数是协议级 JSON，markdown 围栏 / 散文污染 / 截断三害从载体上消失。
+    // 参数即收尾 JSON 原文（规范化后作为回合最终正文返回），仅子 agent 可见。
+    // 追加在表尾：前 28 项核心基线（tools_baseline.json 前缀锁）不动。
+    ToolDef {
+        name: "submit_result",
+        schema: SCHEMA_SUBMIT_RESULT,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 4096,
+        call: call_submit_result,
+    },
 ];
 /// TOOLS JSON 由 TOOLS_TABLE 顺序拼装（schema 常量原文直拼，不做 parse + re-serialize）。
 /// 少一次运行期解析，也不给「schema 非法 → expect panic 杀聊天」留路径
@@ -1041,7 +1064,7 @@ pub fn tools_json() -> &'static str {
 }
 
 /// 仅子 agent 白名单可见的工具（主 agent 默认 schema 不含）。
-pub const SUBAGENT_ONLY_TOOLS: &[&str] = &["write_artifact_file", "read_own_card"];
+pub const SUBAGENT_ONLY_TOOLS: &[&str] = &["write_artifact_file", "read_own_card", "submit_result"];
 
 /// 子 agent 工具白名单（设计 §5.1 → 本仓工具映射）。
 /// 禁止（所有 profile）：spawn_subagent / check_subagent / cancel_subagent /
@@ -1061,6 +1084,8 @@ pub const RESEARCH_TOOLS: &[&str] = &[
     "extract_document",
     "write_artifact_file",
     "read_own_card",
+    // 终局提交（二期乙）：交卷出口是运行时契约，任何 profile 都必须可交卷
+    "submit_result",
 ];
 pub const CODER_TOOLS: &[&str] = &[
     "read_text_file",
@@ -1074,6 +1099,8 @@ pub const CODER_TOOLS: &[&str] = &[
     "pack_archive",
     "write_artifact_file",
     "read_own_card",
+    // 终局提交（二期乙）：交卷出口是运行时契约，任何 profile 都必须可交卷
+    "submit_result",
 ];
 pub const GENERAL_TOOLS: &[&str] = &[
     "web_search",
@@ -1091,6 +1118,8 @@ pub const GENERAL_TOOLS: &[&str] = &[
     "pack_archive",
     "write_artifact_file",
     "read_own_card",
+    // 终局提交（二期乙）：交卷出口是运行时契约，任何 profile 都必须可交卷
+    "submit_result",
 ];
 
 pub fn profile_whitelist(profile: crate::db::SubagentProfile) -> &'static [&'static str] {

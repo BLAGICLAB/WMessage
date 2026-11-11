@@ -106,7 +106,7 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 | `FUSE_SOFT_WARN_PCT` | `90` | 熔断阶梯第 1 段：软告警阈值（预算占比 %） |
 | `FUSE_WRAP_UP_PCT` | `95` | 熔断阶梯第 2 段：收尾窗阈值（预算占比 %） |
 | `WRAP_UP_ROUNDS` | `3` | 收尾窗轮数上限（窗口唯一的出口） |
-| `WRAP_UP_TOOLS` | `["write_artifact_file", "write_file", "edit_file", "read_own_card"]` | 收尾窗放行的工具白名单：写产物 + 读自己的任务卡 |
+| `WRAP_UP_TOOLS` | `["write_artifact_file", "write_file", "edit_file", "read_own_card", "submit_result"]` | 收尾窗放行的工具白名单：写产物 + 读自己的任务卡 + 终局提交（交卷出口不可收走） |
 | `MAX_REPLANS` | `2` | RePlan 全盘重规划次数上限 |
 | `MAX_PLAN_STEPS` | `8` | 单份计划的步数上限 |
 | `FINAL_SELFCHECK_ROUND_GAP_DEFAULT` | `8` | 终稿自检的轮次间隔（轮） |
@@ -131,7 +131,7 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 <!-- sop-counts:start -->
 
 ```
-工具总数 = 67
+工具总数 = 68
 调度早退点数 = 8
 子 agent profile 档数 = 3
 内置 onion 配置档数 = 3
@@ -139,7 +139,7 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 
 <!-- sop-counts:end -->
 
-- **工具总数 67** = `src-tauri/src/bot/registry/schemas.rs` 的 `TOOLS_TABLE` 条目数
+- **工具总数 68**（2026-11-11 +1：submit_result 子 agent 终局提交，仅子 agent 可见） = `src-tauri/src/bot/registry/schemas.rs` 的 `TOOLS_TABLE` 条目数
   （= `SCHEMA_*` 常量数；含组挂载元工具 `activate_tools`）。`read_own_card` / `write_artifact_file` 仅子 agent 可见，不进主 agent 清单。
 - **调度早退点数 8** = `src-tauri/src/bot/dispatch.rs` 生产段 `ToolResult::denied(` 的出现次数。
   由 `src-tauri/src/bot/dispatch/pre_tool_hook_tests.rs` 的计数断言锁住（断言值 8）。
@@ -283,7 +283,7 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
       旧版参数卡退役后，有没有残留的读 `PARAMS_TABLE` 拿预算的代码？
 - [ ] 熔断阶梯的三段（90% / 95% / 100%）在 `bot_model_loop/fuse.rs` 里真的按**占比**判定吗？
       还是某处按绝对次数？安全网调整时阶梯会不会错位？
-- [ ] `WRAP_UP_TOOLS` 白名单里的 4 个工具，在收尾窗内真的**不计配额**吗？
+- [ ] `WRAP_UP_TOOLS` 白名单里的 5 个工具，在收尾窗内真的**不计配额**吗？
       白名单判定有没有被绕过（大小写 / 别名 / 参数拼写）？
 - [ ] `WRAP_UP_ROUNDS=3` 的窗口出口：轮数用尽后是否**真的停**，
       还是仍能通过别的路径再发工具调用？
@@ -544,7 +544,7 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 | `start_service` **无 rlimit** | 见上（同族设计） |
 | 子 agent **没有墙钟** | 2026-10-28 预算简化整套撤掉墙钟；子 agent 的唯一时间维度是 600s 停滞看门狗 |
 | `params.rs` 只有**三行** | 参数卡退役的既定结果；不是「漏删」 |
-| `WRAP_UP_TOOLS` 白名单**不含** `read_text_file` | 收尾窗只放行写产物 + 读自己的任务卡；继续探索没有意义 |
+| `WRAP_UP_TOOLS` 白名单**不含** `read_text_file` | 收尾窗只放行写产物 + 读自己的任务卡 + 终局提交；继续探索没有意义 |
 | `SKILL_DEFAULT_MAX_STEPS` **只管 auto** | interactive 不设步数闸是刻意的 |
 | `research` profile **不能**写文件 | 只读档，配 `write_artifact_file` 落素材（产物目录），不是「不能产出」 |
 | 熔断阶梯按**占比**而非绝对次数 | 安全网调整时阶梯位置自动跟着走，改成绝对数会立刻错位 |

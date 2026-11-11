@@ -181,11 +181,13 @@ pub const WRAP_UP_ROUNDS: usize = 3;
 ///
 /// 触顶后唯一该做的事就是「把已有发现写成产物文件」——继续探索没有意义，
 /// 而读回自己的卡才知道产物写到哪了。
-pub const WRAP_UP_TOOLS: [&str; 4] = [
+pub const WRAP_UP_TOOLS: [&str; 5] = [
     "write_artifact_file",
     "write_file",
     "edit_file",
     "read_own_card",
+    // 终局提交：收尾窗里也必须放行——被拒等于焊死唯一的交卷出口
+    "submit_result",
 ];
 
 // ── 流程风控（自研 Plan+Receipt 体系专属）──

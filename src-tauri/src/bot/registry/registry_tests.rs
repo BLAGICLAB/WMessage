@@ -713,6 +713,8 @@ fn profile_whitelists_match_design_mapping() {
             "extract_document",
             "write_artifact_file",
             "read_own_card",
+            // 终局提交：运行时契约，任何 profile 必备（交卷出口）
+            "submit_result",
         ]
     );
     assert!(
@@ -737,6 +739,7 @@ fn profile_whitelists_match_design_mapping() {
             "pack_archive",
             "write_artifact_file",
             "read_own_card",
+            "submit_result",
         ]
     );
     let mut union: Vec<&str> = RESEARCH_TOOLS
@@ -805,8 +808,13 @@ fn tools_json_for_narrows_when_session_has_onion_config() {
     let narrowed = names_of(Some("reg-onion-narrow"));
     assert_eq!(
         narrowed,
-        vec!["read_text_file".to_string(), "grep_files".to_string()],
-        "绑了 allowed=[read_text_file, grep_files] 的会话必须只拿到这两个"
+        vec![
+            "read_text_file".to_string(),
+            "grep_files".to_string(),
+            "submit_result".to_string(),
+        ],
+        "绑了 allowed=[read_text_file, grep_files] 的会话必须只拿到这两个 + 终局提交
+        （submit_result 是运行时契约，onion 交集豁免——收走等于焊死交卷出口）"
     );
     assert!(narrowed.len() < plain.len(), "收窄必须真的变少");
 
@@ -874,8 +882,9 @@ fn gate_whitelist_and_schema_list_are_computed_from_the_same_intersection() {
     );
     assert_eq!(
         schema,
-        vec!["write_file".to_string()],
-        "运行时 profile=coder 才是上限：web_search 只属 research，应被收掉"
+        vec!["write_file".to_string(), "submit_result".to_string()],
+        "运行时 profile=coder 才是上限：web_search 只属 research，应被收掉
+        （submit_result 是交集豁免的运行时契约，恒在）"
     );
     crate::tool_guard::unregister_subagent_session(sid);
     crate::bot_onions::bind_for_test(sid, None);

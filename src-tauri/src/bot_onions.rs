@@ -254,10 +254,19 @@ pub fn load<R: tauri::Runtime>(app: &tauri::AppHandle<R>, id: &str) -> Result<On
 /// max_turn 的配置会静默把工具清零。
 pub fn effective_tools(profile: SubagentProfile, allowed: &[String]) -> Vec<&'static str> {
     let base = crate::bot::registry::profile_whitelist(profile);
-    base.iter()
+    let mut eff: Vec<&'static str> = base
+        .iter()
         .copied()
         .filter(|t| allowed.is_empty() || allowed.iter().any(|a| a == t))
-        .collect()
+        .collect();
+    // 终局提交工具是运行时契约不是能力面：任何交集都不得把它收走——收走
+    // 等于焊死子 agent 唯一的交卷出口（收尾窗同样为它让行）。配置档 allowed
+    // 未列它也照常可用；模型清单/提示词里的其余工具仍严格按交集。
+    let submit = crate::bot::registry::SUBMIT_RESULT_TOOL;
+    if !eff.contains(&submit) {
+        eff.push(submit);
+    }
+    eff
 }
 
 /// 交集为空时给模型/人看的一句话（§3.4：「配置看着生效、实际落空」必须可见）。
@@ -661,7 +670,11 @@ hooks:
             SubagentProfile::Coder,
             &["read_text_file".to_string(), "edit_file".to_string()],
         );
-        assert_eq!(eff, vec!["read_text_file", "edit_file"]);
+        assert_eq!(
+            eff,
+            vec!["read_text_file", "edit_file", "submit_result"],
+            "交集之外恒有终局提交（运行时契约豁免）"
+        );
         // profile 里有、allowed 里没有的必须被收掉
         assert!(!eff.contains(&"run_python"));
     }
@@ -675,8 +688,13 @@ hooks:
             &["run_python".to_string(), "edit_file".to_string()],
         );
         assert!(
-            eff.is_empty(),
+            !eff.contains(&"run_python") && !eff.contains(&"edit_file"),
             "yaml 不得放宽 profile：research 拿不到 run_python/edit_file，实得 {eff:?}"
+        );
+        assert_eq!(
+            eff,
+            vec!["submit_result"],
+            "能力面被收空后只剩终局提交（交卷出口不可收走）"
         );
     }
 
@@ -713,8 +731,11 @@ hooks:
 
     #[test]
     fn empty_result_is_surfaced_not_hidden() {
+        // 能力面被收空时，清单里仍恒有终局提交——「收空但交卷出口还在」
+        // 本身就是 surfaced：模型不会以为工具全丢了，只是不能再用能力工具
         let note = render_effective_note(SubagentProfile::Research, &["run_python".to_string()]);
-        assert!(note.contains("无可用工具"), "{note}");
+        assert!(note.contains("submit_result"), "{note}");
+        assert!(!note.contains("run_python"), "{note}");
         // 正常交集要给模型列出实际可用工具，不能让它以为 yaml 没生效
         let ok = render_effective_note(SubagentProfile::Coder, &["read_text_file".to_string()]);
         assert!(ok.contains("read_text_file"), "{ok}");
@@ -899,23 +920,20 @@ hooks:
     }
 
     #[test]
-    fn prompt_note_says_no_tools_when_narrowed_to_zero() {
+    fn prompt_note_lists_only_submit_result_when_capabilities_narrowed_to_zero() {
         // allowed 里的工具全在 TOOLS_TABLE 但全不在 research 白名单内
-        // → 交集为空。这正是「配置看着生效、实际落空」的最坏形态。
+        // → 能力面交集为空（终局提交恒豁免）。「配置看着生效、实际落空」的
+        // 最坏形态下，模型仍要能看见交卷出口与「能力被收掉」的真相。
         let cfg = parse("onion_id: probe\nprofile: research\nallowed: [edit_file, write_file]\n")
             .unwrap();
-        assert!(
-            effective_tools(SubagentProfile::Research, &cfg.allowed).is_empty(),
-            "本用例的前提是交集确实为空，否则断言无效"
-        );
         let note = render_prompt_note(&cfg, SubagentProfile::Research);
         assert!(
-            note.contains("没有任何工具可用"),
-            "交集为空时提示词要明说，否则模型会以为工具丢了：{note}"
+            note.contains("submit_result"),
+            "能力收空也必须给模型看见交卷出口：{note}"
         );
         assert!(
             !note.contains("edit_file"),
-            "空交集不得还把 allowed 原样念成可用：{note}"
+            "被收掉的能力工具不得出现在可用清单：{note}"
         );
     }
 

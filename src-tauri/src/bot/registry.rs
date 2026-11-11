@@ -26,6 +26,17 @@ pub struct ToolCtx<'a> {
 
 pub type ToolFuture<'a> = Pin<Box<dyn Future<Output = ToolResult> + Send + 'a>>;
 
+/// 子 agent 终局提交工具名（二期乙）：模型循环见此调用成功即结束回合，
+/// 参数 JSON 就是本回合最终正文。名字单源在这里——模型循环与收尾窗放行
+/// 都经 `is_submission_tool` 消费，不各写字面量。
+pub const SUBMIT_RESULT_TOOL: &str = "submit_result";
+
+/// 该工具是否为终局提交（模型循环的回合结束点 / 收尾窗放行名单 / onion
+/// 交集豁免三处共用这一个判定）。
+pub fn is_submission_tool(name: &str) -> bool {
+    name == SUBMIT_RESULT_TOOL
+}
+
 /// 工具返回的成败状态。审计级别、trace span 的 ok 字段、以及「这一步算不算
 /// 成功」的调度判定全部由它派生（`AuditLevel::from_tool_status` /
 /// `dispatch::span_ok`），工具返回文本只负责给模型读。

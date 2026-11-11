@@ -561,6 +561,10 @@ where
                     body_outcome = Some("tool_fuse");
                     return Ok((msg, collected_refs));
                 }
+                DispatchOutcome::Submitted(msg) => {
+                    body_outcome = Some("submitted");
+                    return Ok((msg, collected_refs));
+                }
             }
             // 轮末软警告：轮数提醒一次（见 inject_soft_warnings）。
             inject_soft_warnings(
@@ -655,6 +659,9 @@ enum DispatchOutcome {
     Stopped(String),
     /// 单轮 Function 调用熔断：附熔断正文
     Fused(String),
+    /// 终局提交（submit_result）成功：附规范化后的收尾 JSON——它就是本回合
+    /// 最终正文，循环到此结束（不再等模型再给一轮散文收尾）
+    Submitted(String),
 }
 
 /// 工具轮：execute_tool 分发 / 结果回灌 / 凭证登记。
@@ -797,13 +804,20 @@ where
         // 预算内计数执行；工具轴（wrap_up_at）或轮数轴（rounds_wrap_up_at）任一
         // 进收尾窗后只放行写产物类工具且不计数，其余拒绝且不计数——计数守的是
         // 「实际执行」的调用量。
+        // 终局提交工具不进阶梯（WrapUpAllowed 语义：放行 + 不计数）——它结束
+        // 回合，计数无意义；被收尾窗拒掉或撞 should_fuse 等于把唯一的交卷
+        // 出口焊死。白名单 / 审计等闸照常在 execute_tool 内生效。
         let rounds_in_wrap_up = round >= rounds_wrap_up_at;
-        let gate = gate_call(
-            *function_calls_total,
-            wrap_up_at,
-            rounds_in_wrap_up,
-            name.as_str(),
-        );
+        let gate = if crate::bot::registry::is_submission_tool(name.as_str()) {
+            CallGate::WrapUpAllowed
+        } else {
+            gate_call(
+                *function_calls_total,
+                wrap_up_at,
+                rounds_in_wrap_up,
+                name.as_str(),
+            )
+        };
         if gate == CallGate::WrapUpDenied {
             // 文案点名触发轴：工具轴是「额度将尽」，轮数轴是「轮次将尽」——
             // 模型据此选收尾动作（前者抓紧落盘、后者直接交正文）。
@@ -1012,6 +1026,11 @@ where
             "content": result
         }));
         tool_msg_ages.push((round, msgs.len() - 1));
+        // 终局提交：成功 = 模型交卷——规范化后的参数 JSON 就是本回合最终正文，
+        // 循环立即结束。失败（参数不合法等）照常回灌，模型下一轮重试。
+        if crate::bot::registry::is_submission_tool(name.as_str()) && !failed {
+            return Ok(DispatchOutcome::Submitted(result.clone()));
+        }
         // 工具随结果附图（screenshot）→ 图作为紧随 tool 消息的 user 消息注入。
         // OpenAI 协议 tool 消息只收文本，「工具后追加带图 user 消息」是官方视觉
         // 示例同款；Anthropic 转换器会把 [tool, user(图)] 合并成单条 user

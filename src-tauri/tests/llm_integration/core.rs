@@ -610,6 +610,55 @@ async fn deliverable_nudge_injected_once_when_ready() {
     );
 }
 
+/// 终局提交（submit_result）：工具成功即回合结束——规范化后的参数 JSON 就是
+/// 最终正文，不再等模型再给一轮散文；循环只发一次请求。
+#[tokio::test]
+async fn submit_result_tool_ends_turn_with_canonical_json() {
+    let server = MockLlmServer::start();
+    let args = r#"{"status":"succeeded","summary":"12 条验收 11 过 1 不过","checks":[{"criterion":"C1","met":true}]}"#;
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "submit_result".into(),
+        arguments: args.to_string(),
+    }));
+    // 若终局分支失效，循环会继续要第 2 轮——这个回复就是标记物
+    server.push_behavior(MockBehavior::TextReply("不该走到这一轮".into()));
+    let h = CoreHarness::new();
+
+    let deps = ModelLoopDeps {
+        on_round: &|_| {},
+        ..h.deps()
+    };
+    let (text, _refs) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &deps,
+        // 真工具经 execute_tool 才会被调用——替身复刻 submit_result 的
+        // 校验+规范化契约（同一形状），终局判定按工具名走
+        |name: String, args: String, _t: ToolCallTrace| async move {
+            assert_eq!(name, "submit_result");
+            let v: serde_json::Value = serde_json::from_str(&args).unwrap();
+            ToolResult::ok(v.to_string(), Vec::new())
+        },
+        noop_replan,
+    )
+    .await
+    .expect("应 Ok");
+
+    // 键序取决于 serde_json 的 map 实现，断言走 Value 级比对（与基线守卫同款）
+    let final_json: serde_json::Value =
+        serde_json::from_str(&text).expect("最终正文必须是合法 JSON");
+    let expected: serde_json::Value = serde_json::json!({
+        "status": "succeeded",
+        "summary": "12 条验收 11 过 1 不过",
+        "checks": [{"criterion": "C1", "met": true}],
+    });
+    assert_eq!(final_json, expected, "最终正文 = 规范化后的收尾 JSON");
+    assert_eq!(server.request_count(), 1, "交卷即终止，不再发第二轮请求");
+}
+
 #[tokio::test]
 async fn core_tool_call_round_trip_executes_and_continues() {
     // 轮次 1：模型请求 list_tasks → 注入 executor 执行 → 结果回填 →

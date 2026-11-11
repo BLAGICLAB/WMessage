@@ -327,17 +327,19 @@ mod tests {
     use super::*;
 
     /// 组清单覆盖完整性：TOOL_GROUPS 并集 == TOOLS_TABLE 全集（新增工具忘入组
-    /// 会在这红）
+    /// 会在这红）。submit_result 例外：子 agent 终局提交是运行时契约——子
+    /// agent 专属且恒激活，不属于任何可挂载/可休眠组。
     #[test]
     fn groups_cover_every_builtin_tool() {
         let table: HashSet<&str> = crate::bot::registry::TOOLS_TABLE
             .iter()
             .map(|t| t.name)
+            .filter(|n| *n != crate::bot::registry::SUBMIT_RESULT_TOOL)
             .collect();
         assert_eq!(
             &table,
             all_grouped_names(),
-            "组清单与 TOOLS_TABLE 必须一一对应"
+            "组清单与 TOOLS_TABLE 必须一一对应（submit_result 除外：运行时契约不进组）"
         );
     }
 
