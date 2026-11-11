@@ -588,6 +588,11 @@ fn task_wrapper_contains_all_sections() {
     // 交卷指令（二期乙）：收尾走 submit_result 工具，任务包装不再嵌 schema 文本
     assert!(w.contains("完成后调用 submit_result 工具提交收尾"));
     assert!(!w.contains("完成后必须输出以下 JSON"));
+    // 字段契约单源在工具 schema 与 SUBAGENT_BASE：包装只指路，不复述字段级契约
+    assert!(
+        !w.contains("status 与 summary 必填"),
+        "字段契约不得嵌回包装（否则又是一份要同步的文本）"
+    );
 }
 /// 无上下文摘要时包装不带该段（不留空标题噪声）
 #[test]

@@ -1136,8 +1136,12 @@ pub(crate) fn render_task_wrapper(row: &SubagentRow, artifact_dir: &std::path::P
     w.push_str(&format!("\n产物目录:\n{}\n", artifact_dir.display()));
     // 交卷指令（二期乙）：收尾走 submit_result 工具——参数即收尾 JSON，协议级
     // 载体免去 markdown 围栏/散文/截断三害；文本 JSON 由补答链兜底（仍在）。
-    // RESULT_SCHEMA_HINT 的字段说明随工具 schema 走，任务包装不再嵌一份。
-    w.push_str("\n完成后调用 submit_result 工具提交收尾：status 与 summary 必填；acceptance_check 逐条给 met 与 evidence（有验收标准时）；artifacts 列产物路径；blockers 有才带。调用成功即任务结束，不要再输出收尾文本。\n");
+    // 字段契约单源在工具 schema 与系统提示工作流第 4 步，任务包装只指路不复述
+    //（复述即第二份要同步的契约）。
+    w.push_str(
+        "\n完成后调用 submit_result 工具提交收尾（字段与规则见该工具的说明、\
+         系统提示工作流第 4 步）：调用成功即任务结束，不要再输出收尾文本。\n",
+    );
     w
 }
 /// 上报用终态：行已写入终态时以行为准（cancel 抢先 → cancelled），

@@ -217,10 +217,15 @@ pub(crate) const PROFILE_VERIFIER: &str = r#"你是 verifier（验收）子 agen
 ///
 /// 此前还有 `next_actions` 与 `confidence` 两个键：`next_actions` 全仓无人读；
 /// `confidence` 的示例值 0.0 会被模型照抄（见下方注），两处都不值当。
+///
+/// `checks` 行是 verifier 专用键的同构示例：这段 hint 是补答轮与强制交卷轮
+/// 的提示词，verifier 熔断后走到这两轮时拿不到 checks 示例就会改报
+/// acceptance_check 形态，收尾分类器的 verifier 结构分支在其产出上失活。
 pub(crate) const RESULT_SCHEMA_HINT: &str = r#"{
   "status": "succeeded|failed|cancelled|budget_exceeded",
   "summary": "…（必填：结论摘要，不倒原文）",
   "acceptance_check": [{"criterion": "…", "met": true, "evidence": "…"}],
+  "checks": [{"criterion": "…", "met": true, "evidence": "…"}],
   "artifacts": [{"path": "…", "type": "…", "description": "…"}],
   "blockers": []
 }"#;
@@ -467,6 +472,8 @@ mod subagent_prompt_tests {
         assert_eq!(v["status"], "succeeded|failed|cancelled|budget_exceeded");
         assert!(v["acceptance_check"].is_array());
         assert!(v["artifacts"].is_array());
+        // verifier 专用键在 hint 里有同构示例（补答轮/强制交卷轮的提示词就是这段）
+        assert!(v["checks"].is_array());
         // 无卡契约后不再要 subtasks——进度小计只认 acceptance_check（verifier 行认 checks）
         assert!(v.get("subtasks").is_none());
     }
