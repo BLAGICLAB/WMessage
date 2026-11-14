@@ -524,10 +524,12 @@ pub(crate) async fn read_sse_stream(
                     );
                     // 分类与流内错误对齐：断流是可恢复类（换连接重发有意义），
                     // Internal 恒为 recoverable=false，前端只会让用户「反馈日志」。
-                    // 原始细节（120s 判据等）只进审计，用户文案只说现象与下一步。
+                    // 原始细节（120s 判据等）只进审计，用户文案说现象、成因与
+                    // 下一步（重试入口）。
                     return Err(stream_failure(
                         CommandError::LlmRequestFailed(
-                            "大模型长时间没有响应，本轮未完成".to_string(),
+                            "大模型长时间没有响应，本轮未完成，可点气泡下方的「重试」重新发起这一轮"
+                                .to_string(),
                         ),
                         emitted_body.load(std::sync::atomic::Ordering::Relaxed),
                         // 死连接重发有意义（换一条新连接往往就成了）
@@ -555,10 +557,10 @@ pub(crate) async fn read_sse_stream(
                     );
                     // 分类与流内错误对齐（同上）；reqwest 原始串不进用户文案——
                     // 它是开发者词汇（reqwest #2373：Display 刻意只有包装串），
-                    // 成因短语由 stream_error_cause 归类给出
+                    // 成因短语由 stream_error_cause 归类给出，文案指向重试入口
                     return Err(stream_failure(
                         CommandError::LlmRequestFailed(format!(
-                            "网络连接中断（{cause}），本轮未完成"
+                            "网络连接中断（{cause}），本轮未完成，可点气泡下方的「重试」重新发起这一轮"
                         )),
                         emitted_body.load(std::sync::atomic::Ordering::Relaxed),
                         // 连接中断重发有意义（上游/网关瞬时断链）

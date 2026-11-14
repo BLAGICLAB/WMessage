@@ -703,6 +703,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
     openTraceFor,
     pickFiles,
     removeMessage,
+    retryTurn,
     send,
     setEffortForSession,
   } = useChatSend({
@@ -744,6 +745,13 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
   // 用 ref 间接：handler 引用只随真实依赖变。
   const addHintRef = useRef(addHint);
   addHintRef.current = addHint;
+  // retryTurn 同款 ref 间接：引用稳定是 MsgBubble memo 浅比较的前提
+  //（失败气泡的「重试」按钮经 MessageList 下发）
+  const retryTurnRef = useRef(retryTurn);
+  retryTurnRef.current = retryTurn;
+  const onRetryTurn = useCallback(() => {
+    void retryTurnRef.current();
+  }, [retryTurnRef]);
   const openTurnRollback = useCallback(
     (idx: number) => {
       const sid = sessionIdRef.current;
@@ -928,6 +936,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
         onOpenTask={openTaskInMain}
         onOpenExecSession={switchSession}
         onOpenTrace={openTraceFor}
+        onRetryTurn={onRetryTurn}
       />
       {/* 提问卡（ask_user）：贴输入区上方，答完收成两行留到回合收尾；一轮多问时标序号 */}
       {askCards.length > 0 && (

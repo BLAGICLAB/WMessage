@@ -155,3 +155,53 @@ describe("工具折叠单档呈现", () => {
     expect(screen.getAllByText(/run_python/).length).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe("失败气泡的重试入口", () => {
+  const failedMsg: Msg = {
+    role: "assistant",
+    content:
+      "半截正文\n\n⚠️ 请求大模型失败：网络连接中断（响应传输被截断），本轮未完成，可点气泡下方的「重试」重新发起这一轮",
+    turnStatus: "failed",
+  };
+
+  it("失败气泡（末条）渲染「重试」，点击走既有发送路径（不新造）", () => {
+    const onRetryTurn = vi.fn();
+    render(
+      <MessageList
+        messages={[{ role: "user", content: "查一下" }, failedMsg]}
+        {...baseProps}
+        onRetryTurn={onRetryTurn}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: /重试/ });
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+    expect(onRetryTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("失败行不在末位（后面已有新消息）→ 不渲染：重试 = 截尾重放，不能截掉更新的轮次", () => {
+    render(
+      <MessageList
+        messages={[
+          { role: "user", content: "查一下" },
+          failedMsg,
+          { role: "user", content: "新问题" },
+        ]}
+        {...baseProps}
+        onRetryTurn={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /重试/ })).not.toBeInTheDocument();
+  });
+
+  it("没有前置用户消息 → 不渲染（无处重放）", () => {
+    render(
+      <MessageList
+        messages={[failedMsg]}
+        {...baseProps}
+        onRetryTurn={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /重试/ })).not.toBeInTheDocument();
+  });
+});

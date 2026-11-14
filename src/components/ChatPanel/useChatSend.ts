@@ -161,43 +161,51 @@ export function useChatSend(params: ChatSendParams) {
     }
     if (cmd === "/retry") {
       setInput("");
-      if (streamState.isInflight(sessionIdRef.current ?? "") || !sessionId)
-        return true;
-      const msgs = messages.filter((m) => !m.streaming && !m.hint);
-      // 找到最后一条用户消息，砍掉它之后的所有内容，重新生成回复
-      let lastUserIdx = -1;
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        if (msgs[i].role === "user") {
-          lastUserIdx = i;
-          break;
-        }
-      }
-      if (lastUserIdx === -1) {
-        addHint("没有可重试的消息");
-        return true;
-      }
-      const target = msgs[lastUserIdx];
-      // 真源化 retry：先截尾（库里该用户行之后的失败回复等残行必须清掉，
-      // 否则后端重建的上下文会把它们摆回模型面前），再重放同一用户行
-      // （同 id upsert 命中旧行，保位保首插时刻）
-      if (!target.id) {
-        addHint("该消息还没有身份记录（旧数据），先刷新对话再重试");
-        return true;
-      }
-      try {
-        await invoke("bot_history_drop_after", {
-          sessionId,
-          msgId: target.id,
-        });
-      } catch (e) {
-        // 截尾失败就起轮 = 带残行上下文重跑，宁可不做
-        handleCommandError(e, "bot_history_drop_after");
-        return true;
-      }
-      await runChat(msgs.slice(0, lastUserIdx + 1));
+      await retryTurn();
       return true;
     }
     return false;
+  };
+  // 重试本轮：重放其前最近一条用户行（真源化 retry：先截尾——库里该用户行
+  // 之后的失败回复等残行必须清掉，否则后端重建的上下文会把它们摆回模型面前；
+  // 同 id upsert 命中旧行，保位保首插时刻）。/retry 斜杠命令与失败气泡的
+  // 「重试」按钮共用这一份逻辑，不另造发送路径。
+  const retryTurn = async (): Promise<void> => {
+    if (streamState.isInflight(sessionIdRef.current ?? "") || !sessionId) return;
+    // 围观执行会话期拦发送（与 send 同口径）：重放也是往执行中的会话发消息
+    if (execWatchRef.current !== null && execWatchRef.current === sessionId) {
+      addHint("⏳ 执行进行中，围观模式暂不能发送");
+      return;
+    }
+    const msgs = messages.filter((m) => !m.streaming && !m.hint);
+    // 找到最后一条用户消息，砍掉它之后的所有内容，重新生成回复
+    let lastUserIdx = -1;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === "user") {
+        lastUserIdx = i;
+        break;
+      }
+    }
+    if (lastUserIdx === -1) {
+      addHint("没有可重试的消息");
+      return;
+    }
+    const target = msgs[lastUserIdx];
+    if (!target.id) {
+      addHint("该消息还没有身份记录（旧数据），先刷新对话再重试");
+      return;
+    }
+    try {
+      await invoke("bot_history_drop_after", {
+        sessionId,
+        msgId: target.id,
+      });
+    } catch (e) {
+      // 截尾失败就起轮 = 带残行上下文重跑，宁可不做
+      handleCommandError(e, "bot_history_drop_after");
+      return;
+    }
+    await runChat(msgs.slice(0, lastUserIdx + 1));
   };
   const send = async () => {
     const text = input.trim();
@@ -369,6 +377,7 @@ export function useChatSend(params: ChatSendParams) {
     openTraceFor,
     pickFiles,
     removeMessage,
+    retryTurn,
     send,
     setEffortForSession,
   };

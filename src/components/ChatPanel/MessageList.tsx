@@ -15,6 +15,7 @@ import {
   MessageCircle,
   MessagesSquare,
   Pin,
+  RotateCcw,
   Trash2,
   TriangleAlert,
   Undo2,
@@ -55,6 +56,8 @@ type BubbleCallbacks = {
   onOpenExecSession: (sid: string) => void;
   /** 「执行轨迹」：打开这一轮的执行详情（trace 归属跟着消息走） */
   onOpenTrace?: (traceId: number) => void;
+  /** 「重试」：重放其前最近一条用户行（失败气泡的自动化出口；父级 ref 间接保证引用稳定） */
+  onRetryTurn?: () => void;
 };
 
 /** 子 agent 内嵌区。整组可选：没子 agent 的会话不传就不渲染。
@@ -78,6 +81,8 @@ type MsgBubbleProps = BubbleCallbacks & {
   busy: boolean;
   /** 子 agent 内嵌区；仅挂在最后一条助手回复上，其余气泡为 undefined */
   subagentSlot?: SubagentSlot;
+  /** 失败气泡的重试入口：只挂最后一条消息（重试 = 截尾重放，挂旧气泡会截掉比它新的轮次） */
+  canRetry?: boolean;
   /** 点文件（pill / 正文路径链接）→ 右侧栏就地预览。父级用 useCallback 固定，
    *  memo 浅比较才不会因新句柄把历史气泡全部重渲染一遍 */
   onPreviewFile?: (path: string) => void;
@@ -91,6 +96,7 @@ function MsgBubbleBase({
   isCopied,
   busy,
   subagentSlot,
+  canRetry,
   onPreviewFile,
   onShowFileChanges,
   onCopy,
@@ -99,6 +105,7 @@ function MsgBubbleBase({
   onOpenTask,
   onOpenExecSession,
   onOpenTrace,
+  onRetryTurn,
 }: MsgBubbleProps) {
   // 一次性算文件路径 + 是否显示操作行（避免在渲染条件里 IIFE + mutation m._fps 的反模式）；
   // 流式末条气泡每帧重渲染，useMemo 让路径正则只在内容变化时重跑
@@ -272,6 +279,19 @@ function MsgBubbleBase({
         {/* 回复完成后的操作行：复制按钮 + 任务引用按钮（点击去主窗口打开该任务） */}
         {showActions && (
           <div className="mt-1.5 flex flex-wrap items-center gap-1">
+            {/* 失败气泡的重试：放操作行最前——用户此刻最需要的动作排最左。
+                只挂最后一条消息：重试 = 截尾重放，挂旧气泡会截掉比它新的轮次 */}
+            {canRetry && onRetryTurn && (
+              <button
+                className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--brand)]"
+                title="重新发起这一轮：重放这条回复之前的最近一条用户消息"
+                onClick={() => onRetryTurn()}
+                disabled={busy}
+              >
+                <RotateCcw size={11} aria-hidden />
+                重试
+              </button>
+            )}
             {hasContent && (
               <button
                 className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)]"
@@ -649,6 +669,7 @@ function renderMessageList(
     onOpenTask,
     onOpenExecSession,
     onOpenTrace,
+    onRetryTurn,
   }: MessageListProps,
   Bubble: ComponentType<MsgBubbleProps>,
 ) {
@@ -660,6 +681,18 @@ function renderMessageList(
       if (messages[i].role === "assistant") return i;
     }
     return -1;
+  })();
+  // 失败气泡的「重试」只挂最后一条消息：重试 = 截尾重放（/retry 同语义），
+  // 挂旧气泡会截掉比它新的轮次。前置条件 = 它前面存在可重放的用户行。
+  const retryIdx = (() => {
+    const last = messages.length - 1;
+    if (last < 1) return -1;
+    const m = messages[last];
+    if (m.role !== "assistant" || m.turnStatus !== "failed") return -1;
+    const hasUserBefore = messages.some(
+      (x) => x.role === "user" && !x.hint && !x.streaming && x.content.trim(),
+    );
+    return hasUserBefore ? last : -1;
   })();
   return (
     // chat-scroll：关掉浏览器滚动锚定（理由见 main.css 同名类）。
@@ -688,6 +721,7 @@ function renderMessageList(
                 isCopied={copiedIdx === i}
                 busy={viewedBusy}
                 subagentSlot={i === hostIdx ? subagentSlot : undefined}
+                canRetry={i === retryIdx}
                 onPreviewFile={onPreviewFile}
                 onShowFileChanges={onShowFileChanges}
                 onCopy={onCopy}
@@ -696,6 +730,7 @@ function renderMessageList(
                 onOpenTask={onOpenTask}
                 onOpenExecSession={onOpenExecSession}
                 onOpenTrace={onOpenTrace}
+                onRetryTurn={onRetryTurn}
               />
             );
           })

@@ -112,7 +112,7 @@
   2. 【可观测】第 2 步的报错文案是「参数校验失败：…」形，提示语指向参数而非「反馈日志」。
   3. 【可观测】第 3 步的报错文案是网络/请求类（形如「大模型请求失败：…」），前端提示是「请检查网络与 API 配置后重试」，**不是**「不可自动重试；请反馈日志」。
   4. 【可观测】第 3 步的错误弹窗 / toast 里带机器可读 code（形如 `code=LLM_REQUEST_FAILED`）与 `recoverable=true`；前端的 `LLM_REQUEST_FAILED` 提示是「请检查网络与 API 配置后重试」，**不是** `INTERNAL` 那句「不可自动重试；请反馈日志（含复现步骤）」。
-  5. 【可观测】第 4 步断流的气泡文案是「网络连接中断（…），本轮未完成」形（idle 超时为「大模型长时间没有响应，本轮未完成」），**不含**「内部错误」字样、**不含** reqwest 原始串 `error decoding response body`。
+  5. 【可观测】第 4 步断流的气泡文案是「网络连接中断（…），本轮未完成，可点气泡下方的「重试」重新发起这一轮」形（idle 超时为「大模型长时间没有响应…」同构），**不含**「内部错误」字样、**不含** reqwest 原始串 `error decoding response body`；气泡操作行最前有「重试」按钮，点它 = 重放其前最近一条用户行（截尾重放，与 `/retry` 同语义；仅挂末条失败气泡，前面没有用户行时不渲染）。
   6. 【可核对】`grep -n "TASK_INVALID_STATE\|INVALID_ARGUMENT\|LLM_REQUEST_FAILED" src-tauri/src/error.rs` 命中三个稳定 code，且三者都在 `is_recoverable()` 里返回 true（`grep -n "fn is_recoverable" -A 35 src-tauri/src/error.rs` 可见 `Self::TaskInvalidState { .. } => true` / `Self::InvalidArgument { .. } => true` / `Self::LlmRequestFailed(_) => true`）；`Self::Internal(_) => false` 那条仍在，说明降级路径没被误当成可恢复。
   7. 【可核对】前端提示按 code 分流：`grep -n "TASK_INVALID_STATE\|INVALID_ARGUMENT\|LLM_REQUEST_FAILED" -A 2 src/lib/errorHandler.ts` 可见三个 case 各给一句可执行提示（任务状态不允许该操作… / 请检查输入参数 / 请检查网络与 API 配置后重试），没有一条回落到 `INTERNAL` 的「不可自动重试；请反馈日志」。
   8. 【可核对】`bot.log` 的 `llm.stream_failed` 行带 `err_chain`（含 hyper 真因，不再是孤零零一句 reqwest 包装串）、`bytes`、`elapsed_ms`、`phase=body`、`cause` 字段。
