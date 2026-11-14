@@ -195,6 +195,7 @@ fn one_shot_gate_survives_a_threshold_crossing_without_trim() {
         on_round: &on_round,
         turn_status: None,
         deliverable_ready: None,
+        repeat_ask: None,
         session_tools: None,
         guard_claim_keywords: &no_keywords,
         file_receipts: None,

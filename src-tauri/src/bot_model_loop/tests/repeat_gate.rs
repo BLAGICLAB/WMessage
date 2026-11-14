@@ -115,6 +115,108 @@ fn reject_text_names_tool_and_gives_a_way_out() {
     assert!(msg.contains("不得再以相同参数调用"), "文案应带禁令：{msg}");
 }
 
+/// 转问草稿必须在引擎参数红线内且三件齐：三选项、最保守假设（无人应答
+/// 按「就此打住」收尾）、问题点名工具与连击数。
+#[test]
+fn ask_draft_fits_engine_limits_and_carries_assumption() {
+    let d = ask_draft("http_request", 3);
+    assert!(
+        d.question.chars().count() <= 200 && d.why.chars().count() <= 100,
+        "question/why 必须在引擎红线内：{} / {}",
+        d.question,
+        d.why
+    );
+    assert_eq!(d.options.len(), 3, "选项给三条：换方法 / 再试 / 打住");
+    for o in &d.options {
+        assert!(o.chars().count() <= 40, "选项超 40 字：{o}");
+    }
+    assert!(
+        d.assumption.chars().count() <= 200 && d.assumption.contains("就此打住"),
+        "假设必须是最保守的「就此打住」：{}",
+        d.assumption
+    );
+    assert!(d.question.contains("http_request") && d.question.contains("3 次"));
+}
+
+/// 应答回填文案透传用户裁决；回落文案与拒文同向（换路或收尾）。
+#[test]
+fn answered_and_fallback_texts_carry_the_verdict_or_way_out() {
+    let a = answered_text("web_search", 3, "用户回答了你的提问：换个关键词再搜");
+    assert!(a.contains("换个关键词再搜"), "裁决应原样透传：{a}");
+    assert!(a.contains("请按裁决继续"), "应指示按裁决继续：{a}");
+    let f = fallback_text("web_search", 3);
+    assert!(
+        f.contains("未获应答") && f.contains("不得再以相同参数调用"),
+        "回落文案应说明未获应答并带禁令：{f}"
+    );
+}
+
+/// 每回合至多一问；应答后重置连击（答「继续」时重试必须放行）。
+#[test]
+fn ask_once_per_turn_and_answer_resets_streak() {
+    let mut st = RepeatGateState::new();
+    assert!(st.can_ask(), "新回合应可转问");
+    st.mark_ask_used();
+    assert!(!st.can_ask(), "问过之后本回合不得再问");
+    st.observe("web_search", r#"{"query":"q"}"#);
+    st.observe("web_search", r#"{"query":"q"}"#);
+    st.observe("web_search", r#"{"query":"q"}"#);
+    st.reset_tracking();
+    assert_eq!(
+        st.observe("web_search", r#"{"query":"q"}"#),
+        1,
+        "应答重置后同参重试应从 1 重新计数"
+    );
+}
+
+/// 接线守卫（转问分支）：闸块必须先尝试转问（出口在场且本回合未问过才发
+/// 起，且在征询前置位 ask_used），用户应答（Ok）重置连击、其余回落拒文；
+/// 三种 action 键（answered / fallback / reject）必须都存在。
+#[test]
+fn ask_branch_is_wired_in_the_gate_block() {
+    let src = prod_file_with("repeat_gate.observe");
+    let gate = src.find("repeat_gate.observe").expect("找不到闸块");
+    let block = &src[gate..];
+    assert!(
+        block.contains("match deps.repeat_ask") && block.contains("if repeat_gate.can_ask()"),
+        "闸块必须先尝试转问（出口在场且本回合未问过）"
+    );
+    let ask = block
+        .find("mark_ask_used")
+        .expect("转问前必须先置位 ask_used（每回合至多一问）");
+    let call = block
+        .find("ask_draft(name, consec)")
+        .expect("找不到转问草稿构造");
+    assert!(ask < call, "置位必须在发起征询之前");
+    assert!(
+        block.contains("reset_tracking"),
+        "用户应答后必须重置连击（「继续再试一次」要能放行）"
+    );
+    for action in ["answered", "fallback", "reject"] {
+        assert!(
+            block.contains(&format!("\"{action}\"")),
+            "action 键缺 {action}：审计分不了支"
+        );
+    }
+}
+
+/// 接线守卫（薄壳出口）：转问闭包必须闭在薄壳里直调 ask_engine，等待用
+/// 闸的短超时常量（不挂 ask_user 的 24h）。
+#[test]
+fn repeat_ask_closure_lives_in_shell_and_uses_short_timeout() {
+    // needle 必须唯一指向薄壳：core 也有 repeat_ask 形参，用 engine_ask_user
+    // （只有薄壳直调引擎）锁定文件。
+    let src = prod_file_with("engine_ask_user");
+    assert!(
+        src.contains("engine_ask_user"),
+        "转问出口必须直调 ask_engine"
+    );
+    assert!(
+        src.contains("REPEAT_GATE_ASK_TIMEOUT_SECS"),
+        "转问等待必须用闸的短超时常量，不得复用 ask_user 的 24h"
+    );
+}
+
 /// 接线守卫：拦截点必须在收尾窗拒绝之后、计数/执行之前——被拦调用不得
 /// 消耗预算（照抄收尾窗「只计实际执行」的口径），且闸拒绝分支不得触碰
 /// consec_failures（不进失败链，避免与 fail_hint 双重提示）。

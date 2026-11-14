@@ -78,7 +78,9 @@ pub(crate) use self::guard::{
     SELFCHECK_PASS_EMIT, SELFCHECK_PASS_HINT,
 };
 pub(crate) use self::output::apply_output_cap;
-pub(crate) use self::repeat_gate::{is_exempt_tool, reject_text, RepeatGateState};
+pub(crate) use self::repeat_gate::{
+    answered_text, ask_draft, fallback_text, is_exempt_tool, reject_text, RepeatGateState,
+};
 pub(crate) use self::request::{
     compact_before_round, prepare_round, request_round, LLM_RETRY_DELAY, MAX_STREAM_RETRIES,
 };

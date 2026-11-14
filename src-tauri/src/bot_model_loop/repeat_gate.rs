@@ -17,6 +17,9 @@ pub(crate) struct RepeatGateState {
     last_fp: Option<u64>,
     /// 与 `last_fp` 相同的连续调用次数（1 起）。
     consec: usize,
+    /// 本回合是否已转过问：问过（无论应答 / 超时 / 不可用）之后再撞闸一律
+    /// 拒文——防「问完接着循环→再问」把转问本身变成新循环。
+    ask_used: bool,
 }
 
 impl RepeatGateState {
@@ -24,6 +27,7 @@ impl RepeatGateState {
         Self {
             last_fp: None,
             consec: 0,
+            ask_used: false,
         }
     }
 
@@ -40,6 +44,22 @@ impl RepeatGateState {
             self.consec = 1;
         }
         self.consec
+    }
+
+    /// 本回合还能不能转过问（每回合至多一次）。
+    pub(crate) fn can_ask(&self) -> bool {
+        !self.ask_used
+    }
+
+    /// 标记本回合已转过问（在发起征询前置位）。
+    pub(crate) fn mark_ask_used(&mut self) {
+        self.ask_used = true;
+    }
+
+    /// 用户应答后重置连击：答「继续再试一次」时重试必须放行。
+    pub(crate) fn reset_tracking(&mut self) {
+        self.last_fp = None;
+        self.consec = 0;
     }
 }
 
@@ -100,5 +120,44 @@ fn canonical_json(v: &serde_json::Value) -> String {
 pub(crate) fn reject_text(name: &str, consec: usize) -> String {
     format!(
         "⛔ 死循环闸：工具 {name} 已连续 {consec} 次以完全相同的参数调用，本次未执行。请换一条路（改参数、换工具、把任务拆成更小的步骤），或按已有产出如实收尾；不得再以相同参数调用该工具。"
+    )
+}
+
+/// 转问文案草稿：问题 / 缘由 / 选项 / 假设，全部在引擎参数红线内
+/// （question ≤200 / why ≤100 / options ≤4×40 / assumption ≤200）。
+pub(crate) struct RepeatAskDraft {
+    pub(crate) question: String,
+    pub(crate) why: String,
+    pub(crate) options: Vec<String>,
+    pub(crate) assumption: String,
+}
+
+/// 组装转问草稿：三选项 + 最保守的假设（无人应答时按「就此打住」收尾）。
+pub(crate) fn ask_draft(name: &str, consec: usize) -> RepeatAskDraft {
+    RepeatAskDraft {
+        question: format!(
+            "工具 {name} 已连续 {consec} 次以完全相同的参数调用，疑似原地循环，本次已暂停。怎么继续？"
+        ),
+        why: "同一调用连发无进展，死循环闸自动征询裁决".to_string(),
+        options: vec![
+            "换方法重试".to_string(),
+            "继续再试一次".to_string(),
+            "就此打住".to_string(),
+        ],
+        assumption: "就此打住：保留已有产出，停止该方向的继续尝试并收尾".to_string(),
+    }
+}
+
+/// 应答回填文案：用户裁决原样透传，模型据此继续。
+pub(crate) fn answered_text(name: &str, consec: usize, verdict: &str) -> String {
+    format!(
+        "⛔ 死循环闸：工具 {name} 第 {consec} 次相同调用已拦截未执行。已征询用户，裁决：{verdict}。请按裁决继续。"
+    )
+}
+
+/// 转问未获应答的回落文案：与拒文同向（换路或收尾），出路不变。
+pub(crate) fn fallback_text(name: &str, consec: usize) -> String {
+    format!(
+        "⛔ 死循环闸：工具 {name} 已连续 {consec} 次以完全相同的参数调用，本次未执行；转问用户未获应答（无人值守、提问预算已尽或超时）。请换一条路（改参数、换工具、把任务拆成更小的步骤），或按已有产出如实收尾；不得再以相同参数调用该工具。"
     )
 }

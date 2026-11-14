@@ -191,6 +191,25 @@ pub struct ModelLoopDeps<'a> {
     /// 与预算驱动的 `inject_soft_warnings` 互补：那只在上限近旁才响，覆盖不了
     /// 「预算还早就够用、纯靠惯性磨」的空转段。
     pub deliverable_ready: Option<&'a (dyn Fn() -> Option<String> + Send + Sync)>,
+    /// 工具重复调用闸的转问出口（可提问语境第 3 次相同调用时征询用户裁决）。
+    ///
+    /// 入参 (question, why, options, assumption)，返回 ToolResult——引擎回落
+    /// 语义原样透传（Answered=Ok；超时 / 停止 / 未注册 / 预算尽=Warn；参数
+    /// 非法=Error）。薄壳闭 app 副本直调 ask_engine；返回值包 BoxFuture 是
+    /// 因为引擎等待是异步轮询，而 deps 其余出口都是同步闭包——future 借着
+    /// 薄壳的 stop，生命周期随 deps。None = 没这个注入点（测试直驱 core /
+    /// eval），闸降级为纯拒文。
+    pub repeat_ask: Option<
+        &'a (dyn Fn(
+            &str,
+            &str,
+            &[String],
+            &str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = crate::bot::registry::ToolResult> + Send + 'a>,
+        > + Send
+                 + Sync),
+    >,
 }
 
 /// 回合状态机。借鉴 ZCode 的 turn view model（`running` / `settling` /

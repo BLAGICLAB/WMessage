@@ -3,13 +3,13 @@
 //! 本文件由 bot_model_loop.rs 拆分而来（纯搬移，行为零变化）。
 
 use super::{
-    compact_before_round, finalize_without_tools, fuse_message, gate_call, inject_soft_warnings,
-    is_exempt_tool, mutation_succeeded, prepare_round, read_sse_stream, reject_text, request_round,
-    rounds_fuse_exit, should_fuse, side_selfcheck_verdict, stamp_last_assistant_reasoning,
-    stream_round, user_intent_of, with_thinking, wrap_up_exhausted_message,
-    wrap_up_rounds_exhausted, CallGate, FinalizeOutcome, LlmHttp, ModelLoopDeps, RepeatGateState,
-    RequestOutcome, RoundCtx, ToolEvidence, TurnStatus, EVIDENCE_OUTPUT_CHARS, LLM_RETRY_DELAY,
-    MAX_STREAM_RETRIES,
+    answered_text, ask_draft, compact_before_round, fallback_text, finalize_without_tools,
+    fuse_message, gate_call, inject_soft_warnings, is_exempt_tool, mutation_succeeded,
+    prepare_round, read_sse_stream, reject_text, request_round, rounds_fuse_exit, should_fuse,
+    side_selfcheck_verdict, stamp_last_assistant_reasoning, stream_round, user_intent_of,
+    with_thinking, wrap_up_exhausted_message, wrap_up_rounds_exhausted, CallGate, FinalizeOutcome,
+    LlmHttp, ModelLoopDeps, RepeatGateState, RequestOutcome, RoundCtx, ToolEvidence, TurnStatus,
+    EVIDENCE_OUTPUT_CHARS, LLM_RETRY_DELAY, MAX_STREAM_RETRIES,
 };
 use crate::bot_chat::merge_task_refs_dedup;
 use crate::bot_chat::TaskRef;
@@ -896,9 +896,38 @@ where
         // 工具重复调用闸：同一工具以完全相同参数连续调用达上限即拦截。形态
         // 与上方收尾窗拒绝同款：role=tool 拒文回填 + continue——不计数、不进
         // 失败链（闸拒绝不是工具失败，再叠 fail_hint 是双重提示）。
+        //
+        // 第 3 次先尝试转问（可提问语境 = 转问出口在场且本回合未问过）：用户
+        // 裁决原样回填 tool 消息，说「继续」则重置连击放行重试；无人应答或
+        // 不可问（子 agent / 无人值守 / 预算尽 / 已问过）降级为拒文。
         if !is_exempt_tool(name) {
             let consec = repeat_gate.observe(name, args);
             if consec >= crate::bot::constants::REPEAT_GATE_MAX_IDENTICAL {
+                let ask_reply = match deps.repeat_ask {
+                    Some(ask) if repeat_gate.can_ask() => {
+                        repeat_gate.mark_ask_used();
+                        let draft = ask_draft(name, consec);
+                        Some(
+                            ask(
+                                &draft.question,
+                                &draft.why,
+                                &draft.options,
+                                &draft.assumption,
+                            )
+                            .await,
+                        )
+                    }
+                    _ => None,
+                };
+                let (action, deny_msg) = match ask_reply {
+                    Some(reply) if reply.status == crate::bot::registry::ToolStatus::Ok => {
+                        // 用户答「继续再试一次」后重试必须放行——重置连击。
+                        repeat_gate.reset_tracking();
+                        ("answered", answered_text(name, consec, &reply.text))
+                    }
+                    Some(_) => ("fallback", fallback_text(name, consec)),
+                    None => ("reject", reject_text(name, consec)),
+                };
                 audit(
                     crate::audit::AuditLevel::Warn,
                     "repeat_gate",
@@ -906,10 +935,9 @@ where
                         ("tool", name.clone()),
                         ("consec", consec.to_string()),
                         ("round", (round + 1).to_string()),
-                        ("action", "reject".to_string()),
+                        ("action", action.to_string()),
                     ],
                 );
-                let deny_msg = reject_text(name, consec);
                 msgs.push(serde_json::json!({
                     "role": "tool",
                     "tool_call_id": id,

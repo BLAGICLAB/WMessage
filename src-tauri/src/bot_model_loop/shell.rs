@@ -361,6 +361,35 @@ pub async fn run_model_loop(
             })
                 as Box<dyn Fn() -> Option<String> + Send + Sync>)
         });
+    // 工具重复调用闸的转问出口：闭 app 副本直调 ask_engine，等待时长用闸的
+    // 短超时（卡死场景无人应答就按假设快速落地，不挂 24h）。子 agent 与
+    // 未注册链路引擎侧自然回落 warn，core 据此降级为拒文。
+    let repeat_ask = |question: &str,
+                      why: &str,
+                      options: &[String],
+                      assumption: &str|
+     -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = crate::bot::registry::ToolResult> + Send>,
+    > {
+        let app = app.clone();
+        let payload = serde_json::json!({
+            "question": question,
+            "why": why,
+            "options": options,
+            "assumption": assumption,
+        })
+        .to_string();
+        Box::pin(async move {
+            crate::ask_engine::engine_ask_user(
+                &app,
+                stop.session_id(),
+                &payload,
+                std::time::Duration::from_secs(crate::bot::constants::REPEAT_GATE_ASK_TIMEOUT_SECS),
+                Some(stop),
+            )
+            .await
+        })
+    };
     let deps = ModelLoopDeps {
         // 熔断上限：None = 安全网常量（主/子同一套）；Some 只剩 eval
         // 用例与单测直驱注入一条路。
@@ -423,6 +452,7 @@ pub async fn run_model_loop(
             }
         }),
         deliverable_ready: deliverable_ready_box.as_deref(),
+        repeat_ask: Some(&repeat_ask),
         // 落盘凭证查询：返回「查不到凭证」的候选路径。查库失败一律返回空
         // （= 全部放行）——查不到证据不等于有罪，宁可漏判不可误伤。
         file_receipts: Some(&|sid: Option<&str>, paths: &[String]| {
