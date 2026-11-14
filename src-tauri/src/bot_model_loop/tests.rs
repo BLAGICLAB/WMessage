@@ -70,5 +70,6 @@ mod fail_hint;
 mod guard;
 mod intent;
 mod parse;
+mod repeat_gate;
 mod sse;
 mod tool_window;

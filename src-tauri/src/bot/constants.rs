@@ -233,6 +233,51 @@ pub const SEARCH_MAX_RESULTS_DEFAULT: u32 = 6;
 /// ask_user 单次执行可问次数默认值（预算随运行传入，无独立的上下限闸）。
 pub const ASK_BUDGET_DEFAULT: u8 = 3;
 
+/// 工具重复调用闸：同一工具以**完全相同参数**连续调用达上限即拦截。
+///
+/// 3 是业界 doom-loop detection 的收敛值（Kilocode / hermes-agent 同数）：
+/// 1 次是正常调用，2 次可能是参数没改对的重试，第 3 次同参已无信息量——
+/// 再跑下去只是烧预算，出路要么换方法要么问用户。
+pub const REPEAT_GATE_MAX_IDENTICAL: usize = 3;
+
+/// 重复闸转问用户的等待秒数。
+///
+/// 刻意短于 ask_user 的 24h：闸场景是「模型卡死」而非「征询需求」，无人
+/// 应答时按假设（就此打住收尾）让回合快速落地，比挂住整个循环更对。
+pub const REPEAT_GATE_ASK_TIMEOUT_SECS: u64 = 300;
+
+/// 重复闸豁免表：表内工具连续相同调用不计数。
+///
+/// 豁免原则 = 纯读 / 轮询 / 状态探测——这类调用重查是合法语义（等子 agent
+/// 出结果、等 UI 变化、跨时间重取）。未列出的工具默认受闸，含 MCP 动态名
+/// 工具（MCP 重复调用是典型死循环形态）；实机误报往表里加名字即可。
+pub const REPEAT_GATE_EXEMPT_TOOLS: &[&str] = &[
+    // 提问走 ask_engine 自己的预算，不归本闸管
+    "ask_user",
+    // 轮询 / 等待型
+    "check_subagent",
+    "wait_for_element",
+    "screenshot",
+    // 状态探测
+    "lookup_receipt",
+    "list_windows",
+    "ui_inspect",
+    "get_current_time",
+    "list_services",
+    // 纯读文件 / 清单
+    "read_text_file",
+    "grep_files",
+    "list_files",
+    "ast_inspect",
+    "read_own_card",
+    "query_tasks",
+    "query_single_task",
+    "apps_list",
+    "list_reminders",
+    "recall_facts",
+    "search_skills",
+];
+
 // ── 技能配额 ──
 
 /// 技能步数闸默认值：**只用于 auto（DSL 调度器）模式的死循环防护**——

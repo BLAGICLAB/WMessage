@@ -117,6 +117,9 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 | `SEARCH_MAX_RESULTS_MIN` | `1` | 联网搜索单次返回条数下限 |
 | `SEARCH_MAX_RESULTS_DEFAULT` | `6` | 联网搜索未声明条数时的默认值 |
 | `ASK_BUDGET_DEFAULT` | `3` | ask_user 单次执行可问次数默认值 |
+| `REPEAT_GATE_MAX_IDENTICAL` | `3` | 工具重复调用闸：同一工具以完全相同参数连续调用达上限即拦截（业界 doom-loop detection 收敛值） |
+| `REPEAT_GATE_ASK_TIMEOUT_SECS` | `300` | 重复闸转问用户的等待秒数（短于 ask_user 的 24h：卡死场景要按假设快速落地） |
+| `REPEAT_GATE_EXEMPT_TOOLS` | `["ask_user", "check_subagent", "wait_for_element", "screenshot", "lookup_receipt", "list_windows", "ui_inspect", "get_current_time", "list_services", "read_text_file", "grep_files", "list_files", "ast_inspect", "read_own_card", "query_tasks", "query_single_task", "apps_list", "list_reminders", "recall_facts", "search_skills"]` | 重复闸豁免表：纯读/轮询/探测类重查合法；表外默认受闸（含 MCP 动态名工具） |
 | `SKILL_DEFAULT_MAX_STEPS` | `100` | 技能步数闸默认值（**仅 auto/DSL 模式**，interactive 不设） |
 | `SKILL_MAX_STEPS_LIMIT` | `200` | 技能 frontmatter `max_steps` 能声明到的最大值 |
 | `SKILL_MAX_LIFETIME_SECS` | `3600` | 技能绝对寿命上限（秒）：**含 Paused 等确认的时间** |

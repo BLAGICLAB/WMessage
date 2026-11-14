@@ -26,6 +26,7 @@ mod finalize;
 mod fuse;
 mod guard;
 mod output;
+mod repeat_gate;
 mod request;
 mod shell;
 mod sse;
@@ -77,6 +78,7 @@ pub(crate) use self::guard::{
     SELFCHECK_PASS_EMIT, SELFCHECK_PASS_HINT,
 };
 pub(crate) use self::output::apply_output_cap;
+pub(crate) use self::repeat_gate::{is_exempt_tool, reject_text, RepeatGateState};
 pub(crate) use self::request::{
     compact_before_round, prepare_round, request_round, LLM_RETRY_DELAY, MAX_STREAM_RETRIES,
 };
@@ -95,6 +97,8 @@ pub(crate) use self::types::{
 // 转出会被 rustc 判 unused import。
 #[cfg(test)]
 pub(crate) use self::fuse::rounds_fuse_message;
+#[cfg(test)]
+pub(crate) use self::repeat_gate::call_fingerprint;
 // ── 拆分模块声明 结束 ──
 
 // 防幻觉汇报守卫

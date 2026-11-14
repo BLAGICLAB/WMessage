@@ -179,6 +179,7 @@
 - `py.enable_toggle`
 - `py.yolo_bypass`
 - `rec.onnx`
+- `repeat_gate`
 - `rmw_conflict`
 - `rules.import_confirmed`
 - `rules.import_rejected`

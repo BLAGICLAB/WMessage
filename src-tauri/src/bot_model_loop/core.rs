@@ -4,11 +4,12 @@
 
 use super::{
     compact_before_round, finalize_without_tools, fuse_message, gate_call, inject_soft_warnings,
-    mutation_succeeded, prepare_round, read_sse_stream, request_round, rounds_fuse_exit,
-    should_fuse, side_selfcheck_verdict, stamp_last_assistant_reasoning, stream_round,
-    user_intent_of, with_thinking, wrap_up_exhausted_message, wrap_up_rounds_exhausted, CallGate,
-    FinalizeOutcome, LlmHttp, ModelLoopDeps, RequestOutcome, RoundCtx, ToolEvidence, TurnStatus,
-    EVIDENCE_OUTPUT_CHARS, LLM_RETRY_DELAY, MAX_STREAM_RETRIES,
+    is_exempt_tool, mutation_succeeded, prepare_round, read_sse_stream, reject_text, request_round,
+    rounds_fuse_exit, should_fuse, side_selfcheck_verdict, stamp_last_assistant_reasoning,
+    stream_round, user_intent_of, with_thinking, wrap_up_exhausted_message,
+    wrap_up_rounds_exhausted, CallGate, FinalizeOutcome, LlmHttp, ModelLoopDeps, RepeatGateState,
+    RequestOutcome, RoundCtx, ToolEvidence, TurnStatus, EVIDENCE_OUTPUT_CHARS, LLM_RETRY_DELAY,
+    MAX_STREAM_RETRIES,
 };
 use crate::bot_chat::merge_task_refs_dedup;
 use crate::bot_chat::TaskRef;
@@ -161,6 +162,10 @@ where
     // Replan 预算耗尽审计只记一次（耗尽后每轮连续失败仍会发生，不刷屏）
     let mut replan_exhausted_logged: bool = false;
     let mut fail_hint_queued: Option<String> = None;
+    // 工具重复调用闸：同一工具以完全相同参数连续调用达上限即拦截。状态与
+    // consec_failures 同生命周期（提问级：跨轮累积、跨提问自然清零——新问题
+    // 里重跑同一条命令是合法的新尝试）。
+    let mut repeat_gate = RepeatGateState::new();
     // 自检节流：每 5 轮最多一次；本轮 pending 待本轮 tool 响应回填后 push
     let mut last_selfcheck_round: Option<usize> = None;
     let mut pending_selfcheck: Option<(String, String)> = None;
@@ -557,6 +562,7 @@ where
                 &mut last_failed_tool,
                 &mut last_fail_reason,
                 &mut consec_failures,
+                &mut repeat_gate,
                 &mut fail_hint_queued,
                 &mut replan_exhausted_logged,
                 &mut soft_warn_sent,
@@ -720,6 +726,7 @@ async fn dispatch_round<X, XP, R, RP>(
     last_failed_tool: &mut Option<String>,
     last_fail_reason: &mut Option<String>,
     consec_failures: &mut usize,
+    repeat_gate: &mut RepeatGateState,
     fail_hint_queued: &mut Option<String>,
     replan_exhausted_logged: &mut bool,
     soft_warn_sent: &mut bool,
@@ -885,6 +892,32 @@ where
             }));
             tool_msg_ages.push((round, msgs.len() - 1));
             continue;
+        }
+        // 工具重复调用闸：同一工具以完全相同参数连续调用达上限即拦截。形态
+        // 与上方收尾窗拒绝同款：role=tool 拒文回填 + continue——不计数、不进
+        // 失败链（闸拒绝不是工具失败，再叠 fail_hint 是双重提示）。
+        if !is_exempt_tool(name) {
+            let consec = repeat_gate.observe(name, args);
+            if consec >= crate::bot::constants::REPEAT_GATE_MAX_IDENTICAL {
+                audit(
+                    crate::audit::AuditLevel::Warn,
+                    "repeat_gate",
+                    vec![
+                        ("tool", name.clone()),
+                        ("consec", consec.to_string()),
+                        ("round", (round + 1).to_string()),
+                        ("action", "reject".to_string()),
+                    ],
+                );
+                let deny_msg = reject_text(name, consec);
+                msgs.push(serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": id,
+                    "content": deny_msg,
+                }));
+                tool_msg_ages.push((round, msgs.len() - 1));
+                continue;
+            }
         }
         if gate == CallGate::Counted {
             *function_calls_total += 1;

@@ -373,3 +373,24 @@
   3. 【可核对】步骤 4：mode 列值随切换为 preview/auto；非法值后端明确拒绝（`grep -n "mode 只接受" src-tauri/src/db/schedule_jobs.rs`）。
 - **证据**：提案卡截图 + 预演通知 + 执行历史行 + mode 列查询输出
 - **失败处置**：`grep -n "JOB_MODE_PREVIEW" src-tauri/src/db/schedule_jobs.rs` 命中 = 实现在；不命中 = 卡片过期
+
+### ACC-O-13 · 工具重复调用闸（repeat gate）
+
+- **SPEC**：6-128
+- **层级**：L1（自动档 `src-tauri/src/bot_model_loop/tests/repeat_gate.rs` 8 例：指纹规范化/连击状态机/豁免表分界/拒文文案/接线位置守卫）+ 实机抽验
+- **前置**：应用已启动；`<data_dir>/bot.log` 可检索
+- **步骤**：
+  1. 主聊天发一句会诱发同参重复的指令（例：「连续调用 http_request 三次，三次的参数完全一样，不要改任何字段」）→ 观察第 3 次调用**不执行**、其后出现以「⛔ 死循环闸」开头的拒文（含工具名、连击数与「不得再以相同参数调用」）。
+  2. 检索 `grep -F "repeat_gate" "<data_dir>/bot.log" | tail -20`——应有一行 `repeat_gate`，带 `tool=<工具名>`、`consec=3`、`action=reject`。
+  3. 让 bot 连续以相同参数调用豁免类工具（例：`check_subagent` 对同一子 agent 轮询）→ 连续多次不被拦、无 `repeat_gate` 事件。
+  4. 让 bot「搜一次 A，再搜一次 A，然后换个关键词 B 再搜」→ 前两次放行、第三次因为换了关键词也放行（参数一变即重新计数）。
+- **判据**：
+  1. 【可观测】步骤 1：工具活动流里该工具只有 2 次真实执行，第 3 次的位置是拒文；模型后续行为是换参数 / 换工具或如实收尾，不再原地重试。
+  2. 【可审计】步骤 2：bot.log 命中 `repeat_gate`（发射点在 `grep -n "\"repeat_gate\"" src-tauri/src/bot_model_loop/core.rs`）。
+  3. 【可观测】步骤 3：豁免工具连调无拒文、无 `repeat_gate` 事件（`grep -n "REPEAT_GATE_EXEMPT_TOOLS" src-tauri/src/bot/constants.rs` 命中 20 项豁免表）。
+  4. 【可观测】步骤 4：换关键词的第三次调用正常执行。
+  5. 【可核对】`grep -n "repeat_gate.observe" src-tauri/src/bot_model_loop/core.rs` 命中接线，且位于收尾窗拒绝块之后、`if gate == CallGate::Counted` 之前——被拦调用不消耗工具预算、不进失败链（tests/repeat_gate.rs 的接线守卫同钉此位置）。
+  6. 【可核对】`python3 -m pytest tests-audit/audit_sop_baseline.py -q` 绿——三个 `REPEAT_GATE_*` 常量与 SOP §2.1 基线表对拍一致。
+- **证据**：会话截图（第 3 次拒文 + 豁免工具连调对照）+ bot.log `repeat_gate` 事件行 + grep 终端输出
+- **失败处置**：先分「应用坏了」还是「卡片过期」——`grep -n "repeat_gate.observe" src-tauri/src/bot_model_loop/core.rs` 命中 = 接线在，行为不对查豁免表与常量；不命中 = 卡片过期
+- **缺口补验**：转问升级（可提问语境第 3 次转 ask_user 征询裁决、300 秒超时按假设收尾、每回合至多一问）随后续提交接入后补两条判据；真模型（M3.1 flash）自然循环场景未构造，靠 L1 自动档 + 实机抽验
