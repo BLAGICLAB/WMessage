@@ -353,7 +353,16 @@ mod win {
     fn engine() -> Result<&'static Engine, &'static str> {
         ENGINE
             .get_or_init(|| {
-                let r = load_engine();
+                // 预检拦在 ort API 之前（dylib 缺依赖时 ort 初始化是 panic 且
+                // 毒化全局 Mutex，见 ort_env 模块注释）；panic 转 Err 兜底拦
+                // ort 内部残余 panic 点。两侧共用一份预检结论。
+                let r = crate::ort_env::preflight().and_then(|()| {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(load_engine))
+                        .unwrap_or_else(|p| Err(crate::ort_env::panic_to_reason(&p)))
+                });
+                if r.is_err() {
+                    crate::ort_env::mark_env_failed();
+                }
                 match &r {
                     Ok(_) => eprintln!("[ocr] PP-OCRv6 引擎加载成功"),
                     Err(e) => eprintln!("[ocr] 引擎不可用：{e}"),

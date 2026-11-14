@@ -1,13 +1,13 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 334 个文件、约 14.7 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 335 个文件、约 14.8 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1261)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1262)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 │                        （setup 里另起清扫：上次被杀留下的 app_runs running 僵尸行）
 ├── app_state.rs (292)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        14 张执行期表 + 「全局状态总表」文档；详见 §2.1
@@ -160,11 +160,11 @@ src-tauri/src/
 │                        （TOOLS schema 已移出，见 bot/registry.rs）
 │   ├── bot_model_loop/stream.rs (436)   SSE 解析层：parse_sse_chunk / feed_think（思考块拆分）/
 │   │                                    tool_call 增量累积 / token usage 归一
-│   ├── bot_model_loop/core.rs (1199)     核心循环：run_model_loop_core（可注入 mock）+
+│   ├── bot_model_loop/core.rs (1220)     核心循环：run_model_loop_core（可注入 mock）+
 │   │                                    dispatch_round（工具分发/回灌）
-│   ├── bot_model_loop/shell.rs (612)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
+│   ├── bot_model_loop/shell.rs (618)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
 │   ├── bot_model_loop/request.rs (726)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
-│   ├── bot_model_loop/sse.rs (820)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
+│   ├── bot_model_loop/sse.rs (892)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
 │   ├── bot_model_loop/guard.rs (707)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
 │   │                                    guard_verdict）+ 自检回复判定 + 工具自检侧调路由
 │   ├── bot_model_loop/finalize.rs (381) 收尾层：无工具收尾 / 自检侧调（decide_selfcheck）/ 出口闸
@@ -568,6 +568,10 @@ src-tauri/src/
 │                        源里 → Windows 走官方文档的 pip 装法。平台知识只此一处
 ├── ocr.rs               ocr_image：macOS Vision / Windows PP-OCRv6 ONNX；纯本地不上网；
 │                        输入有字节与像素上限（解码前只读文件头，解码炸弹面）
+├── ort_env.rs (202)    ort 动态库预检：load-dynamic 的「缺 dll/缺依赖 → panic + 毒化全局
+│                        Mutex」拦在触碰 ort 之前——真加载一次拿 Win32 错误码分类（126=
+│                        缺 VC++ 运行库）+ 永久降级闸，记忆/OCR 两侧共用；非 Windows
+│                        build 期链接恒过，catch_unwind 兜底两侧引擎加载
 ├── overflow.rs          工具大结果溢出存储：`data_dir/overflow/<日期>/<uuid>.txt` 转存 +
 │                        回灌指针文案 + 保留期清扫（30 天，启动一次 + 每天一次）。
 │                        配套 `bot_fs::allowed_dirs` 把本目录放进读白名单（模型靠它分页读回），
@@ -857,7 +861,7 @@ flowchart TD
 
 ## 6.4 源文件清单（完整列表，由 `tests-audit/audit_module_map.py` 对拍）
 
-`src-tauri/src/` 实际 334 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
+`src-tauri/src/` 实际 335 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
 对拍：每条必须指向真实文件，每个源文件必须在本节列出。新增模块请同步登记。
 
 ### 顶层
@@ -961,6 +965,7 @@ flowchart TD
 - `notifications.rs`
 - `env_probe.rs`
 - `ocr.rs`
+- `ort_env.rs`
 - `overflow.rs`
 - `paths.rs`
 - `profile.rs`

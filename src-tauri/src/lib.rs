@@ -44,6 +44,7 @@ mod migration;
 mod mutation;
 mod notifications;
 mod ocr;
+mod ort_env;
 pub mod overflow;
 pub mod paths;
 mod platform;

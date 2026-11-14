@@ -100,7 +100,17 @@ fn load_engine() -> Result<Engine, String> {
 fn engine() -> Result<&'static Engine, &'static str> {
     ENGINE
         .get_or_init(|| {
-            let r = load_engine();
+            // 预检拦在 ort API 之前：dylib 缺依赖/缺文件时 ort 的初始化是
+            // panic 不是 Err，且会毒化它的全局 Mutex。预检与 ort 走同一套
+            // dylib 解析与加载语义，两侧（记忆/OCR）共用一份预检结论——
+            // 任何一侧确认环境不可用，另一侧也不再触碰 ort。
+            let r = crate::ort_env::preflight().and_then(|()| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(load_engine))
+                    .unwrap_or_else(|p| Err(crate::ort_env::panic_to_reason(&p)))
+            });
+            if r.is_err() {
+                crate::ort_env::mark_env_failed();
+            }
             match &r {
                 Ok(_) => eprintln!("[memory] 嵌入引擎加载成功"),
                 Err(e) => eprintln!("[memory] 嵌入引擎不可用，降级为关键词模式：{e}"),

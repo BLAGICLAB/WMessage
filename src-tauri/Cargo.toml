@@ -137,6 +137,9 @@ flate2 = "1"
 # 运行时按名加载 onnxruntime.dll（随绿色包放 exe 同目录）；macOS 路径不受影响。
 [target.'cfg(target_os = "windows")'.dependencies]
 ort = { version = "2.0.0-rc.13", features = ["load-dynamic"] }
+# ort 预检用：与 ort load-dynamic 同走 libloading（同一加载语义），预检
+# 「能加载」对 ort 才成立；无它就得手工复刻 loader flags，语义分叉风险更大
+libloading = "0.8"
 
 [dev-dependencies]
 # F-6 端到端测试：mock Tauri runtime + 集成测试 runner（2026-08-18）
