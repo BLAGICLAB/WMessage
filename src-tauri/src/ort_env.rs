@@ -58,6 +58,53 @@ pub(crate) fn panic_to_reason(payload: &Box<dyn std::any::Any + Send>) -> String
     "onnxruntime 初始化崩溃（panic）".to_string()
 }
 
+/// 启动自检（幂等）：真加载一次动态库，失败 → 服务告警通知（一次性，新一集
+/// 先收上一集）+ 审计留痕；成功 → 收掉历史告警（装好运行库后旧告警不该继续
+/// 挂着）。缺件机器上语义记忆静默失效没人知道为什么——这是「缺件时用户知道
+/// 怎么办」的那半边；非 Windows 预检恒过，这里只做告警清扫，等于无操作。
+pub fn startup_selfcheck<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    const SERVICE_ID: &str = "ort_env";
+    const ALERT_TYPE: &str = "dylib";
+    match preflight() {
+        Ok(()) => {
+            let _ = crate::notifications::resolve_service_alert(app, SERVICE_ID, ALERT_TYPE, None);
+        }
+        Err(reason) => {
+            // 新一集先收上一集：条件持续期间角标不涨（服务告警口径）
+            let _ = crate::notifications::resolve_service_alert(app, SERVICE_ID, ALERT_TYPE, None);
+            let id = format!(
+                "ort-env-unavailable-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            );
+            let payload = serde_json::json!({
+                "serviceId": SERVICE_ID,
+                "alertType": ALERT_TYPE,
+            });
+            let _ = crate::notifications::insert_service_alert(
+                app,
+                &id,
+                "语义记忆不可用（onnxruntime 加载失败）",
+                &reason,
+                &payload,
+            );
+            crate::audit_event!(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "memory.embed_engine_unavailable",
+                "reason" => reason,
+                "phase" => "startup"
+            );
+        }
+    }
+}
+
 /// ort 运行时的 dylib 路径解析规则（复刻同源，保证预检与 ort 走同一条路）：
 /// `ORT_DYLIB_PATH` 优先；相对名先按 exe 同目录提升为绝对路径（文件在场才提升），
 /// 否则原样交给加载器按标准搜索序解析。

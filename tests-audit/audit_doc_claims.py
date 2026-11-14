@@ -43,6 +43,7 @@ DOCS = [
     ROOT / "docs/WORK-ITEM-REDESIGN-PLAN-2026-11-04.md",
     ROOT / "docs/ACCEPTANCE-PLAN-2026-10-30.md",
     ROOT / "docs/agent-audit-sop-zcode.md",
+    ROOT / "docs/STREAM-BREAK-RECOVERY-AND-WINDOWS-RUNTIME-FIX-2026-11-14.md",
     *ACCEPTANCE_DOCS,
 ]
 SRC_DIRS = [ROOT / "src-tauri/src", ROOT / "src"]
@@ -78,6 +79,7 @@ NOT_EVENTS = {
     "loop.reasoning_echo_enabled": "已删的参数表键（回灌改「发了就回」），只在历史实机方案里出现",
     "loop.in_turn_context_edit": "已删的参数表键（滑动窗恒开），只在历史实机方案里出现",
     "loop.history_budget_chars": "已删的参数表键（历史预算 128K 常量化），只在历史实机方案里出现",
+    "microsoft.ml.onnxruntime": "NuGet 包名（onnxruntime 依赖缺失诊断的引用），不是审计事件",
 }
 
 EVENT_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")

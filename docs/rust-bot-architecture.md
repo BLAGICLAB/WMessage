@@ -7,7 +7,7 @@
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1262)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1269)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 │                        （setup 里另起清扫：上次被杀留下的 app_runs running 僵尸行）
 ├── app_state.rs (292)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        14 张执行期表 + 「全局状态总表」文档；详见 §2.1
@@ -568,7 +568,7 @@ src-tauri/src/
 │                        源里 → Windows 走官方文档的 pip 装法。平台知识只此一处
 ├── ocr.rs               ocr_image：macOS Vision / Windows PP-OCRv6 ONNX；纯本地不上网；
 │                        输入有字节与像素上限（解码前只读文件头，解码炸弹面）
-├── ort_env.rs (202)    ort 动态库预检：load-dynamic 的「缺 dll/缺依赖 → panic + 毒化全局
+├── ort_env.rs (255)    ort 动态库预检：load-dynamic 的「缺 dll/缺依赖 → panic + 毒化全局
 │                        Mutex」拦在触碰 ort 之前——真加载一次拿 Win32 错误码分类（126=
 │                        缺 VC++ 运行库）+ 永久降级闸，记忆/OCR 两侧共用；非 Windows
 │                        build 期链接恒过，catch_unwind 兜底两侧引擎加载

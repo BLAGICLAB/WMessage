@@ -547,6 +547,13 @@ pub fn run() {
             //（bot_scheduler 同模式，10 分钟检查一次配置到点；旧 v1 记忆系统
             //（bot_facts 表）已删除，老库残表无害不清理）
             memory::embed::warmup_async();
+            // ort 环境启动自检（后台线程，不占启动时）：失败一次性告警通知 +
+            // 审计，成功收掉历史告警——缺 VC++ 运行库的机器上语义记忆静默
+            // 失效时，用户至少知道为什么
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || crate::ort_env::startup_selfcheck(&handle));
+            }
             memory::consolidate::start_consolidation_scheduler(app.handle().clone());
             // correction 聚类兜底定时器：5 min 一轮；事件驱动（同条 correction
             // 立即路径触发）的空隙补漏，主要服务「崩溃重启漏最后一条」「用户离线
