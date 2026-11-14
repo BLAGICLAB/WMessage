@@ -145,6 +145,22 @@ fn err_chain(e: &reqwest::Error) -> String {
     out
 }
 
+/// reqwest 断流错误 → 用户可读的成因短语（进文案与审计的 cause 键）。
+///
+/// 错误文案的「现象：成因」口径（Codex 同款）：Windows 实机断流多为
+/// 本机代理/安全软件掐断连接，成因指向比「内部错误」更能引向自救。
+fn stream_error_cause(e: &reqwest::Error) -> &'static str {
+    if e.is_timeout() {
+        "读取超时"
+    } else if e.is_connect() {
+        "连接失败"
+    } else if e.is_decode() {
+        "响应传输被截断"
+    } else {
+        "连接异常中断"
+    }
+}
+
 /// 流内错误是否值得重发本轮：上游瞬时故障（5xx / 过载 / 限流）值得，
 /// 确定性拒绝（鉴权 / 参数 / 配额）不值得——重发多少次结果都一样。
 fn stream_error_is_retryable(err: &StreamError) -> bool {
@@ -497,13 +513,16 @@ pub(crate) async fn read_sse_stream(
                             ("bytes", bytes_received.to_string()),
                             ("elapsed_ms", started_at.elapsed().as_millis().to_string()),
                             ("phase", "body".to_string()),
+                            ("cause", "idle".to_string()),
                         ],
                     );
+                    // 分类与流内错误对齐：断流是可恢复类（换连接重发有意义），
+                    // Internal 恒为 recoverable=false，前端只会让用户「反馈日志」。
+                    // 原始细节（120s 判据等）只进审计，用户文案只说现象与下一步。
                     return Err(stream_failure(
-                        CommandError::Internal(format!(
-                            "流式读取超时：连续 {}s 未收到数据，判定连接死亡",
-                            STREAM_CHUNK_IDLE_TIMEOUT.as_secs()
-                        )),
+                        CommandError::LlmRequestFailed(
+                            "大模型长时间没有响应，本轮未完成".to_string(),
+                        ),
                         emitted_any.load(std::sync::atomic::Ordering::Relaxed),
                         // 死连接重发有意义（换一条新连接往往就成了）
                         true,
@@ -515,19 +534,26 @@ pub(crate) async fn read_sse_stream(
                 Some(Ok(c)) => c,
                 None => break, // 对端干净 EOF
                 Some(Err(e)) => {
+                    let cause = stream_error_cause(&e);
                     audit(
                         crate::audit::AuditLevel::Error,
                         "llm.stream_failed",
                         vec![
                             ("err", e.to_string()),
                             ("err_chain", err_chain(&e)),
+                            ("cause", cause.to_string()),
                             ("bytes", bytes_received.to_string()),
                             ("elapsed_ms", started_at.elapsed().as_millis().to_string()),
                             ("phase", "body".to_string()),
                         ],
                     );
+                    // 分类与流内错误对齐（同上）；reqwest 原始串不进用户文案——
+                    // 它是开发者词汇（reqwest #2373：Display 刻意只有包装串），
+                    // 成因短语由 stream_error_cause 归类给出
                     return Err(stream_failure(
-                        CommandError::Internal(format!("流式读取失败：{e}")),
+                        CommandError::LlmRequestFailed(format!(
+                            "网络连接中断（{cause}），本轮未完成"
+                        )),
                         emitted_any.load(std::sync::atomic::Ordering::Relaxed),
                         // 连接中断重发有意义（上游/网关瞬时断链）
                         true,
@@ -791,7 +817,8 @@ pub(crate) fn stream_round(
             ]
         };
         if !tool_calls.is_empty() {
-            let err = CommandError::Internal("大模型响应中断（流被截断），工具调用未执行".into());
+            let err =
+                CommandError::LlmRequestFailed("大模型响应中断（流被截断），工具调用未执行".into());
             let mut kv = crate::audit::error_kv(&err);
             kv.extend(trunc_kv(tool_calls.len(), final_text.chars().count()));
             audit(crate::audit::AuditLevel::Warn, "llm.stream_truncated", kv);
@@ -804,7 +831,7 @@ pub(crate) fn stream_round(
             ));
         }
         if final_text.is_empty() {
-            let err = CommandError::Internal("大模型响应中断：未收到完整回复".into());
+            let err = CommandError::LlmRequestFailed("大模型响应中断：未收到完整回复".into());
             let mut kv = crate::audit::error_kv(&err);
             kv.extend(trunc_kv(tool_calls.len(), final_text.chars().count()));
             audit(crate::audit::AuditLevel::Warn, "llm.stream_truncated", kv);

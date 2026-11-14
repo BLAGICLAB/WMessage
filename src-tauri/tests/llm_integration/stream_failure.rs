@@ -53,6 +53,10 @@ async fn stream_failure_before_any_output_retries_the_round() {
 }
 
 /// 已经吐过内容 → 不重发（重发就是把用户看过的正文再来一遍），直接失败。
+///
+/// 断流分类与流内错误对齐：报 `LlmRequestFailed`（recoverable=true），文案
+/// 分层——用户只看到「现象 + 成因 + 本轮未完成」，reqwest 原始串与「内部
+/// 错误」字样都不出现在用户可见文案里（原始串只进审计的 err/err_chain）。
 #[tokio::test]
 async fn stream_failure_after_output_does_not_retry() {
     let server = MockLlmServer::start();
@@ -78,8 +82,18 @@ async fn stream_failure_after_output_does_not_retry() {
     .expect_err("已吐过内容时不得重发，应直接失败");
 
     assert!(
-        err.to_string().contains("流式读取失败"),
-        "错误应说明是流式读取失败：{err}"
+        matches!(err, CommandError::LlmRequestFailed(_)),
+        "读侧断流应报 LlmRequestFailed（对齐流内错误分类）：{err:?}"
+    );
+    assert!(err.is_recoverable(), "断流必须可恢复：{err}");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("网络连接中断") && msg.contains("本轮未完成"),
+        "文案应给现象与结论：{msg}"
+    );
+    assert!(
+        !msg.contains("内部错误") && !msg.contains("error decoding response body"),
+        "用户文案不得出现「内部错误」或 reqwest 原始串：{msg}"
     );
     assert_eq!(
         server.request_count(),
@@ -88,7 +102,7 @@ async fn stream_failure_after_output_does_not_retry() {
     );
 }
 
-/// 放弃重试时必须收尾技能——不留悬空 run。
+/// 放弃重试时必须收尾技能——不留悬空 run；重试事实要进用户文案。
 #[tokio::test]
 async fn stream_failure_finishes_active_skill() {
     let server = MockLlmServer::start();
@@ -101,7 +115,7 @@ async fn stream_failure_finishes_active_skill() {
         ToolResult::ok("ok", Vec::new())
     };
 
-    let _ = run_model_loop_core(
+    let err = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,
@@ -111,7 +125,8 @@ async fn stream_failure_finishes_active_skill() {
         &exec,
         noop_replan,
     )
-    .await;
+    .await
+    .expect_err("两次断流应报错");
 
     let calls = h.skill_finish_calls();
     assert!(
@@ -119,6 +134,11 @@ async fn stream_failure_finishes_active_skill() {
             .iter()
             .any(|(ok, reason)| !*ok && reason.contains("流式响应中断")),
         "放弃重试时必须收尾技能（不留悬空 run）：{calls:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("已自动重试 1 次仍失败"),
+        "重试过的事实要补进文案（错误对象出生在重试判定之前）：{msg}"
     );
 }
 

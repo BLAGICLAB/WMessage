@@ -362,8 +362,15 @@ where
                         // 放弃重试：收尾技能（不留悬空 run）后上抛。
                         // 收尾原因由失败类型决定（流内错误 vs 流式中断），
                         // 回滚建议接到错误正文尾部——用户看得见才有用。
+                        // 自动重试发生过就把「已重试仍败」补进文案：错误对象
+                        // 出生在重试判定之前，自己不知道是不是重试后的那一发。
+                        let retried_note = if stream_retry > 0 {
+                            format!("（已自动重试 {stream_retry} 次仍失败）")
+                        } else {
+                            String::new()
+                        };
                         let hint = skill_finish(false, fail.reason);
-                        return Err(fail.err.append_detail(&hint));
+                        return Err(fail.err.append_detail(&retried_note).append_detail(&hint));
                     }
                 };
 
@@ -391,8 +398,13 @@ where
                             continue;
                         }
                         // 放弃重试：收尾技能（不留悬空 run）后上抛。
+                        let retried_note = if stream_retry > 0 {
+                            format!("（已自动重试 {stream_retry} 次仍失败）")
+                        } else {
+                            String::new()
+                        };
                         let hint = skill_finish(false, fail.reason);
-                        return Err(fail.err.append_detail(&hint));
+                        return Err(fail.err.append_detail(&retried_note).append_detail(&hint));
                     }
                 }
             };

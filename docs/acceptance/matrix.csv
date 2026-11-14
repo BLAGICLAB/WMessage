@@ -59,7 +59,7 @@
 3-58,3 机器人聊天与模型,大模型 API 错误说人话,D3b,ACC-E-02,rerun§2.2,全,src/components/ChatPanel.stream.test.tsx,L1+L2,未验,—
 3-59,3 机器人聊天与模型,200 流内错误也进重试网,D3b,ACC-E-03,—,无,(无),L2,未验,10-26 新增，全库无命中：HTTP 200 流内报错按 type 归一状态码并进重试网
 3-60,3 机器人聊天与模型,新增代码不得再走 blanket 降级,D3b,ACC-E-04,—,无(门禁),scripts/test-fast.sh 降级防线,L0,未验,属 L0 门禁项，不进实机；新增行命中 CommandError::from( 即拦
-3-61,3 机器人聊天与模型,语义性失败不再降级成不可恢复的内部错误,D3b,ACC-E-05,—,无,src-tauri/src/bot_chat/command_error_mapping_tests.rs,L1+L2,未验,TaskInvalidState / InvalidArgument / LlmRequestFailed 精确化未验
+3-61,3 机器人聊天与模型,语义性失败不再降级成不可恢复的内部错误,D3b,ACC-E-05,—,无,src-tauri/src/bot_chat/command_error_mapping_tests.rs,L1+L2,未验,TaskInvalidState / InvalidArgument / LlmRequestFailed 精确化未验；流式断流分类（读侧两出口+截断防线 → LlmRequestFailed）锚点已落，实机待验
 3-62,3 机器人聊天与模型,执行类谎报守卫,D3b,ACC-E-06,"S16,M89,M90,overflow H/J",部分,src-tauri/tests/llm_integration/guard.rs,L1+L2,未验,点名判据、中文别名表、子 agent 保守让开、入参不参与判决四项未验
 3-63,3 机器人聊天与模型,易错工具的 schema 里带真实示例,D3b,ACC-E-07,"M82,V89",全,src-tauri/src/bot/registry/schemas.rs,L1+L2,未验,V89 实测「无牙齿（强模型）」——护栏价值声明需改口径
 3-64,3 机器人聊天与模型,互不依赖的调用合并到同一轮,D3b,ACC-E-08,"M83,V90",全,(无),L2,未验,V90 同为「无牙齿（强模型）」

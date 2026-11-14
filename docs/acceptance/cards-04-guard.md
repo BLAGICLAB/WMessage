@@ -104,16 +104,19 @@
   1. 触发一条任务写冲突：在两个窗口同时改同一张任务卡的标题，让后写的一方撞上基线比对失败（`db_upsert_for` 的 RMW 冲突）。
   2. 让机器人给一条已存在的通知解一条状态非法的请求（`status` 只允许 done / dismissed），观察错误提示与前端可恢复提示。
   3. 把模型条目的 base_url 指到一个不可达的地址（连接失败 / 超时），在聊天里发一条消息。
-  4. 每一步都看气泡/提示里的错误文案，以及是否出现「重试」入口。
-  5. 在 `<data_dir>/bot.log` 里查本轮是否有 `llm.request_failed` 留痕（第 3 步的网络类失败会走这条审计事件）。
+  4. 制造流式断流：让上游走一个会截断响应体的代理（或临时 mock 网关：返回 200 + 声明大于实际字节数的 Content-Length 后关闭连接），在聊天里发一条消息。
+  5. 每一步都看气泡/提示里的错误文案，以及是否出现「重试」入口。
+  6. 在 `<data_dir>/bot.log` 里查本轮是否有 `llm.request_failed` 留痕（第 3 步的网络类失败会走这条审计事件）、`llm.stream_failed` 行（第 4 步）。
 - **判据**：
   1. 【可观测】第 1 步的报错文案是业务语义（形如「任务状态不允许该操作：…」），**不是**「内部错误：…」；同一提示旁有「重试」入口。
   2. 【可观测】第 2 步的报错文案是「参数校验失败：…」形，提示语指向参数而非「反馈日志」。
   3. 【可观测】第 3 步的报错文案是网络/请求类（形如「大模型请求失败：…」），前端提示是「请检查网络与 API 配置后重试」，**不是**「不可自动重试；请反馈日志」。
   4. 【可观测】第 3 步的错误弹窗 / toast 里带机器可读 code（形如 `code=LLM_REQUEST_FAILED`）与 `recoverable=true`；前端的 `LLM_REQUEST_FAILED` 提示是「请检查网络与 API 配置后重试」，**不是** `INTERNAL` 那句「不可自动重试；请反馈日志（含复现步骤）」。
-  5. 【可核对】`grep -n "TASK_INVALID_STATE\|INVALID_ARGUMENT\|LLM_REQUEST_FAILED" src-tauri/src/error.rs` 命中三个稳定 code，且三者都在 `is_recoverable()` 里返回 true（`grep -n "fn is_recoverable" -A 35 src-tauri/src/error.rs` 可见 `Self::TaskInvalidState { .. } => true` / `Self::InvalidArgument { .. } => true` / `Self::LlmRequestFailed(_) => true`）；`Self::Internal(_) => false` 那条仍在，说明降级路径没被误当成可恢复。
-  6. 【可核对】前端提示按 code 分流：`grep -n "TASK_INVALID_STATE\|INVALID_ARGUMENT\|LLM_REQUEST_FAILED" -A 2 src/lib/errorHandler.ts` 可见三个 case 各给一句可执行提示（任务状态不允许该操作… / 请检查输入参数 / 请检查网络与 API 配置后重试），没有一条回落到 `INTERNAL` 的「不可自动重试；请反馈日志」。
-- **证据**：截图（三处错误提示与「重试」入口）+ `<data_dir>/bot.log` 中第 3 步的 `llm.request_failed` 行
+  5. 【可观测】第 4 步断流的气泡文案是「网络连接中断（…），本轮未完成」形（idle 超时为「大模型长时间没有响应，本轮未完成」），**不含**「内部错误」字样、**不含** reqwest 原始串 `error decoding response body`。
+  6. 【可核对】`grep -n "TASK_INVALID_STATE\|INVALID_ARGUMENT\|LLM_REQUEST_FAILED" src-tauri/src/error.rs` 命中三个稳定 code，且三者都在 `is_recoverable()` 里返回 true（`grep -n "fn is_recoverable" -A 35 src-tauri/src/error.rs` 可见 `Self::TaskInvalidState { .. } => true` / `Self::InvalidArgument { .. } => true` / `Self::LlmRequestFailed(_) => true`）；`Self::Internal(_) => false` 那条仍在，说明降级路径没被误当成可恢复。
+  7. 【可核对】前端提示按 code 分流：`grep -n "TASK_INVALID_STATE\|INVALID_ARGUMENT\|LLM_REQUEST_FAILED" -A 2 src/lib/errorHandler.ts` 可见三个 case 各给一句可执行提示（任务状态不允许该操作… / 请检查输入参数 / 请检查网络与 API 配置后重试），没有一条回落到 `INTERNAL` 的「不可自动重试；请反馈日志」。
+  8. 【可核对】`bot.log` 的 `llm.stream_failed` 行带 `err_chain`（含 hyper 真因，不再是孤零零一句 reqwest 包装串）、`bytes`、`elapsed_ms`、`phase=body`、`cause` 字段。
+- **证据**：截图（三处错误提示与「重试」入口 + 断流气泡）+ `<data_dir>/bot.log` 中第 3 步的 `llm.request_failed` 行与第 4 步的 `llm.stream_failed` 行
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -rnF "llm.request_failed" src-tauri/src` 确认事件名还在源码里；提示仍说「反馈日志」= 变体映射没生效（应用侧缺陷）
 - **缺口补验**：TaskInvalidState / InvalidArgument / LlmRequestFailed 精确化未验
 
