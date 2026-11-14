@@ -307,6 +307,9 @@ where
             // 这里统一收口：还没向前端吐过内容 → 重发本轮；吐过了 → 收尾技能后
             // 上抛（重发会把用户已看到的正文/工具行再来一遍）。
             let mut stream_retry = 0usize;
+            // 局部绑定：清场事件经它发射（重发分支两次），也是一致性对拍
+            // 识别「前端 listen 的事件在 Rust 侧有人 emit」的形态之一
+            let emit = deps.emit;
             // 本轮 = 「请求 + 读流 + 收尾」。三段任一段失败都可能要求**重发本轮**
             // （换一条新连接重试同一请求），故三段收在同一个重发循环里——
             // `continue` 必须回到这里重发，而不是跳到下一轮（下一轮会带着
@@ -362,7 +365,7 @@ where
                             //（思考是追加渲染的，不清场用户会看到两段思考拼在一起）。
                             // 此时本轮工具尚未执行（工具执行发生在流成功之后），
                             // 折叠行本来就是空壳；历史轮的工具结果在 msgs 里，不受影响。
-                            (deps.emit)("bot-turn-restart", serde_json::json!({}));
+                            emit("bot-turn-restart", serde_json::json!({}));
                             tokio::time::sleep(LLM_RETRY_DELAY).await;
                             continue;
                         }
@@ -402,7 +405,7 @@ where
                                 return Ok((format!("⏹ 已停止{hint}"), collected_refs));
                             }
                             // 重发前清场（同读侧：思考是追加渲染，先撤已出的思考）
-                            (deps.emit)("bot-turn-restart", serde_json::json!({}));
+                            emit("bot-turn-restart", serde_json::json!({}));
                             tokio::time::sleep(LLM_RETRY_DELAY).await;
                             continue;
                         }
