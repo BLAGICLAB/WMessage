@@ -78,6 +78,7 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 | `EVIDENCE_OUTPUT_CHARS` | `64 * 1024` | 证据（Receipt）单条输出上限（字符） |
 | `LLM_HEADER_TIMEOUT_SECS` | `60` | LLM 首包超时（秒） |
 | `LLM_MAX_ATTEMPTS` | `3` | LLM 请求总尝试数（首次 + 重试），429/5xx/网络错误重试至此 |
+| `MAX_STREAM_RETRIES` | `1` | 流读取失败后的本轮重发上限；只在没吐过答复内容（正文/工具行）时用 |
 | `LLM_RETRY_DELAY_MS` | `1500` | 流式重试间隔（毫秒） |
 | `HTTP_REQUEST_TIMEOUT_SECS` | `120` | http_request 单次请求超时上限（秒）；saveAs 下载放宽到下一条 |
 | `HTTP_SAVE_TIMEOUT_SECS` | `300` | http_request saveAs（下载落产物目录）超时上限（秒） |

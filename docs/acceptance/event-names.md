@@ -315,6 +315,7 @@
 - `bot-tool-done`
 - `bot-tool-running`
 - `bot-turn-status`
+- `bot-turn-restart`
 - `bot-usage-delta`
 - `bot-file-changed`
 - `bot-skill-failed`

@@ -103,6 +103,14 @@ pub(crate) fn push_event(session_id: &str, event: &str, payload: &serde_json::Va
                     rec["status"] = serde_json::Value::String(s.to_string());
                 }
             }
+            // 断流重发清场：本轮已出的思考与工具行作废（重发那一发会重新
+            // 生成）。正文同理清——允许重发的前提是没吐过正文，此刻 text
+            // 本应为空，清一道是防御（落库两段拼接宁可多一层闸）。
+            "bot-turn-restart" => {
+                rec["thinking"] = serde_json::Value::String(String::new());
+                rec["tools"] = serde_json::Value::Array(Vec::new());
+                rec["text"] = serde_json::Value::String(String::new());
+            }
             _ => {}
         }
     });

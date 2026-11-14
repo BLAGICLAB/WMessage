@@ -141,3 +141,32 @@ fn begin_clears_stale_record_from_previous_turn() {
     );
     assert_eq!(rec.thinking, None, "上一轮残留被 begin 清掉，不串账");
 }
+
+/// 断流重发清场：bot-turn-restart 把本轮已出的思考 / 工具行 / 正文增量清空，
+/// 重发那一发重新记账——落库不得出现两段思考拼接。
+#[test]
+fn restart_event_clears_thinking_tools_and_text() {
+    let s = sid("restart");
+    begin(&s);
+    push_event(
+        &s,
+        "bot-think-delta",
+        &serde_json::json!({ "text": "想了一半" }),
+    );
+    push_event(&s, "bot-chat-delta", &serde_json::json!({ "text": "半句" }));
+    push_event(&s, "bot-turn-restart", &serde_json::json!({}));
+    // 清场后重来的增量正常记账
+    push_event(
+        &s,
+        "bot-think-delta",
+        &serde_json::json!({ "text": "重新想" }),
+    );
+    let rec = take(&s);
+    assert_eq!(
+        rec.thinking.as_deref(),
+        Some("重新想"),
+        "思考应只剩重发后的"
+    );
+    assert_eq!(rec.partial_text, None, "正文应被清空（重发那发还没吐）");
+    assert_eq!(rec.tools_json, None, "工具行应被清空");
+}

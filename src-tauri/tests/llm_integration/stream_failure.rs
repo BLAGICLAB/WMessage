@@ -207,6 +207,103 @@ async fn stream_failure_audit_carries_diagnostic_fields() {
     );
     assert!(chain.contains(" ← "), "source 链应逐层展开真因：{chain}");
     assert!(!get("bytes").is_empty(), "已收字节数必须在审计里");
-    assert!(!get("elapsed_ms").is_empty(), "断点耗时候必须在审计里");
+    assert!(!get("elapsed_ms").is_empty(), "断点耗时必须在审计里");
     assert_eq!(get("phase"), "body");
+}
+
+/// 只吐过思考就断流 → 重发本轮（思考是过程不是答复正文）。
+///
+/// 实机配置思考恒开，旧判据下第一个思考增量就把「已吐内容」置真，
+/// `llm.stream_retry` 整条通道死代码化——一次断流 = 整轮白干。
+#[tokio::test]
+async fn thinking_only_stream_failure_retries_the_round() {
+    let server = MockLlmServer::start();
+    let think_then_truncate = concat!(
+        r#"data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","created":1234567890,"model":"mock-model","choices":[{"delta":{"role":"assistant","reasoning_content":"想了半截"},"index":0,"finish_reason":null}]}"#,
+        "\n\n",
+    );
+    server.push_behavior(MockBehavior::TruncatedStream(
+        think_then_truncate.to_string(),
+    ));
+    server.push_behavior(MockBehavior::TextReply("重发成功了".into()));
+
+    let h = CoreHarness::new();
+    let exec = |_name: String, _args: String, _trace: ToolCallTrace| async {
+        ToolResult::ok("ok", Vec::new())
+    };
+
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        &exec,
+        noop_replan,
+    )
+    .await
+    .expect("只吐过思考就断流应重发本轮");
+
+    assert_eq!(text, "重发成功了");
+    assert_eq!(
+        server.request_count(),
+        2,
+        "只吐过思考就断流应重发本轮一次：原请求 + 重发"
+    );
+    assert!(
+        h.events().contains(&"llm.stream_retry"),
+        "应留 llm.stream_retry 审计：{:?}",
+        h.events()
+    );
+}
+
+/// 重发本轮前必须发一次 `bot-turn-restart` 清场——前端与落库事实（
+/// turn_record）靠它撤走本轮已出的思考增量，否则用户看到两段思考拼接。
+#[tokio::test]
+async fn restart_event_emitted_before_stream_retry() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TruncatedStream(String::new()));
+    server.push_behavior(MockBehavior::TextReply("重发成功".into()));
+
+    let h = CoreHarness::new();
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let emit: &'static (dyn Fn(&str, serde_json::Value) + Send + Sync) =
+        Box::leak(Box::new(move |event: &str, _payload: serde_json::Value| {
+            seen2.lock().unwrap().push(event.to_string());
+        }));
+    let mut deps = h.deps();
+    deps.emit = emit;
+
+    let exec = |_name: String, _args: String, _trace: ToolCallTrace| async {
+        ToolResult::ok("ok", Vec::new())
+    };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &deps,
+        &exec,
+        noop_replan,
+    )
+    .await
+    .expect("断流后重发本轮应成功");
+
+    assert_eq!(text, "重发成功");
+    let log = seen.lock().unwrap().clone();
+    assert_eq!(
+        log.iter()
+            .filter(|e| e.as_str() == "bot-turn-restart")
+            .count(),
+        1,
+        "重发前恰好发一次清场事件：{log:?}"
+    );
+    assert!(
+        h.events().contains(&"llm.stream_retry"),
+        "清场事件伴随重发审计：{:?}",
+        h.events()
+    );
 }

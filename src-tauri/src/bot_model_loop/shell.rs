@@ -102,6 +102,12 @@ pub fn shared_llm_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(15))
+            // 断流重发的可靠性：池里躺久的 keep-alive 连接可能早已死亡
+            //（对端掐了但本端不知道，断流重发一撞上就是连败——reqwest #2956
+            // 同形态）。tcp_keepalive 让本端先发现死连接；pool_idle_timeout
+            // 限制闲置连接可躺的时长，把「重试撞死连接」的概率压到接近零
+            .tcp_keepalive(std::time::Duration::from_secs(15))
+            .pool_idle_timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("共享 LLM 客户端构建失败（builder 配置静态合法，失败即 bug）")
     })

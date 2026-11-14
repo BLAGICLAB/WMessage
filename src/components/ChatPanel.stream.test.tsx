@@ -496,4 +496,58 @@ describe("ChatPanel", () => {
     });
     expect(screen.queryByText(/b\.pdf/)).not.toBeInTheDocument();
   });
+
+  it("bot-turn-restart 清场：断流重发前，本轮已出的思考与正文从气泡撤走", async () => {
+    const user = userEvent.setup();
+    const handlers: Record<
+      string,
+      (e: { payload: Record<string, unknown> }) => void
+    > = {};
+    mocks.listenMock.mockImplementation(
+      async (event: string, cb: (e: { payload: unknown }) => void) => {
+        handlers[event] = cb as (e: {
+          payload: Record<string, unknown>;
+        }) => void;
+        return () => {};
+      },
+    );
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_chat") return new Promise(() => {});
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findAllByText("默认会话")).not.toHaveLength(0);
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "写个方案");
+    await user.keyboard("{Enter}");
+    await act(async () => {
+      handlers["bot-think-delta"]?.({
+        payload: { text: "想了半截", sessionId: "s1" },
+      });
+      handlers["bot-chat-delta"]?.({
+        payload: { text: "半句正文", sessionId: "s1" },
+      });
+      // 过合并窗口（flush 落在下一帧）：增量此时已落进视图
+      await new Promise((r) => setTimeout(r, 60));
+    });
+    expect(await screen.findByText("半句正文")).toBeInTheDocument();
+    // 断流重发清场
+    await act(async () => {
+      handlers["bot-turn-restart"]?.({ payload: { sessionId: "s1" } });
+    });
+    // 权威副本与视图同时清空：重发那发的增量不会再接在旧内容上
+    expect(streamState.metaOf("s1")?.thinking).toBe("");
+    expect(streamState.metaOf("s1")?.text).toBe("");
+    expect(screen.queryByText("半句正文")).not.toBeInTheDocument();
+    // 清场后重来的增量照常落进同一只气泡
+    await act(async () => {
+      handlers["bot-chat-delta"]?.({
+        payload: { text: "重发正文", sessionId: "s1" },
+      });
+      await new Promise((r) => setTimeout(r, 60));
+    });
+    expect(streamState.metaOf("s1")?.text).toBe("重发正文");
+  });
 });

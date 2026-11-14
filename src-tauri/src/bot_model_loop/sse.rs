@@ -40,9 +40,11 @@ pub(crate) struct SseStream {
     pub(crate) bad_sse_sample: Option<String>,
     /// 流内错误载荷
     pub(crate) stream_error: Option<StreamError>,
-    /// 本轮是否已向前端吐过内容（正文 / 思考段 / 工具折叠行）。
+    /// 本轮是否已向前端吐过**答复内容**（正文 / 工具折叠行）。
     /// 收尾侧据此判断「这条失败能不能重发本轮」——重发＝用户看两遍。
-    pub(crate) emitted_any: bool,
+    /// 思考段不算：思考是过程不是答复正文，只吐过思考时重发不算重复
+    /// （重发前 core 会发 `bot-turn-restart` 把已出的思考从气泡里撤走）。
+    pub(crate) emitted_body: bool,
     /// 用户在流中叫停
     pub(crate) stopped: bool,
 }
@@ -63,11 +65,12 @@ pub(crate) struct RoundStream {
     pub(crate) stopped: bool,
 }
 
-/// 流读取失败：错误本体 + 失败前是否已向前端吐过内容 + 能不能重发本轮 +
+/// 流读取失败：错误本体 + 失败前是否已向前端吐过答复内容 + 能不能重发本轮 +
 /// 放弃重试时收尾技能用的原因。
 ///
-/// 「有没有吐过内容」决定这条失败能不能重发本轮：正文、思考段、工具折叠行
-/// 一旦显示过，重发一遍就是重复内容；什么都没显示时重发才是干净的。
+/// 「有没有吐过内容」决定这条失败能不能重发本轮：正文、工具折叠行一旦
+/// 显示过，重发一遍就是重复内容；只吐过思考或什么都没显示时，重发前
+/// 有 `bot-turn-restart` 清场，不算给用户看两遍。
 ///
 /// 「能不能重发」决定值不值得重发：上游瞬时故障（5xx / 过载 / 限流）值得，
 /// 确定性拒绝（鉴权 / 参数 / 配额）不值得——重发多少次结果都一样。
@@ -76,7 +79,7 @@ pub(crate) struct RoundStream {
 /// 可能要重发本轮，提前收尾会把仍在跑的技能判成失败。
 pub(crate) struct StreamFailure {
     pub(crate) err: CommandError,
-    pub(crate) emitted_any: bool,
+    pub(crate) emitted_body: bool,
     /// 该失败是否值得重发本轮
     pub(crate) retryable: bool,
     /// 放弃重试时收尾技能用的原因（写进技能收尾文案）
@@ -92,13 +95,13 @@ pub(crate) struct StreamFailure {
 /// 静默降级成 `Internal`（不可恢复），变体选择必须每处显式。
 fn stream_failure(
     err: CommandError,
-    emitted_any: bool,
+    emitted_body: bool,
     retryable: bool,
     reason: &'static str,
 ) -> StreamFailure {
     StreamFailure {
         err,
-        emitted_any,
+        emitted_body,
         retryable,
         reason,
     }
@@ -436,10 +439,11 @@ pub(crate) async fn read_sse_stream(
 ) -> Result<SseStream, StreamFailure> {
     let emit_raw = deps.emit;
     let audit = deps.audit;
-    // 「本轮是否已向前端吐过内容」：正文、思考段、工具折叠行都算——
-    // 这三样显示过就不能重发本轮（重发＝重复内容）。
+    // 「本轮是否已向前端吐过答复内容」：正文、工具折叠行算，思考段不算——
+    // 思考是过程不是答复正文，只吐过思考时重发本轮不算重复内容
+    // （重发前 core 发 `bot-turn-restart` 清场）。
     // 用原子量而非 Cell：读侧 future 要跨线程（Send），Cell 不满足 Sync
-    let emitted_any = std::sync::atomic::AtomicBool::new(false);
+    let emitted_body = std::sync::atomic::AtomicBool::new(false);
     // 出口闭包就叫 emit：事件出口靠这个名字被一致性对拍认出来（前端 listen
     // 的每一件都得在 Rust 侧找得到 emit），改名会让门禁以为没人发这些事件
     let emit = |ev: &str, payload: serde_json::Value| {
@@ -456,7 +460,9 @@ pub(crate) async fn read_sse_stream(
         if stop.stopped() {
             return;
         }
-        emitted_any.store(true, std::sync::atomic::Ordering::Relaxed);
+        if matches!(ev, "bot-chat-delta" | "bot-tool" | "bot-tool-name") {
+            emitted_body.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         emit_raw(ev, payload);
     };
     let mut stream = resp.bytes_stream();
@@ -523,7 +529,7 @@ pub(crate) async fn read_sse_stream(
                         CommandError::LlmRequestFailed(
                             "大模型长时间没有响应，本轮未完成".to_string(),
                         ),
-                        emitted_any.load(std::sync::atomic::Ordering::Relaxed),
+                        emitted_body.load(std::sync::atomic::Ordering::Relaxed),
                         // 死连接重发有意义（换一条新连接往往就成了）
                         true,
                         "流式响应中断",
@@ -554,7 +560,7 @@ pub(crate) async fn read_sse_stream(
                         CommandError::LlmRequestFailed(format!(
                             "网络连接中断（{cause}），本轮未完成"
                         )),
-                        emitted_any.load(std::sync::atomic::Ordering::Relaxed),
+                        emitted_body.load(std::sync::atomic::Ordering::Relaxed),
                         // 连接中断重发有意义（上游/网关瞬时断链）
                         true,
                         "流式响应中断",
@@ -662,7 +668,7 @@ pub(crate) async fn read_sse_stream(
     // 本轮响应里的 Anthropic thinking 块（空 = 非 Anthropic 协议，
     // 或模型没开思考）。随本轮的 assistant 消息入历史，回传时原样发回。
     let thinking_blocks = state.thinking_collector.blocks();
-    let emitted_any = emitted_any.load(std::sync::atomic::Ordering::Relaxed);
+    let emitted_body = emitted_body.load(std::sync::atomic::Ordering::Relaxed);
     Ok(SseStream {
         final_text: state.final_text,
         tool_calls: state.tool_calls,
@@ -676,7 +682,7 @@ pub(crate) async fn read_sse_stream(
         bad_sse_chunks: state.bad_sse_chunks,
         bad_sse_sample: state.bad_sse_sample,
         stream_error,
-        emitted_any,
+        emitted_body,
         stopped,
     })
 }
@@ -707,7 +713,7 @@ pub(crate) fn stream_round(
         bad_sse_chunks,
         mut bad_sse_sample,
         stream_error,
-        emitted_any,
+        emitted_body,
         stopped,
     } = sse;
 
@@ -773,7 +779,7 @@ pub(crate) fn stream_round(
         );
         return Err(stream_failure(
             e,
-            emitted_any,
+            emitted_body,
             // 上游瞬时故障值得重发；确定性拒绝（鉴权/参数/配额）不值得
             stream_error_is_retryable(&err),
             "大模型流内错误",
@@ -824,7 +830,7 @@ pub(crate) fn stream_round(
             audit(crate::audit::AuditLevel::Warn, "llm.stream_truncated", kv);
             return Err(stream_failure(
                 err,
-                emitted_any,
+                emitted_body,
                 // 流被切 = 上游/代理断了，重发换一条连接有意义
                 true,
                 "流式响应中断",
@@ -837,7 +843,7 @@ pub(crate) fn stream_round(
             audit(crate::audit::AuditLevel::Warn, "llm.stream_truncated", kv);
             return Err(stream_failure(
                 err,
-                emitted_any,
+                emitted_body,
                 // 流被切 = 上游/代理断了，重发换一条连接有意义
                 true,
                 "流式响应中断",

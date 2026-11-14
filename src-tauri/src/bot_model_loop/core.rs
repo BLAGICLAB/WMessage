@@ -339,9 +339,11 @@ where
                 {
                     Ok(sse) => sse,
                     Err(fail) => {
-                        // 没吐过内容 + 该失败值得重发 → 重发本轮
-                        // （吐过了就不重发：重发＝给用户看两遍）
-                        if fail.retryable && !fail.emitted_any && stream_retry < MAX_STREAM_RETRIES
+                        // 没吐过答复内容（正文/工具行）+ 该失败值得重发 → 重发本轮。
+                        // 只吐过思考也算「没吐过」：思考是过程不是答复，重发前有
+                        // `bot-turn-restart` 清场；吐过正文/工具行就不重发
+                        // （重发＝给用户看两遍）。
+                        if fail.retryable && !fail.emitted_body && stream_retry < MAX_STREAM_RETRIES
                         {
                             stream_retry += 1;
                             audit(
@@ -356,6 +358,11 @@ where
                                 let hint = skill_finish(false, "用户停止");
                                 return Ok((format!("⏹ 已停止{hint}"), collected_refs));
                             }
+                            // 重发前清场：本轮已出的思考增量从气泡与落库事实里撤走
+                            //（思考是追加渲染的，不清场用户会看到两段思考拼在一起）。
+                            // 此时本轮工具尚未执行（工具执行发生在流成功之后），
+                            // 折叠行本来就是空壳；历史轮的工具结果在 msgs 里，不受影响。
+                            (deps.emit)("bot-turn-restart", serde_json::json!({}));
                             tokio::time::sleep(LLM_RETRY_DELAY).await;
                             continue;
                         }
@@ -375,11 +382,11 @@ where
                 };
 
                 // 收尾侧：坏块可见化 / token 记账 / 流内错误判定 / 截断防线。
-                // 这里的失败与读侧同一处置：上游瞬时故障且没吐过内容 → 重发本轮。
+                // 这里的失败与读侧同一处置：上游瞬时故障且没吐过答复内容 → 重发本轮。
                 match stream_round(sse, deps, expecting_selfcheck, expecting_final_selfcheck) {
                     Ok(rs) => break rs,
                     Err(fail) => {
-                        if fail.retryable && !fail.emitted_any && stream_retry < MAX_STREAM_RETRIES
+                        if fail.retryable && !fail.emitted_body && stream_retry < MAX_STREAM_RETRIES
                         {
                             stream_retry += 1;
                             audit(
@@ -394,6 +401,8 @@ where
                                 let hint = skill_finish(false, "用户停止");
                                 return Ok((format!("⏹ 已停止{hint}"), collected_refs));
                             }
+                            // 重发前清场（同读侧：思考是追加渲染，先撤已出的思考）
+                            (deps.emit)("bot-turn-restart", serde_json::json!({}));
                             tokio::time::sleep(LLM_RETRY_DELAY).await;
                             continue;
                         }

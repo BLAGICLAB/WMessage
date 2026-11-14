@@ -495,6 +495,30 @@ export function useChatStream(params: ChatStreamParams) {
       if (sid !== sessionIdRef.current && !streamState.isInflight(sid)) return;
       if (!streamState.noteSeq(sid, p?.seq)) return;
     });
+    // 断流重发清场：后端重发本轮前发一次，本轮已出的思考与工具行撤走
+    //（思考是追加渲染：不清场用户会看到两段思考拼接）。此刻本轮工具尚未
+    // 执行，折叠行本来就是空壳；历史轮在库里，不受影响。清场后重来的
+    // 增量照常落进同一只气泡。
+    const unRestart = reg<{ sessionId?: string | null }>("bot-turn-restart", (p) => {
+      const sid = p?.sessionId ?? null;
+      if (sid === null) return;
+      if (sid !== sessionIdRef.current && !streamState.isInflight(sid)) return;
+      const m = streamState.ensureMeta(sid);
+      m.text = "";
+      m.thinking = "";
+      m.tools = [];
+      if (sid !== sessionIdRef.current) return;
+      // 合并窗口里压着的增量属于断掉的那一发，一并作废
+      pending.text = "";
+      pending.think = false;
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last || !last.streaming) return prev;
+        const copy = [...prev];
+        copy[copy.length - 1] = { ...last, content: "", thinking: "", tools: [] };
+        return copy;
+      });
+    });
     //  水位条数据源：Anthropic 回合级 usage 按会话累计（当前视图 + 在途会话，
     //  与流式事件同过滤口径——切走的会话继续累计，切回可见）
     const unUsage = listen<{
@@ -605,6 +629,7 @@ export function useChatStream(params: ChatStreamParams) {
       unlistenSafe(unAsk);
       unlistenSafe(unAskResolved);
       unlistenSafe(unHeartbeat);
+      unlistenSafe(unRestart);
       streamHandlersRef.current = {};
     };
   }, [loadFinalText]);

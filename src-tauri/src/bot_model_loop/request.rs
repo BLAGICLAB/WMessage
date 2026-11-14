@@ -28,10 +28,10 @@ pub(crate) const MAX_LLM_ATTEMPTS: usize = crate::bot::constants::LLM_MAX_ATTEMP
 
 /// 流读取失败后的重发上限（本轮重发，不是重发整个回合）。
 ///
-/// 只在「还没向前端吐过内容」时用得上——重发已显示过的内容等于给用户看两遍。
-/// 1 次够：死连接多半在响应头之后立刻断，重发一次仍断就是上游/网络真有问题，
-/// 再重发只是白烧一次请求。
-pub(crate) const MAX_STREAM_RETRIES: usize = 1;
+/// 只在「还没向前端吐过答复内容（正文/工具行）」时用得上——重发已显示过的
+/// 内容等于给用户看两遍。1 次够：死连接多半在响应头之后立刻断，重发一次
+/// 仍断就是上游/网络真有问题，再重发只是白烧一次计费请求。
+pub(crate) const MAX_STREAM_RETRIES: usize = crate::bot::constants::MAX_STREAM_RETRIES as usize;
 
 pub(crate) const LLM_RETRY_DELAY: std::time::Duration =
     std::time::Duration::from_millis(crate::bot::constants::LLM_RETRY_DELAY_MS);
