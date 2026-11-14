@@ -124,6 +124,27 @@ fn stream_error_to_cmd_error(err: &StreamError) -> CommandError {
     CommandError::LlmApiError { status, detail }
 }
 
+/// reqwest 错误的 source 链逐层展开（` ← ` 连接，400 字符截断）。
+///
+/// reqwest 的 Display 恒为自家包装串（如 "error decoding response body"），
+/// 真因——hyper 的 connection closed before message completed / h2 RST_STREAM /
+/// TLS 中断——只在 `source()` 链里。审计只记 `to_string()` 的话，断流成因永远查不出。
+fn err_chain(e: &reqwest::Error) -> String {
+    use std::error::Error;
+    let mut out = e.to_string();
+    let mut cur = e.source();
+    while let Some(err) = cur {
+        out.push_str(" ← ");
+        out.push_str(&err.to_string());
+        if out.len() >= 400 {
+            out.truncate(400);
+            break;
+        }
+        cur = err.source();
+    }
+    out
+}
+
 /// 流内错误是否值得重发本轮：上游瞬时故障（5xx / 过载 / 限流）值得，
 /// 确定性拒绝（鉴权 / 参数 / 配额）不值得——重发多少次结果都一样。
 fn stream_error_is_retryable(err: &StreamError) -> bool {
@@ -423,6 +444,10 @@ pub(crate) async fn read_sse_stream(
         emit_raw(ev, payload);
     };
     let mut stream = resp.bytes_stream();
+    // 断流诊断量：响应头到断点的耗时与已收字节——审计里没有这两个数，
+    // 「头刚到就断」与「跑了很久才断」分辨不出，前者多为网关/代理问题
+    let started_at = std::time::Instant::now();
+    let mut bytes_received: usize = 0;
     // 字节缓冲按行切——逐 chunk from_utf8_lossy 时
     // chunk 边界落在多字节字符中间会产生 U+FFFD（正文乱码尚可，
     // 嵌在工具 arguments 里则是「合法 JSON 但内容损坏」会被真实执行）
@@ -467,7 +492,12 @@ pub(crate) async fn read_sse_stream(
                     audit(
                         crate::audit::AuditLevel::Error,
                         "llm.stream_idle_timeout",
-                        vec![("idle_secs", STREAM_CHUNK_IDLE_TIMEOUT.as_secs().to_string())],
+                        vec![
+                            ("idle_secs", STREAM_CHUNK_IDLE_TIMEOUT.as_secs().to_string()),
+                            ("bytes", bytes_received.to_string()),
+                            ("elapsed_ms", started_at.elapsed().as_millis().to_string()),
+                            ("phase", "body".to_string()),
+                        ],
                     );
                     return Err(stream_failure(
                         CommandError::Internal(format!(
@@ -488,7 +518,13 @@ pub(crate) async fn read_sse_stream(
                     audit(
                         crate::audit::AuditLevel::Error,
                         "llm.stream_failed",
-                        vec![("err", e.to_string())],
+                        vec![
+                            ("err", e.to_string()),
+                            ("err_chain", err_chain(&e)),
+                            ("bytes", bytes_received.to_string()),
+                            ("elapsed_ms", started_at.elapsed().as_millis().to_string()),
+                            ("phase", "body".to_string()),
+                        ],
                     );
                     return Err(stream_failure(
                         CommandError::Internal(format!("流式读取失败：{e}")),
@@ -500,6 +536,7 @@ pub(crate) async fn read_sse_stream(
                 }
             };
             byte_buf.extend_from_slice(&chunk);
+            bytes_received += chunk.len();
             for line in drain_sse_lines(&mut byte_buf) {
                 let line = line.trim();
                 // 注释行（: 开头）按 SSE 规范忽略——它不终结正在攒的事件，

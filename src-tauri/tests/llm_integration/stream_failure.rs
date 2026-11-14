@@ -121,3 +121,72 @@ async fn stream_failure_finishes_active_skill() {
         "放弃重试时必须收尾技能（不留悬空 run）：{calls:?}"
     );
 }
+
+/// 断流审计必须带全诊断量（err_chain / bytes / elapsed_ms / phase）。
+///
+/// reqwest 的 Display 恒为 "error decoding response body" 一句包装串，真因
+/// （hyper 的连接中断）只在 `source()` 链里——没有 err_chain，六次断流六次
+/// 同一句废话，成因永远查不出（实机 2026-11-13 日志即此形态）。
+#[tokio::test]
+async fn stream_failure_audit_carries_diagnostic_fields() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TruncatedStream(String::new()));
+    server.push_behavior(MockBehavior::TextReply("重发成功".into()));
+
+    let h = CoreHarness::new();
+    let captured: Arc<Mutex<Vec<(&'static str, Vec<(String, String)>)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let cap2 = captured.clone();
+    let audit: &'static (dyn Fn(AuditLevel, &'static str, Vec<(&'static str, String)>)
+                  + Send
+                  + Sync) = Box::leak(Box::new(
+        move |_level: AuditLevel, event: &'static str, kv: Vec<(&'static str, String)>| {
+            cap2.lock().unwrap().push((
+                event,
+                kv.iter()
+                    .map(|(k, v)| ((*k).to_string(), v.clone()))
+                    .collect(),
+            ));
+        },
+    ));
+    let mut deps = h.deps();
+    deps.audit = audit;
+
+    let exec = |_name: String, _args: String, _trace: ToolCallTrace| async {
+        ToolResult::ok("ok", Vec::new())
+    };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &deps,
+        &exec,
+        noop_replan,
+    )
+    .await
+    .expect("断流后重发本轮应成功");
+
+    assert_eq!(text, "重发成功");
+    let recs = captured.lock().unwrap().clone();
+    let (_, kv) = recs
+        .iter()
+        .find(|(e, _)| *e == "llm.stream_failed")
+        .expect("断流应记 llm.stream_failed 审计");
+    let get = |k: &str| {
+        kv.iter()
+            .find(|(kk, _)| kk == k)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
+    let chain = get("err_chain");
+    assert!(
+        chain.contains("error decoding response body"),
+        "链首应为 reqwest 包装串：{chain}"
+    );
+    assert!(chain.contains(" ← "), "source 链应逐层展开真因：{chain}");
+    assert!(!get("bytes").is_empty(), "已收字节数必须在审计里");
+    assert!(!get("elapsed_ms").is_empty(), "断点耗时候必须在审计里");
+    assert_eq!(get("phase"), "body");
+}
