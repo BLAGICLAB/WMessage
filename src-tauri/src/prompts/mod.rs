@@ -154,6 +154,36 @@ mod tests {
         );
     }
 
+    /// 卡住升级口径的三处覆盖是硬要求：主聊天提示词、任务卡执行提示词、
+    /// ask_user 工具描述。死循环闸（第 3 次同参调用拦截转问）只是最后一道
+    /// 确定性防线——模型该在第 2 次就自己升级，闸拦不住「每次都差一点点的
+    /// 变参循环」；三处文案各有分工：主聊天与任务卡点名 ask_user（此前主
+    /// 提示词零处提及该工具），子 agent 无提问通道只提换路收尾。
+    #[test]
+    fn escalation_to_ask_is_declared_in_prompts_and_tool_desc() {
+        assert!(
+            SYSTEM_PROMPT.contains("用 ask_user 向用户提问"),
+            "SYSTEM_PROMPT 必须点名 ask_user（此前零处提及，模型不知道卡住时该用它）"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("连续第 3 次会被系统自动拦截"),
+            "SYSTEM_PROMPT 必须声明死循环闸的存在（让模型提前自检，不等闸拦）"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("提问不是失败，是升级"),
+            "要有正向口径：M 系模型不问的根因是把提问当失败"
+        );
+        assert!(
+            EXECUTE_SYSTEM_PROMPT.contains("卡住就升级")
+                && EXECUTE_SYSTEM_PROMPT.contains("定时/批量执行没有提问通道"),
+            "EXECUTE_SYSTEM_PROMPT 必须写卡住升级口径与无人值守的回落"
+        );
+        assert!(
+            crate::bot::registry::SCHEMA_ASK_USER.contains("反向触发"),
+            "ask_user 工具描述必须带「何时必须问」的触发器"
+        );
+    }
+
     /// 截断摘要比 /compact 更紧（它常驻历史开头）：字数上限是设计口径，别改混
     #[test]
     fn summary_and_compact_word_budgets_are_distinct() {
