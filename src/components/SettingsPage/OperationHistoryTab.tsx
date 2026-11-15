@@ -86,7 +86,7 @@ export function OperationHistoryTab() {
           {runs.map((r) => (
             <li
               key={r.run_id}
-              className="flex items-center gap-3 px-3 py-2 rounded-lg bg-[var(--bg)] border border-[var(--bd)] text-xs"
+              className="flex items-center gap-3 px-3 py-2 rounded-lg bg-[var(--bg)] border border-[var(--edge)] text-xs"
             >
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">

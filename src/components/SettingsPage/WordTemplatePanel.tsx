@@ -246,7 +246,7 @@ export function WordTemplatePanel() {
               {items.map((t) => (
                 <li
                   key={t.name}
-                  className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-[var(--t2)] hover:bg-[var(--hover)]"
+                  className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-[var(--t2)] hover:bg-[var(--hover-bg)]"
                 >
                   <FileText
                     size={14}

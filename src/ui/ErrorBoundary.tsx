@@ -41,7 +41,7 @@ export class ErrorBoundary extends Component<
               窗口发生错误
             </p>
             <p className="text-sm text-[var(--t2)] mb-2">{message}</p>
-            <pre className="text-[10px] text-[var(--t4)] whitespace-pre-wrap overflow-auto max-h-64 bg-[var(--inset)] p-3 rounded-xl mb-3">
+            <pre className="text-[10px] text-[var(--t4)] whitespace-pre-wrap overflow-auto max-h-64 bg-[var(--inset-bg)] p-3 rounded-xl mb-3">
               {stack}
             </pre>
             <button

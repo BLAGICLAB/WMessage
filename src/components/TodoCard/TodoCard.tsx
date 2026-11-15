@@ -735,7 +735,7 @@ export function TodoCardView({
                 。
               </div>
               <div
-                className="text-[11px] text-[var(--t5)] break-all px-2 py-1.5 rounded bg-[var(--bg)] border border-[var(--bd)] max-h-28 overflow-y-auto whitespace-pre-line"
+                className="text-[11px] text-[var(--t5)] break-all px-2 py-1.5 rounded bg-[var(--bg)] border border-[var(--edge)] max-h-28 overflow-y-auto whitespace-pre-line"
                 title={boundFiles.map((f) => f.path).join("\n")}
               >
                 完整路径：{boundFiles.length > 1 ? "\n" : ""}

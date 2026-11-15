@@ -273,7 +273,7 @@ export function InputArea({
                         (e.currentTarget as HTMLImageElement).style.display =
                           "none";
                       }}
-                      className="pointer-events-none absolute bottom-full left-0 mb-1 hidden group-hover:block max-w-[220px] max-h-[120px] rounded-lg border border-[var(--border)] bg-[var(--bg)] shadow-lg object-contain z-10"
+                      className="pointer-events-none absolute bottom-full left-0 mb-1 hidden group-hover:block max-w-[220px] max-h-[120px] rounded-lg border border-[var(--edge)] bg-[var(--bg)] shadow-lg object-contain z-10"
                     />
                   )}
                 </div>

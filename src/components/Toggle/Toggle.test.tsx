@@ -15,7 +15,8 @@ describe("Toggle", () => {
     render(<Toggle checked={false} onChange={() => {}} />);
     const btn = screen.getByRole("switch");
     expect(btn).toHaveAttribute("aria-checked", "false");
-    expect(btn.className).toContain("bg-[var(--border)]");
+    // 灰底用设计系统的 --edge-strong（--border 全仓未定义，引用它底色会失效）
+    expect(btn.className).toContain("bg-[var(--edge-strong)]");
   });
 
   it("点击切换 onChange(true→false→true)", () => {

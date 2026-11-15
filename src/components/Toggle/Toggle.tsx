@@ -45,7 +45,7 @@ export function Toggle({
       className={[
         "relative inline-flex shrink-0 items-center rounded-full transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)]",
         dims,
-        checked ? "bg-[#ef4444]" : "bg-[var(--border)]",
+        checked ? "bg-[#ef4444]" : "bg-[var(--edge-strong)]",
         disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
       ].join(" ")}
       data-testid="toggle"

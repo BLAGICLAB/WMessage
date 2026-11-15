@@ -91,7 +91,7 @@ function StyleGroup({
   const inList = CN_SIZES.some(([, v]) => v === pt);
   const lineIsMultiple = style.line_rule === "auto";
   return (
-    <div className="rounded-lg border border-[var(--line)] p-3">
+    <div className="rounded-lg border border-[var(--edge)] p-3">
       <div className="grid grid-cols-2 gap-x-3 gap-y-2 md:grid-cols-3">
         <label className="flex items-center gap-1.5 text-xs text-[var(--t3)]">
           中文字体

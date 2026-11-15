@@ -149,7 +149,7 @@ export function TagConsolidateModal({ onClose }: Props) {
         className="nm-card w-full max-w-2xl max-h-[85vh] flex flex-col"
         onPointerDown={stopPointer}
       >
-        <div className="flex items-center gap-2 p-4 border-b border-[var(--bd)]">
+        <div className="flex items-center gap-2 p-4 border-b border-[var(--edge)]">
           <Tags size={14} aria-hidden className="text-[var(--t3)]" />
           <span className="text-sm font-medium text-[var(--t2)]">整理归档标签</span>
           <span className="text-[11px] text-[var(--t5)] ml-2">
@@ -194,8 +194,8 @@ export function TagConsolidateModal({ onClose }: Props) {
                     key={c.members.join("|")}
                     className={`rounded-lg p-3 border transition-[opacity,border-color,background-color] duration-[var(--dur-card)] ease-[var(--ease-out)] ${
                       sel.enabled
-                        ? "border-[var(--bd)] bg-[var(--bg)]"
-                        : "border-dashed border-[var(--bd)] bg-transparent opacity-60"
+                        ? "border-[var(--edge)] bg-[var(--bg)]"
+                        : "border-dashed border-[var(--edge)] bg-transparent opacity-60"
                     }`}
                   >
                     <div className="flex items-center gap-2 mb-2">
@@ -284,7 +284,7 @@ export function TagConsolidateModal({ onClose }: Props) {
           )}
         </div>
 
-        <div className="flex items-center gap-2 p-4 border-t border-[var(--bd)]">
+        <div className="flex items-center gap-2 p-4 border-t border-[var(--edge)]">
           <span className="text-[11px] text-[var(--t5)]">
             {selectedCount > 0
               ? `将合并 ${selectedCount} 个簇`
