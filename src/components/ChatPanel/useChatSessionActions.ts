@@ -321,6 +321,11 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
           role: "assistant",
           content:
             partial && !alreadyNoted ? `${partial}\n\n${note}` : partial || note,
+          // 后端失败行 turn_status=failed（Err 半部落库），视图兜底行必须同态：
+          // retryIdx 只认末条 assistant + turnStatus==="failed"——缺了它重试
+          // 按钮不出（读侧/send 层失败气泡都从这条兜底行来）。事件时序两可：
+          // upserted 先到会被这里整段覆盖，后到则凭同态尾行命中替换条件
+          turnStatus: "failed",
         },
       ];
       // 真源化批 4：失败行已由后端落库（entry 的 Err 分支，事件回显），

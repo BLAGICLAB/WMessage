@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 337 个文件、约 14.8 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 338 个文件、约 14.9 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -163,7 +163,7 @@ src-tauri/src/
 │   ├── bot_model_loop/core.rs (1284)     核心循环：run_model_loop_core（可注入 mock）+
 │   │                                    dispatch_round（工具分发/回灌）
 │   ├── bot_model_loop/shell.rs (648)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
-│   ├── bot_model_loop/request.rs (726)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
+│   ├── bot_model_loop/request.rs (767)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
 │   ├── bot_model_loop/sse.rs (892)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
 │   ├── bot_model_loop/guard.rs (707)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
 │   │                                    guard_verdict）+ 自检回复判定 + 工具自检侧调路由
@@ -179,7 +179,7 @@ src-tauri/src/
 │   ├── bot_model_loop/context.rs (255)  上下文瘦身层：超限判定 / 历史裁剪 / 索引重排修正 /
 │   │                                    轮内工具结果滑动窗 / 用户意图抽取
 │   ├── bot_model_loop/evidence.rs (95)  证据来源层：从消息抽文本·来源，数字是否可溯源
-│   ├── bot_model_loop/tests.rs (75)     单元测试六桶的入口 + prod_src() 生产代码全景扫描源
+│   ├── bot_model_loop/tests.rs (76)     单元测试六桶的入口 + prod_src() 生产代码全景扫描源
 │   ├── bot_model_loop/tests/guard.rs (1123)   幻觉守卫 / 熔断 / 接线类测试
 │   ├── bot_model_loop/tests/parse.rs (596)   SSE 解析 / 增量累积 / schema 测试
 │   ├── bot_model_loop/tests/config.rs (615) 推理参数 / 思考 / 上下文超限 / 侧调门测试
@@ -865,7 +865,7 @@ flowchart TD
 
 ## 6.4 源文件清单（完整列表，由 `tests-audit/audit_module_map.py` 对拍）
 
-`src-tauri/src/` 实际 335 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
+`src-tauri/src/` 实际 338 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
 对拍：每条必须指向真实文件，每个源文件必须在本节列出。新增模块请同步登记。
 
 ### 顶层
@@ -935,6 +935,7 @@ flowchart TD
 - `bot_model_loop/tests/tool_window.rs`
 - `bot_model_loop/tests/guard.rs`
 - `bot_model_loop/tests/parse.rs`
+- `bot_model_loop/tests/request.rs`
 - `bot_model_loop/tests/repeat_gate.rs`
 - `bot_model_loop/tests/sse.rs`
 - `bot_model_loop/types.rs`

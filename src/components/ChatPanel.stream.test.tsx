@@ -357,6 +357,35 @@ describe("ChatPanel", () => {
     expect(await screen.findByText(/⚠️ API 配额超限/)).toBeInTheDocument();
   });
 
+  it("失败气泡带重试按钮：视图兜底行与后端失败行同态（turnStatus=failed），文案自指可点时按钮真在", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_history_save") return null;
+      if (cmd === "bot_chat")
+        throw {
+          code: "LLM_REQUEST_FAILED",
+          message:
+            "网络连接中断（连接失败），本轮未完成，可点气泡下方的「重试」重新发起这一轮",
+          recoverable: true,
+        };
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "会断流的一条");
+    await user.keyboard("{Enter}");
+    // 失败收尾完成（⚠️ 气泡渲染 = catch 兜底行已上屏）
+    expect(await screen.findByText(/⚠️ 网络连接中断/)).toBeInTheDocument();
+    // 文案自指「可点重试」就必须真有按钮：retryIdx 只认
+    // 末条 assistant + turnStatus==="failed"（读侧/send 层失败同源）
+    expect(
+      screen.getByTitle("重新发起这一轮：重放这条回复之前的最近一条用户消息"),
+    ).toBeInTheDocument();
+  });
+
   it("runChat 失败后清理本会话的流式元数据条目（不滞留到下次收尾或重启）", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {

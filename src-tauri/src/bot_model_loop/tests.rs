@@ -71,5 +71,6 @@ mod guard;
 mod intent;
 mod parse;
 mod repeat_gate;
+mod request;
 mod sse;
 mod tool_window;

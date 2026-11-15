@@ -591,6 +591,49 @@ fn request_failure_error(detail: &str, hint: &str) -> CommandError {
     CommandError::LlmRequestFailed(format!("{detail}{hint}"))
 }
 
+/// 发送段失败的用户文案（纯函数，锚点可直测）：成因短语 + 重试指引，
+/// 与流内错误（sse.rs 的「网络连接中断（{cause}）…」）同一套口径。
+/// reqwest 原始串是开发者词汇（Display 刻意只剩包装串），不进用户文案。
+pub(crate) fn send_failure_user_text(cause: &str) -> String {
+    format!("网络连接中断（{cause}），本轮未完成，可点气泡下方的「重试」重新发起这一轮")
+}
+
+/// 发送段 reqwest 错误的成因归类。发送段还没有响应体，decode 类不存在；
+/// 超时发生在连接/等响应头阶段。
+fn send_error_cause(e: &reqwest::Error) -> &'static str {
+    if e.is_timeout() {
+        "连接超时"
+    } else if e.is_connect() {
+        "连接失败"
+    } else {
+        "连接异常中断"
+    }
+}
+
+/// 发送段失败载荷：用户文案（分层归因）与原始串（审计）分离。
+/// retry 循环里错误一旦转成 String，类型信息就丢了、归类无从谈起——
+/// 所以必须在 `req.send()` 的错误出口就地构造。
+pub(crate) struct SendFail {
+    pub(crate) user_text: String,
+    pub(crate) raw: String,
+}
+
+impl SendFail {
+    fn from_reqwest(e: reqwest::Error) -> Self {
+        Self {
+            user_text: send_failure_user_text(send_error_cause(&e)),
+            raw: e.to_string(),
+        }
+    }
+
+    pub(crate) fn header_timeout(secs: u64) -> Self {
+        Self {
+            user_text: send_failure_user_text(&format!("响应头 {secs}s 无响应")),
+            raw: format!("响应头超时（{secs}s 无响应，判定服务端挂起）"),
+        }
+    }
+}
+
 pub(crate) async fn request_round(
     http: &LlmHttp,
     msgs: &mut Vec<serde_json::Value>,
@@ -655,11 +698,8 @@ pub(crate) async fn request_round(
         // total timeout 会连流式 body 一起算，不能用。60s 只覆盖
         // 连接+发请求+收到响应头，body 由下方逐 chunk idle 超时接管
         let send_result = match tokio::time::timeout(LLM_HEADER_TIMEOUT, req.send()).await {
-            Ok(r) => r.map_err(|e| e.to_string()),
-            Err(_) => Err(format!(
-                "响应头超时（{}s 无响应，判定服务端挂起）",
-                LLM_HEADER_TIMEOUT.as_secs()
-            )),
+            Ok(r) => r.map_err(SendFail::from_reqwest),
+            Err(_) => Err(SendFail::header_timeout(LLM_HEADER_TIMEOUT.as_secs())),
         };
         match send_result {
             Ok(r) => {
@@ -688,12 +728,12 @@ pub(crate) async fn request_round(
                 }
                 break r;
             }
-            Err(e) => {
+            Err(f) => {
                 if attempt < MAX_LLM_ATTEMPTS {
                     (deps.audit)(
                         crate::audit::AuditLevel::Warn,
                         "llm.retry",
-                        vec![("err", e.to_string()), ("attempt", attempt.to_string())],
+                        vec![("err", f.raw), ("attempt", attempt.to_string())],
                     );
                     if stop.stopped() {
                         return Ok(RequestOutcome::Stopped);
@@ -705,7 +745,8 @@ pub(crate) async fn request_round(
                 // 请求没打通（网络 / 超时 / 连接失败）——用户可以重试，
                 // 报 LlmRequestFailed（recoverable=true，前端给「重试」入口）；
                 // 降级成 blanket 的 Internal 会让前端只提示「反馈日志」。
-                let err = request_failure_error(&e.to_string(), &hint);
+                // 用户文案走分层归因，原始 reqwest 串只留在审计。
+                let err = request_failure_error(&f.user_text, &hint);
                 let mut kv = crate::audit::error_kv(&err);
                 kv.push(("attempt", attempt.to_string()));
                 (deps.audit)(crate::audit::AuditLevel::Error, "llm.request_failed", kv);
