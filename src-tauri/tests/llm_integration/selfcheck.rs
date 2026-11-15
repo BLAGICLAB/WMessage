@@ -16,17 +16,19 @@ use super::*;
 async fn core_final_selfcheck_y_restores_final_text() {
     let server = MockLlmServer::start();
     // 3 个 tool_calls 让 function_calls_total 凑够 3
+    // 参数逐次区分：同参 3 连调撞工具重复闸（第 3 次拦截），计数停在 2
+    // 凑不齐终稿自检的 function_calls 触发线。
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":1}"#.into(),
     }));
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":2}"#.into(),
     }));
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":3}"#.into(),
     }));
     // 第 4 轮模型给长文 final_text（≥ 80 字触发 final 自检 trigger）
     server.push_behavior(MockBehavior::TextReply(
@@ -68,17 +70,19 @@ async fn core_final_selfcheck_y_restores_final_text() {
 #[tokio::test]
 async fn core_final_selfcheck_n_appends_warning_and_audits() {
     let server = MockLlmServer::start();
+    // 参数逐次区分：同参 3 连调撞工具重复闸（第 3 次拦截），计数停在 2
+    // 凑不齐终稿自检的 function_calls 触发线。
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":1}"#.into(),
     }));
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":2}"#.into(),
     }));
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":3}"#.into(),
     }));
     let long_text = "已完成 3 项工作：列出了所有任务、统计了完成情况、生成了汇总报告。所有条目都逐条核对过状态、期限与负责人，异常项已单独标注，完整清单以文档形式存档，随时可以复查或导出。";
     server.push_behavior(MockBehavior::TextReply(long_text.into()));
@@ -136,17 +140,19 @@ async fn core_final_selfcheck_n_appends_warning_and_audits() {
 #[tokio::test]
 async fn core_final_selfcheck_explained_n_appends_warning() {
     let server = MockLlmServer::start();
+    // 参数逐次区分：同参 3 连调撞工具重复闸（第 3 次拦截），计数停在 2
+    // 凑不齐终稿自检的 function_calls 触发线。
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":1}"#.into(),
     }));
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":2}"#.into(),
     }));
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":3}"#.into(),
     }));
     let long_text = "已完成 3 项工作：列出了所有任务、统计了完成情况、生成了汇总报告。所有条目都逐条核对过状态、期限与负责人，异常项已单独标注，完整清单以文档形式存档，随时可以复查或导出。";
     server.push_behavior(MockBehavior::TextReply(long_text.into()));
@@ -182,17 +188,19 @@ async fn core_final_selfcheck_explained_n_appends_warning() {
 #[tokio::test]
 async fn core_final_selfcheck_tool_reply_releases_snapshot() {
     let server = MockLlmServer::start();
+    // 参数逐次区分：同参 3 连调撞工具重复闸（第 3 次拦截），计数停在 2
+    // 凑不齐终稿自检的 function_calls 触发线。
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":1}"#.into(),
     }));
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":2}"#.into(),
     }));
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":3}"#.into(),
     }));
     // 第 4 轮长文触发 final 自检（gap 默认 8，首次满足即触发）
     server.push_behavior(MockBehavior::TextReply(
@@ -237,17 +245,19 @@ async fn core_final_selfcheck_tool_reply_releases_snapshot() {
 #[tokio::test]
 async fn core_final_selfcheck_disabled_with_gap_zero() {
     let server = MockLlmServer::start();
+    // 参数逐次区分：同参 3 连调撞工具重复闸（第 3 次拦截），计数停在 2
+    // 凑不齐终稿自检的 function_calls 触发线。
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":1}"#.into(),
     }));
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":2}"#.into(),
     }));
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":3}"#.into(),
     }));
     let long_text = "已完成 3 项工作：列出了所有任务、统计了完成情况、生成了汇总报告。";
     server.push_behavior(MockBehavior::TextReply(long_text.into()));
@@ -278,17 +288,19 @@ async fn core_final_selfcheck_disabled_with_gap_zero() {
 #[tokio::test]
 async fn core_final_selfcheck_skips_short_final_text() {
     let server = MockLlmServer::start();
+    // 参数逐次区分：同参 3 连调撞工具重复闸（第 3 次拦截），计数停在 2
+    // 凑不齐终稿自检的 function_calls 触发线。
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":1}"#.into(),
     }));
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":2}"#.into(),
     }));
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "list_tasks".into(),
-        arguments: "{}".into(),
+        arguments: r#"{"i":3}"#.into(),
     }));
     // 短 final_text（< 80 字，触发硬条件不过）
     server.push_behavior(MockBehavior::TextReply("完成了".into()));
@@ -610,10 +622,12 @@ async fn core_late_selfcheck_verdict_retry_is_bounded() {
 async fn core_late_final_selfcheck_verdict_is_not_returned_as_answer() {
     let server = MockLlmServer::start();
     // 前 3 轮工具调用：凑够终稿自检的 function_calls 下限
-    for _ in 0..3 {
+    // 参数逐次区分：同参 3 连调撞工具重复闸（第 3 次拦截），计数停在 2
+    // 凑不齐终稿自检的 function_calls 触发线。
+    for i in 0..3 {
         server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
             name: "list_tasks".into(),
-            arguments: "{}".into(),
+            arguments: format!(r#"{{"i":{i}}}"#),
         }));
     }
     // 第 4 轮：长文触发终稿自检（gap 默认 8，首次满足即触发）
@@ -709,10 +723,12 @@ async fn core_age_based_rolling_compaction_fires() {
 async fn core_final_selfcheck_sidecall_y_no_extra_main_round() {
     let main = MockLlmServer::start();
     let side = MockLlmServer::start();
-    for _ in 0..3 {
+    // 参数逐次区分：同参 3 连调撞工具重复闸（第 3 次拦截），计数停在 2
+    // 凑不齐终稿自检的 function_calls 触发线。
+    for i in 0..3 {
         main.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
             name: "list_tasks".into(),
-            arguments: "{}".into(),
+            arguments: format!(r#"{{"i":{i}}}"#),
         }));
     }
     main.push_behavior(MockBehavior::TextReply(SIDE_LONG_TEXT.into()));
@@ -745,10 +761,12 @@ async fn core_final_selfcheck_sidecall_y_no_extra_main_round() {
 async fn core_final_selfcheck_sidecall_n_appends_warning() {
     let main = MockLlmServer::start();
     let side = MockLlmServer::start();
-    for _ in 0..3 {
+    // 参数逐次区分：同参 3 连调撞工具重复闸（第 3 次拦截），计数停在 2
+    // 凑不齐终稿自检的 function_calls 触发线。
+    for i in 0..3 {
         main.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
             name: "list_tasks".into(),
-            arguments: "{}".into(),
+            arguments: format!(r#"{{"i":{i}}}"#),
         }));
     }
     main.push_behavior(MockBehavior::TextReply(SIDE_LONG_TEXT.into()));
