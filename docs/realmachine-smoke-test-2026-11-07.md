@@ -237,6 +237,14 @@
   4. 开关关：同一调用**无卡弹出**、行为与改造前一致（自动 Decline）；
   5. bot.log 无应答值明文（bot-ask-resolved 的 answer 侧是占位）。
 - **变异锚点**：V169。
+- **11-16 补验已跑通（官方 SDK 服务器，M179 判据 1/2/4 达成）**：官方 SDK
+  1.32.2 的 `server.elicitInput()` + `StreamableHTTPServerTransport`。
+  **接法必须按会话复用**（`sessionIdGenerator: randomUUID` + `onsessioninitialized`
+  里存 session→{server,transport}，POST 按 `mcp-session-id` 头取回同一实例）——
+  无状态接法下处理 tools/call 的 server 实例从没跑过 `oninitialize`，能力集恒 null，
+  SDK 直接抛「Client does not support form elicitation.」。`elicitInput()` 要在
+  `call_tool` handler 作用域内调（SEP-2260）。判据 3（60s expired）与 5（日志无明文）
+  本轮未单独构造。
 
 ### M180 OAuth 全流程（ACC-P-21 主卡）
 - **步骤**：配置一个支持 OAuth 2.1 的 HTTP MCP 服务器 → McpPanel 该行点

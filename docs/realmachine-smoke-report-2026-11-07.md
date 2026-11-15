@@ -28,7 +28,7 @@
 | M176 activate_tools 端到端 | **PASS** | 开关开+重启：模型先调 activate_tools(desktop)→下一轮 screenshot 落盘 755KB |
 | M177 分类器三分支 | **PASS** | ①诉求内白名单外写→Unsure→弹窗（判别边界两可）②诉求外敏感读→Unsure→弹窗→拒→模型如实上报换路 ③selfcheckModelId 指向不存在→`unsure_no_model` 0ms 兜底→弹窗（绝不放行）；latency 0-2.2s 无 llm.usage 增量 |
 | M178 连拦停用/无人值守 | **未实测** | MiniMax 判性偏 Unsure，3 连 deny 难构造；无人值守需关窗+定时作业，构造成本超余量。连拦/无人值守路径以 L1（auto_classifier.rs 3 例）背书，如实登记 |
-| M179 elicitation 端到端 | **部分** | 连接与调用链路通（桩收到 initialize/tools/list/tools/call）；**elicitation/create 发出后 ask 卡未弹出**（rmcp streamable HTTP 服务端→客户端请求的桩接法未吃到，见 F-7）；60s/开关对照不可构造。另发现第二道闸（bot_web DNS 闸）拦 loopback——与 config URL 闸是两处（本测临时加白了两处） |
+| M179 elicitation 端到端 | **部分** | 连接与调用链路通（桩收到 initialize/tools/list/tools/call）；**elicitation/create 发出后 ask 卡未弹出**（rmcp streamable HTTP 服务端→客户端请求的桩接法未吃到，见 F-7）；60s/开关对照不可构造。另发现第二道闸（bot_web DNS 闸）拦 loopback——与 config URL 闸是两处（本测临时加白了两处）｜**11-16 补验：官方 SDK 服务器下全链贯通（卡弹出→应答→工具收到 `{"agree":true}`），F-7 已修** |
 | M180 OAuth 全流程 | **部分**（F-6） | 登录链路两次全过：DCR→浏览器授权→302 loopback 回调（随机端口）→PKCE 换 token→`mcp.oauth.login` 审计+keyring ✓；**调用面不可达**：mount 快照登录后不刷新（模型清单无 ping_stub）+ 过期后调用无 Bearer 且 401 兜底刷新未触发；登出路径未测 |
 | M181 eval 一键脚本 | **PASS** | 13 用例逐条输出+汇总 **PASS=12 FAIL=1** + tokens（input 31820/output 12264）；FAIL 用例详情见 eval 完整输出 |
 
@@ -47,7 +47,7 @@
 - **F-1（P2，已知复证）**：ask 卡 pill 按钮对合成点击不响应（11-04 轮已登记，本轮再次复证；文本回答路径可用，绕行口径成熟）。
 - **F-3（P2，已修 67c6c779）**：exec 会话的 /stop 失效——围观 exec 会话输入 /stop 返回「当前对话没有进行中的回复」但该会话 trace 实际 running；在途确认弹窗路径同样不可达。
 - **F-5（P3，已修 67c6c779）**：进程被杀后 stale running trace 永久残留（启动清扫不收拾 exec_traces 的 running 行），疑似连带永久锁该会话发送。
-- **F-7（P3，外部桩局限）**：elicitation 桩的服务端→客户端请求（POST 响应 SSE 流内载 elicitation/create）未被 rmcp 客户端处理——本测桩接法与 rmcp 期望不匹配，ask 卡未弹出。不排除真服务器按标准接法可通，下轮用 mcp SDK 官方服务器复验。
+- **F-7（P3，外部桩局限）**：elicitation 桩的服务端→客户端请求（POST 响应 SSE 流内载 elicitation/create）未被 rmcp 客户端处理——本测桩接法与 rmcp 期望不匹配，ask 卡未弹出。不排除真服务器按标准接法可通，下轮用 mcp SDK 官方服务器复验。｜**11-16 补验翻案：F-7 是产品缺陷——桥接 handler 未覆写 `get_info`，客户端从未声明 `capabilities.elicitation.form`，服务器据此不发起反问；已修（声明能力，不钉协议版本）并用官方 SDK 服务器真验通过（卡弹出→应答→工具收到 `{"agree":true}`）。详见 11-15 报告 §十一。**
 - **F-2（设计行为确认）**：围观 exec 会话发送被拦（「执行进行中，围观模式暂不能发送」）——与 useChatSend 注释一致，非缺陷。
 
 ## 二、变异注入台账（V158–V171）——2026-11-08 补跑

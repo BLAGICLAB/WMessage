@@ -261,3 +261,81 @@ wmessage 裸启 12s 无 panic（重建后首读 key 钥匙串授权框属预期�
 6. **钥匙串弹窗根治**：新二进制 + keyring 读点弹窗的根治 = env 补丁盖 LLM/
    搜索四读点之外，**必须盖 mcp/secrets.rs 的 hydrate_mcp_servers**（load_config
    启动即读 mcp:<id> 条目）——本轮补上后零弹窗（上一轮的漏网读点就是它）。
+
+## 十一、补验轮：MCP elicitation 官方 SDK 真验（2026-11-16）
+
+11-07 轮登记的 **F-7**（M179 卡：elicitation/create 发出后 ask 卡不弹）按当时的
+约定「下轮用 MCP SDK 官方服务器复验」，本节记该轮的完整结论。
+
+### 11.1 结论
+
+**F-7 是产品缺陷，不是外部桩局限**：桥接 handler 只覆写了 `create_elicitation`，
+**能力声明走 `get_info`（rmcp 默认是空能力集）**——客户端 initialize 的
+`capabilities.elicitation.form` 从未声明，真实服务器据此判定「客户端不支持
+elicitation」根本不发起反问。已修并实机全链贯通（官方 SDK 1.32.2 服务器）。
+
+### 11.2 根因与两次误判（方法论在录）
+
+| 层次 | 事实 |
+|---|---|
+| 真因（产品） | `ElicitBridge` 未覆写 `get_info` → initialize 的 `capabilities` 无 `elicitation.form` → 服务器拒发 elicitation |
+| 误判 1（我的假设） | 「rmcp 协商出 2026-07-28 = NO_INITIALIZE，服务器改从 per-request `_meta` 读能力，所以看不见」——**错**：官方 SDK 对未知版本照单全收并自行协商（`types.js`: `includes(requestedVersion) ? requestedVersion : LATEST`），rmcp 的 legacy `initialize` 握手始终把 capabilities 放在 body 里，与协议版本无关 |
+| 误判 2（测试服务器） | 服务器侧 `_clientCapabilities` 为 null → **我的测试服务器是无状态接法**（每个 POST 新建 `Server` 实例，处理 tools/call 的那个实例从没跑过 `oninitialize`）→ 能力集恒 null。改按会话复用（`sessionIdGenerator` + session→{server,transport} 映射）后能力集正常 |
+
+**教训**：官方 SDK 的报错「Client does not support form elicitation.」同时命中两种
+成因（客户端没声明 / 服务器没初始化过），**不能拿它反推客户端**；能力是否声明
+要看 initialize 的**原始请求体**（服务器侧打 `RAW initialize params`），不能看
+服务器内部状态。
+
+### 11.3 修法
+
+`ElicitBridge` 覆写 `get_info`，声明 `capabilities.elicitation.form`
+（capability 结构体 `#[non_exhaustive]` → 只能 `default()` 后逐字段赋值）。
+**不钉协议版本**：实测 initialize 仍发默认 2026-07-28，官方 SDK 照常协商出
+2025-11-25 并接受能力集——改动面最小，不动其他服务器的握手行为。
+配套锚点测试：桥接 handler 必须声明 `form`；默认 handler（开关关时注入的 `()`）
+必须**不**声明（保证开关关 = 零变化）。
+
+### 11.4 实机证据（官方 SDK 服务器，`server.elicitInput` + StreamableHTTP）
+
+开关开：
+
+```
+RAW initialize params: {"capabilities":{"elicitation":{"form":{}}},"clientInfo":{"name":"wmessage","version":"0.3.0"},"protocolVersion":"2026-07-28"}
+client capabilities seen by server: {"elicitation":{"form":{}}}
+→ 聊天区弹出「MCP 输入请求」卡：允许 / 不允许 / 输入其他回答…（+ 忽略 / 回答并继续）
+→ 点「允许」→「回答并继续」
+tool.return | tool=mcp_officialelicit_ask_demo | ms=17085 | preview=elicit 应答 action=accept content={"agree":true}
+trace.complete | status=done | turns=1 | tools=1
+```
+
+boolean 语义映射正确：卡面「允许」→ 服务端收到 `{"agree":true}`（不允许 → false）。
+
+开关关（对照组，同一服务器）：
+
+```
+RAW initialize params: {"capabilities":{},"clientInfo":{"name":"rmcp","version":"3.5.0"},"protocolVersion":"2026-07-28"}
+client capabilities seen by server: {}
+tool.return | ms=7 | preview=MCP 工具报告错误：elicit 失败：Client does not support form elicitation.
+```
+
+开关关时能力集为空 → 服务器直接拒发 → **不弹卡、工具秒失败**，零行为变化
+（附带观察：开关关时 initialize 的 clientInfo 是 rmcp 默认值而非 wmessage，
+属 rmcp 默认 handler 的既有行为，不在本轮改动面）。
+
+### 11.5 本轮环境操作台账
+
+| 改了什么 | 改在哪 | 还原了吗 |
+|---|---|---|
+| env 密钥补丁（4 个读点 + 钥匙串跳闸，6 处） | keyring.rs / mcp/secrets.rs | ✓ git checkout |
+| loopback 白名单（DNS 闸 + MCP URL 闸两处） | bot_web/fetch.rs / mcp/config.rs | ✓ git checkout |
+| 密钥 env 文件（假值，6 个变量） | ~/.config/wmessage-smoke-test.env | ✓ 已删 |
+| bot-config：LocalStub 模型 + official-elicit-demo MCP 服务器 | bot-config.json | ✓ 还原为 `bot-config.json.bak-mutation-round`（openai 列表回 Ling-1T/Ring-1T，activeModel 回 anthropic/MiniMax-M3.1-Flash，mcpServers 回 builtin-playwright） |
+| 三个桩进程（LLM 脚本桩 / 官方 SDK MCP 服务器 / 代理） | 后台进程 | ✓ 已停 |
+| 测试会话 ×14（「F7 复验一」～「F7 复验十五」） | bot_sessions | 留存不删（证据链），如实登记 |
+
+**官方 SDK 服务器接法（给下一轮）**：必须**按会话复用**——`StreamableHTTPServerTransport`
+配 `sessionIdGenerator: randomUUID` + `onsessioninitialized` 里存 session→{server,transport}
+映射，POST 时按 `mcp-session-id` 头取回同一实例；无状态接法会让 tools/call 的实例
+从未 initialize，能力集恒 null。`server.elicitInput()` 要在 `call_tool` handler
+作用域内调用（SEP-2260：服务端→客户端请求必须从处理某个客户端请求的 handler 内发出）。

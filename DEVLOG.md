@@ -6,6 +6,27 @@
 > 「为什么换方向」，一事一段。工单号、拍板记录不再进入源码注释（见 SPEC.md
 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
+## 2026-11-16（周一）MCP elicitation 真验：F-7 从「桩局限」翻案为「能力没声明」
+
+11-07 轮把 elicitation 卡不弹记成 F-7「外部桩局限」，并约定下轮用 MCP SDK 官方
+服务器复验。用官方 SDK 1.32.2 服务器真跑之后翻案：桥接 handler 只覆写了
+`create_elicitation`，**能力声明走的是 `get_info`**（rmcp 默认空能力集）——客户端
+initialize 的 `capabilities.elicitation.form` 从未声明，服务器据此判定「客户端不支持
+elicitation」根本不发反问。修法只补能力声明，**不钉协议版本**：实测 initialize 仍发
+默认 2026-07-28，官方 SDK 照常自行协商并接受能力集，动别的服务器的握手行为不值得。
+
+两次误判值得记：其一，先假设「rmcp 协商出 NO_INITIALIZE 版本，服务器改从 per-request
+`_meta` 读能力所以看不见」——错的，官方 SDK 对未知版本照单全收（自己协商到最新版），
+legacy `initialize` 的能力集一直在 body 里；其二，服务器侧能力集恒 null，先怪到协议
+版本上，其实是我的测试服务器**无状态接法**（每个 POST 新建 Server 实例，处理
+tools/call 的那个实例从没跑过 initialize）。教训：SDK 那句「Client does not support
+form elicitation.」同时命中两种成因，不能拿它反推客户端；能力有没有声明要看
+initialize 的**原始请求体**，不看服务器内部状态。
+
+官方 SDK 服务器的接法本身有门槛：必须按会话复用（sessionIdGenerator + session 映射，
+POST 按 `mcp-session-id` 取回同一实例），`elicitInput()` 要在 `call_tool` handler
+作用域内调（SEP-2260）。这条已写进 11-07 方案卡的复跑口径。
+
 ## 2026-11-07（周六）冒烟三发现修复：登录快照重建 / exec /stop 后端裁决 / stale trace 清扫
 
 实机复验三绿。F-6 的根因链值得记：OAuth 登录成功只写令牌不重发现，而 mount 握手
