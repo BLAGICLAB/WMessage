@@ -566,13 +566,29 @@ pub fn run() {
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = meta::sync::ensure_seed(&handle).await {
-                        audit::write_event(
-                            &handle,
-                            audit::AuditLevel::Warn,
-                            "meta_seed_models_dev",
-                            &[("err", e)],
-                        );
+                    match meta::sync::ensure_seed(&handle).await {
+                        // 种子落库成功（断网启动的离线兜底）也要留痕：无声成功
+                        // 时事后无法区分「本地有种子」与「这次刚播的种」
+                        Ok(Some(stats)) => {
+                            audit::write_event(
+                                &handle,
+                                audit::AuditLevel::Info,
+                                "meta_seed_models_dev",
+                                &[
+                                    ("providers", stats.providers.to_string()),
+                                    ("models", stats.models.to_string()),
+                                ],
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            audit::write_event(
+                                &handle,
+                                audit::AuditLevel::Warn,
+                                "meta_seed_models_dev",
+                                &[("err", e)],
+                            );
+                        }
                     }
                     if let Err(e) = meta::sync::sync_models_dev(&handle).await {
                         audit::write_event(
