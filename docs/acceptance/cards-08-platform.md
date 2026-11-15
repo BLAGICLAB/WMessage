@@ -335,21 +335,23 @@
 ### ACC-P-19 · MCP elicitation 桥接
 
 - **SPEC**：6-124
-- **层级**：L1（自动化；实机端到端随下一轮实机批次抽验）
+- **层级**：L1（自动化）＋ 实机端到端已验（2026-11-16，官方 SDK 服务器）
 - **历史卡**：—
 - **前置**：per-server `allowElicitation` 默认 false（默认行为=rmcp 自动 Decline，零变化）；需要一个会发 elicitation 的 HTTP MCP server
 - **步骤**：
-  1. 后端面：跑 `cargo test --lib -- bot::mcp::elicit`（三例：多字段与未知字段类型 Decline / URL 模式与无在途调用 Decline / elicit_respond 唤醒 waiter 且同 qid 二次应答报不存在）。
+  1. 后端面：跑 `cargo test --lib -- bot::mcp::elicit`（四例：多字段与未知字段类型 Decline / URL 模式与无在途调用 Decline / elicit_respond 唤醒 waiter 且同 qid 二次应答报不存在 / **桥接 handler 声明 form 能力且默认 handler 不声明**）。
   2. 组件面：`grep -n "elicit_respond" src/components/ChatPanel/AskCard.tsx src-tauri/src/lib.rs` 命中（应答分叉 + 命令注册在案）；`grep -n "allow_elicitation" src-tauri/src/bot/mcp/config.rs src-tauri/src/bot/mcp/manager.rs` 命中（开关 + handler 注入在案）。
   3. 对拍：`grep -n "source.*mcp_elicit" src-tauri/src/bot/mcp/elicit.rs src/components/ChatPanel/askStore.ts` 命中（来源标记两侧一致）。
+  4. 实机端到端：官方 MCP TypeScript SDK（1.32.2）写 elicit 服务器（`server.elicitInput()` + `StreamableHTTPServerTransport`，**按会话复用**），主聊天调它的工具 → 开关开/关各跑一次。
 - **判据**：
   1. 【可核对】开关关：elicitation 到达 → 自动 Decline（与现状逐字节一致）。
   2. 【可核对】开关开：在途调用期间 elicitation → ask 卡弹出（含 server 名、单字段）；60s 超时 → Decline；主窗口不可见 → 立即 Decline。
   3. 【可核对】应答值不出现在 bot.log / 审计事件（只回 `[MCP 应答，值不落日志]` 占位）。
   4. 【可核对】字段类型映射：boolean 走「允许/不允许」按钮、enum 走选项按钮、number/integer 严格解析失败 → Decline。
-- **证据**：cargo 输出 + AskCard 截图（实机）
-- **失败处置**：先查在途登记（execute_mcp_direct 的 ActiveCallGuard 是否泄漏——panic 路径由 RAII 兜底）；再查 rmcp SEP-2260 关联校验（协议 ≥2026-07-28 时无在途关联的请求 rmcp 内部直接 invalid_params，属预期）。
-- **缺口补验**：实机端到端（真 server elicitation → 卡 → 应答回传）未验；stdio 服务器 elicitation 未接（范围外）；URL 模式未接（范围外）。
+  5. 【可核对】**能力声明**：开关开时 initialize 的 `capabilities.elicitation.form` 在案（服务器据此才发起反问）；开关关时能力集为空。
+- **证据**：cargo 输出 + AskCard 截图（实机，2026-11-16：卡弹出 → 应答 → 工具收到 `{"agree":true}`；开关关时服务器拒发「Client does not support form elicitation.」）
+- **失败处置**：先查在途登记（execute_mcp_direct 的 ActiveCallGuard 是否泄漏——panic 路径由 RAII 兜底）；再查 rmcp SEP-2260 关联校验（协议 ≥2026-07-28 时无在途关联的请求 rmcp 内部直接 invalid_params，属预期）；再查 initialize 原始请求体的能力集（缺 `elicitation.form` → 服务器不发起反问，别误判成传输层问题）。
+- **缺口补验**：实机端到端已验（2026-11-16）；stdio 服务器 elicitation 未接（范围外）；URL 模式未接（范围外）；60s expired 面未单独构造。
 
 ### ACC-P-20 · ask 档分类器兜底
 

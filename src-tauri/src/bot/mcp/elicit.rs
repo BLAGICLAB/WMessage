@@ -307,6 +307,29 @@ pub struct ElicitBridge {
 }
 
 impl rmcp::handler::client::ClientHandler for ElicitBridge {
+    /// initialize 时声明 elicitation 能力（form 模式）。
+    ///
+    /// **不声明 = 真实服务器根本不会发起 elicitation**——协议里 server 侧先看
+    /// 客户端 initialize 的 `capabilities.elicitation.form` 才决定发不发
+    /// （官方 SDK 的 assert：缺 form 直接报「Client does not support form
+    /// elicitation.」）。桥接 handler 只覆写 create_elicitation 不够：能力
+    /// 声明走 get_info，默认是空能力集。
+    ///
+    /// 只在本 handler 被注入时（即 per-server `allowElicitation` 开关开）
+    /// 才声明——开关关时仍是空能力集，server 不会发起、客户端也不会收到，
+    /// 与「默认自动 Decline」同为零变化。
+    fn get_info(&self) -> rmcp::model::ClientConfig {
+        // capability 结构体是 non-exhaustive：只能 default 后逐字段赋值
+        let mut elicitation = rmcp::model::ElicitationCapability::default();
+        elicitation.form = Some(rmcp::model::FormElicitationCapability::default());
+        let mut capabilities = rmcp::model::ClientCapabilities::default();
+        capabilities.elicitation = Some(elicitation);
+        rmcp::model::ClientConfig::new(
+            capabilities,
+            rmcp::model::Implementation::new("wmessage", env!("CARGO_PKG_VERSION")),
+        )
+    }
+
     async fn create_elicitation(
         &self,
         request: ElicitRequestParams,
@@ -385,5 +408,31 @@ mod tests {
         // 二次应答同 qid → 已移除 → 报不存在
         assert!(elicit_respond("elicit:t1".into(), "x".into()).is_err());
         waiters().lock().unwrap_or_else(|p| p.into_inner()).clear();
+    }
+
+    /// initialize 必须声明 elicitation.form 能力——不声明服务器根本不会发起
+    /// elicitation（官方 SDK 判 `clientCapabilities.elicitation.form` 缺失即
+    /// 拒），桥接 handler 只覆写 create_elicitation 不够。
+    #[test]
+    fn bridge_declares_form_elicitation_capability() {
+        use rmcp::handler::client::ClientHandler as _;
+        let info = ElicitBridge {
+            server_id: "srv".into(),
+        }
+        .get_info();
+        let elicitation = info
+            .capabilities
+            .elicitation
+            .expect("必须声明 elicitation 能力集");
+        assert!(
+            elicitation.form.is_some(),
+            "必须声明 form 模式（url 模式本仓不支持）"
+        );
+        // 开关关时注入的是 rmcp 默认 handler，能力集为空 → 服务器不会发起
+        let default_info = rmcp::handler::client::ClientHandler::get_info(&());
+        assert!(
+            default_info.capabilities.elicitation.is_none(),
+            "默认 handler 不得声明 elicitation（开关关必须零变化）"
+        );
     }
 }
