@@ -27,7 +27,7 @@
 
 ## 一、发现清单（按严重度）
 
-### F-新2（P2）读侧断流失败气泡缺「重试」按钮，文案却自指可点
+### F-新2（P2，已修）读侧断流失败气泡缺「重试」按钮，文案却自指可点
 - **现象**：读侧断流（`stream_idle_timeout` → `stream_retry` → 仍失败 → trace failed）的
   失败气泡文案为「请求大模型失败：大模型长时间没有响应，本轮未完成，可点击气泡
   下方的『重试』重新发起这一轮」——**但操作行只有 复制/移除/撤回到此，没有重试按钮**。
@@ -36,16 +36,16 @@
   `role==="assistant" && turnStatus==="failed"`——读侧失败行的前端投影未把
   `turnStatus` 落成 `failed`（库中该行 `turn_status='failed'` 在案，投影面缺口）。
 - **命令面可用**：`/retry` 斜杠命令全链正常（见 M199）。
-- **建议修法**：失败落库/投影时统一把 `turn_status=failed` 传给前端最后一条
+- **修法（已落）**：runChat catch 的视图兜底行补 `turnStatus="failed"` 与后端失败行同态（runChat 失败后清理元数据测试旁新增「失败气泡带重试按钮」锚点）；原「建议」的投影侧改法不再需要——投影面本来就把 turnStatus 广播出来了，缺口只在视图兜底行。原建议文本：失败落库/投影时统一把 `turn_status=failed` 传给前端最后一条
   assistant 消息（或在 retryIdx 判据里兜底认 `error` 非空的末条 assistant 行）。
 
-### F-新1（P3）发送期失败气泡亮原始 reqwest 串
+### F-新1（P3，已修）发送期失败气泡亮原始 reqwest 串
 - **现象**：send 层失败（连接被切/死连接池复用）的气泡文案 =
   「请求大模型失败：error sending request for url (https://api.minimax.cn/…)」——
   原始 reqwest 报错文直接进用户可见文案，与 M197 判据 1「原始串不出现」同判据下
   **读侧已分层、send 层未分层**。
 - **同域连带**：send 层失败气泡同样无重试按钮（recoverable=true 已置）。
-- **建议**：send 层失败走同一套分层映射（连接失败/超时/截断三类归因 + 指引语）。
+- **修法（已落）**：send 层失败走同一套分层映射（`SendFail` 在 `req.send()` 错误出口就地归类，user_text 与 raw 分离，原始串只留审计；锚点 tests/request.rs 两例）。原「建议」文本：send 层失败走同一套分层映射（连接失败/超时/截断三类归因 + 指引语）。
 
 ### 观察项（不计缺陷）
 1. **MiniMax 子 agent 的预算绕行三连**：①工具批内并行（读+写合并调用）；
