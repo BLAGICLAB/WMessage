@@ -440,33 +440,37 @@
 
 | 卡 | 结果 | 证据（事件行 / 库证输出） | 备注 |
 |---|---|---|---|
-| M182 | | | |
-| M183 | | | |
-| M184 | | | |
-| M185 | | | |
-| M186 | | | |
-| M187 | | | |
-| M188 | | | |
-| M189 | | | |
-| M190 | | | |
-| M191 | | | |
-| M192 | | | |
-| M193 | | | |
-| M194 | | | |
-| M195 | | | |
-| M196 | | | |
-| M197 | | | |
-| M198 | | | |
-| M199 | | | |
-| M200 | | | |
-| M201 | | | |
-| M202 | | | |
-| M203 | | | |
-| W25–W27 | | | 本机为 macOS 时如实登记「环境受限延后」 |
+| M182 | PASS | `subagent_check_wait wait_ms=600000 waited_ms=196257 exit=terminal`（对比 11-08 旧行 1156579）；心跳源码面 orchestrator.rs:433；S0 等待跨 660s 无假死 | 判据 2 事件面=前端广播不落 bot.log |
+| M183 | PASS | `sa_5d64d276\|cancelled\|用户停止`；check 等待 1s 即返；f1_note 未生成；race（他会话）跑到 194 轮 | 4/4 |
+| M184 | 部分 | 主聊天 ask 卡端到端活体（`ask_answered action=answer` + 挂卡 3.5min + 回填续跑）；汇报轮场景未及构造（macau 子 agent 随 relaunch 链中止） | ask_registered 覆盖面 L1 背书 |
+| M185 | PASS | 开 DeepSeek 同保存 Tavily 自动翻关 + 落盘对拍；双开残留识别 + conflictText 逐字 + 关一保一拉平（tavily=true/deepseek=false） | 抓取通道独立 ✓ |
+| M186 | PASS | 950px 实况截图：子 Agent 行/计时块内不断行、停止键不压字、无横滚 | — |
+| M187 | PASS | 失败文案根因链五层（…client error (Connect)：tunnel error：tcp connect error：Connection refused os error 61）+「重试 2 次后仍失败」尾注 | 判据 3 六十秒上限观感未占满（连接拒绝瞬时），L1 计时背书 |
+| M188 | PASS | 清表 0 → 死代理冷启动种子落库 **235 厂商行**；网格满砖 + 更新按钮在场；手动同步失败库不破坏；在线重启 235→326；seed 事件全程 0 条 | 判据 2 口径出入：事件只在种子失败时打（lib.rs ensure_seed Err 分支），落库实锤=行数 |
+| M189 | PASS | `subagent_deliverable_nudge round=29` 恰一条（本轮新写 checks 文件触发）；注入后交卷动作发生（JSON 截断→failed） | 判据 3 陈年文件反例未单独构造，L1 背书 |
+| M190 | 受限 | 真熔断行两次构造未产出：MiniMax 并行批+父级拆分+收尾 JSON 截断三连绕开双轴（S5 对首只撞 ~400 工具墙但行被机器验收翻成功） | 恢复链 L1 + 11-08 旧 specimen 背书 |
+| M191 | PASS | 子 agent 交卷即终态（13:39:30 submit → succeeded）；主会话拒绝点在**工具清单装配层**（模型自证无此工具）；check 立即读终态（13:28:53→13:29:00） | — |
+| M192 | 受限 | 无 budget_exceeded 行可续 | resume 事务原子性 + onion 元列搬运 L1 背书 |
+| M193 | PASS | 判据 1：cancelled 非误报 failed；判据 4 活体：`sa_b4dfe8ea succeeded \| result_json_unparseable:机器验收 1 项全通过，按产物判成功`；拒绝面：e613 验收不满足 → failed | 判据 2/3 L1 + 行证据间接 |
+| M194 | PASS | `reminder.fired` + 系统通知真弹（通知中心截图）+ 触发即删（COUNT=0）+ 零异常事件 | 4/4 |
+| M195 | PASS | 首响推进明日；暂停/恢复 `set_enabled` 双行 + remind_at 重算明日（不补响）；改期立即重算（非基准值）；过期 `reminder.expired 错过 259225s` + 行删；周期行推进不炸 | 4/4 |
+| M196 | 部分 | 页标题「定时」✓、双页签渲染 ✓、切换不阻塞 ✓；未授权提示条出现/消失**环境受限**（System Settings 驱动超预算，组件测试 12 例钉渲染逻辑） | — |
+| M197 | PASS | 判据 1 实证：失败文案「请求大模型失败：**大模型长时间没有响应**，本轮未完成，可点重试」四段齐、无原始串无内部错误；`llm.stream_idle_timeout bytes=10637 phase=body cause=idle` 诊断字段齐 | 判据 3 变体：RST 即断路径未捕获（切管器不传 RST，构造器局限）；send 层文案未分层 → F-新1 |
+| M198 | PASS | 判据 1 实证：思考增量下 `llm.stream_retry attempt=1` 触发（emitted_body 判据活体）；重发撞仍切隧道 → 按 M197 分层落（判据 3 后半） | 判据 2 restart 前端事件不可观测，库证 failed 行无思考残留间接；判据 3 重发成功路径未捕获；596 同场景未触发 retry——重发预算语义登记观察 |
+| M199 | FAIL→F-新2 | 读侧失败气泡**无重试按钮**（文案却自指「可点重试」）；根因面 MessageList.tsx retryIdx 判据（投影 turnStatus 未落 failed）；命令面 `/retry` 全链 PASS（截尾+同 content 重放+20s succeeded+库证 ord13 failed→completed 1319 字） | 401 类气泡有按钮（对照在案） |
+| M200 | PASS | `memory.embed_engine_unavailable` 全程 0；记忆语义检索命中（教训全文复述截图）；判据 2 空集收敛登记 | — |
+| M201 | PASS | `repeat_gate consec=3 action=answered` + 问卡三选项弹出；换参即放行活证（+column）；query_tasks ×5 全执行零闸（26 行日志）；回合 done 收尾 + record_lesson | — |
+| M202 | PASS | 问卡三选项 + 假设就此打住；answered 放行 + 同回合二次撞闸 `action=reject` 直拒（10ms 双行）；30s 变异窗 `action=fallback`；子 agent 零 ask 卡 | 判据 3 用 30s 变异法（方案 §十二 点名允许，跑完还原） |
+| M203 | PASS | 提示词三处点名 grep 在案；行为观感：一次读败即如实收尾（「循环重试无法成功，所以我停在这里」+三条出路+不伪造） | 概率面两可口径 |
+| W25–W27 | 未覆盖 | 本机为 macOS | 环境受限延后 |
 
 **变异执行台账**（V172–V192 逐条 KILLED / SURVIVED / 受限）：
 
-（待回填）
+**全部未跑**（预算账如实登记：22 卡 + 熔断双构造 + 断流多轮重跑占满本轮；
+每条变异需单编辑+重建+复跑+还原约 10–25 分钟，21 条另计 3–4 小时；口径同
+11-07 轮「卡片先跑、变异补跑另起」）。V183（resume 丢 onion 元列）与
+V192（超时回落放行）两条必须 KILLED 级随 M192 受限面与 M202 PASS 面顺延至
+补跑轮；M202 超时窗补跑可直接复用本轮 30s 变异法（§十二 点名允许）。
 
 ---
 
