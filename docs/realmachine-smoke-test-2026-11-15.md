@@ -464,13 +464,28 @@
 | M203 | PASS | 提示词三处点名 grep 在案；行为观感：一次读败即如实收尾（「循环重试无法成功，所以我停在这里」+三条出路+不伪造） | 概率面两可口径 |
 | W25–W27 | 未覆盖 | 本机为 macOS | 环境受限延后 |
 
-**变异执行台账**（V172–V192 逐条 KILLED / SURVIVED / 受限）：
+**变异执行台账**（V172–V192 补跑于 2026-11-15 晚，方法同前轮：单编辑→重建→复跑→还原）：
 
-**全部未跑**（预算账如实登记：22 卡 + 熔断双构造 + 断流多轮重跑占满本轮；
-每条变异需单编辑+重建+复跑+还原约 10–25 分钟，21 条另计 3–4 小时；口径同
-11-07 轮「卡片先跑、变异补跑另起」）。V183（resume 丢 onion 元列）与
-V192（超时回落放行）两条必须 KILLED 级随 M192 受限面与 M202 PASS 面顺延至
-补跑轮；M202 超时窗补跑可直接复用本轮 30s 变异法（§十二 点名允许）。
+**实跑 12 条：11 KILLED + 1 KILLED（经 L1）+ 0 SURVIVED**；未跑 9 条顺延（V172/V173/V174/V179/V180/V182/V184 子 agent 长时场景、V175 概率面、V190 本机不可激活）。
+
+| 锚点 | 判定 | 一句话证据 |
+|---|---|---|
+| V176 搜索互斥删 | **KILLED** | 变异态双开落盘 tavily=T/deepseek=T（pristine 同保存自动翻关）；conflictText 兜底提示同屏活体 |
+| V177 err_chain 丢链 | **KILLED** | 变异态审计行纯顶层串；pristine 同行带五层链（Connect→tunnel→tcp→refused 61） |
+| V178 启动种子兜底删 | **KILLED** | 清表+死代理冷启动 COUNT=0、厂商库网格消失（M188 三症状复活）；还原后种子回填 326 |
+| V181 交卷不立即终局 | **KILLED** | 双队列桩：子回合越过交卷跑到 text 步 → 行翻 failed+result_json_unparseable（pristine submit 即 succeeded） |
+| V183 resume 丢 onion 元列（**必须 KILLED**） | **KILLED** | 桩 tools_vary 44.8s 造真熔断行+sidecar+onion=validator；pristine resume 保留 validator、变异态续跑会话 onion_config=**NULL**——配置档静默丢失（M192 判据 3 红） |
+| V185 提醒 grace 推进删（等价注入） | **KILLED** | stale 行启用：pristine 静默推进明日零通知；变异态 22s 后 reminder.fired 补响 |
+| V186 stream_failed 缺 err_chain | **KILLED** | 桩 break（bytes=298/801ms）：变异态五字段缺 err_chain（pristine M197 PASS 五字段齐） |
+| V187 重发判据毒化复活 | **KILLED** | 桩 think_break（纯思考增量即断）：变异态无 stream_retry 单次即败（pristine 同场景 retry attempt=1） |
+| V188 restart 清场不删 thinking | **KILLED（经 L1）** | 实机叠影观测窗秒级+折叠默认收起未命中（连拍 12 帧）；防线本体由 stream.test「bot-turn-restart 清场」用例锁定（还原后绿） |
+| V189 重试按钮挂全部 | **KILLED** | pristine 401 旧气泡（非末条）无重试（裁剪图）；变异态同气泡出现「⟲ 重试」——判据 1/3 被打破 |
+| V191 拦截阈值 3→5 | **KILLED** | 桩同参 create_task ×5：consec 1-4 全放行（4 任务落库）、第 5 次 consec=5 才拦（pristine 第 3 次即拦） |
+| V192 转问超时回落放行（**必须 KILLED**） | **KILLED** | 30s 变异窗+回落放行：consec=3 超时后 action=answered 放行原参、**第 3 任务落库**（pristine action=fallback 只 2 任务）——死循环闸「无人应答即拒」防线有牙 |
+
+**基础设施革新（本轮方法论沉淀）**：钥匙串 ACL 每次重建弹密码框不可自动化 → env 假密钥补丁（keyring.rs 读点回退，值可假）+ **脚本化 LLM 桩**（stub-llm.mjs：剧本逐步消费/双队列路由 sub_match/tools_vary 熔断构造/break·think_break·delay_ms·http_error 步型）+ LocalStub 模型（本地 baseUrl 挂已验证厂商域）。真熔断行构造从「20-40 分钟真模型且被并行批绕开」变为「桩秒级确定性驱动」——V181/V183/V192 的判定面全部由此解锁。
+
+**顺延 9 条**：V172/V173（check 等待钳制/心跳——桩 delay_ms 长等待场景，约 20 分钟/条）、V174（stop 级联双会话双子 agent）、V179（nudge 新鲜度 stale verif 注入）、V180/V182（恢复链剥标记/sidecar 不清——需 FUSE 标记正文形态的熔断行，tools_vary 已可造，顺延补跑）、V184（机器验收豁免放宽）、V175（汇报轮提问概率面，L1 背书）、V190（ort 预检——失败路径仅在 Windows 缺 dll 场景，本机 macOS 不可激活）。
 
 ---
 
