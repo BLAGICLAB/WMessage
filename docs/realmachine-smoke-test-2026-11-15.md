@@ -464,9 +464,50 @@
 | M203 | PASS | 提示词三处点名 grep 在案；行为观感：一次读败即如实收尾（「循环重试无法成功，所以我停在这里」+三条出路+不伪造） | 概率面两可口径 |
 | W25–W27 | 未覆盖 | 本机为 macOS | 环境受限延后 |
 
-**变异执行台账**（V172–V192 补跑于 2026-11-15 晚，方法同前轮：单编辑→重建→复跑→还原）：
+**变异执行台账**（V172–V192 补跑于 2026-11-15 晚 ~ 11-16 凌晨，两轮共 20 条，方法同前轮：单编辑→重建→复跑→还原）：
 
-**实跑 12 条：11 KILLED + 1 KILLED（经 L1）+ 0 SURVIVED**；未跑 9 条顺延（V172/V173/V174/V179/V180/V182/V184 子 agent 长时场景、V175 概率面、V190 本机不可激活）。
+**总结果：20 条实跑 = 19 KILLED + 1 KILLED（经 L1）+ 0 SURVIVED**；另 1 条（V190）本机不可激活，登记随 W25 Windows 轮。
+
+**第一轮（11-15 晚，12 条）**：
+
+| 锚点 | 判定 | 一句话证据 |
+|---|---|---|
+| V176 搜索互斥删 | **KILLED** | 变异态双开落盘 tavily=T/deepseek=T；pristine 同保存自动翻关 |
+| V177 err_chain 丢链 | **KILLED** | 变异态审计行纯顶层串；pristine 带五层链（Connect→tunnel→tcp→refused 61） |
+| V178 启动种子兜底删 | **KILLED** | 清表+死代理冷启动 COUNT=0、厂商库网格消失；还原后种子回填 326 |
+| V179 nudge 新鲜度判据删 | **KILLED** | gen 根陈年 verif*.json（mtime 退 24h）：变异态轮末注入「立即收尾」；pristine 同场景 0 条 nudge |
+| V180 恢复链不剥熔断标记 | **KILLED** | 桩 fuse_submit（交卷 JSON 与「⏹ 已熔断」同轮）：pristine 行终态 **succeeded**；变异态 **budget_exceeded**（真实完成被误报熔断） |
+| V181 交卷不立即终局 | **KILLED** | 双队列桩：子回合越过交卷跑到 text 步 → 行翻 failed+unparseable；pristine submit 即 succeeded |
+| V182 续跑成功不清 sidecar | **KILLED** | 桩造熔断行→resume 续跑完成：变异态**无** sidecar_cleared 审计行 + 盘上 session_history.json 残留；pristine 明确有清理行 |
+| V183 resume 丢 onion 元列（**必须 KILLED**） | **KILLED** | 桩 tools_vary 44.8s 造真熔断行+sidecar+onion=validator；pristine resume 保留 validator、变异态续跑会话 onion_config=**NULL**（配置档静默丢失） |
+| V184 机器验收豁免放宽 | **KILLED** | 桩熔断残行（判据 file_exists:ok.txt 不存在）：pristine 残行 result_json **无 acceptance_check**；变异态**带 acceptance_check[{machine:true,met:false}]** |
+| V185 提醒 grace 推进删 | **KILLED** | stale 行启用：pristine 静默推进明日零通知；变异态 22s 后 reminder.fired 补响 |
+| V186 stream_failed 缺 err_chain | **KILLED** | 桩 break（bytes=298/801ms）：变异态五字段缺 err_chain；pristine 五字段齐 |
+| V187 重发判据毒化复活 | **KILLED** | 桩 think_break（纯思考增量即断）：变异态无 stream_retry 单次即败；pristine retry attempt=1 触发 |
+| V188 restart 清场不删 thinking | **KILLED（经 L1）** | 实机叠影观测窗秒级未命中（连拍 12 帧）；防线本体由 stream.test「bot-turn-restart 清场」用例锁定 |
+| V189 重试按钮挂全部 | **KILLED** | pristine 401 旧气泡（非末条）无重试（裁剪图）；变异态同气泡出现「⟲ 重试」 |
+| V191 拦截阈值 3→5 | **KILLED** | 桩同参 create_task ×5：consec 1-4 全放行（4 任务落库）、第 5 次 consec=5 才拦；pristine 第 3 次即拦 |
+| V192 转问超时回落放行（**必须 KILLED**） | **KILLED** | 30s 变异窗：超时后 action=answered 放行原参、**第 3 任务落库**；pristine action=fallback 只 2 任务 |
+
+**第二轮（11-15 夜 ~ 11-16 凌晨，8 条）**：
+
+| 锚点 | 判定 | 一句话证据 |
+|---|---|---|
+| V172 check 等待步长钳制删 | **KILLED** | 桩 spawn 慢子 agent → check(waitMs=300)：pristine `waited_ms=305`（钳制生效）；变异 `waited_ms=1508`（≈5× 预算） |
+| V173 心跳不发 | **KILLED** | 等价小阈值窗（看门狗 660s→30s、心跳 60s→5s，跑完还原）：变异态 30s 被 dead-man 判死并自动 /stop（bot_stop 审计行）；pristine 同场景无 bot_stop、等满 wait_ms=45005 |
+| V174 stop 级联丢会话过滤 | **KILLED** | 桩双会话路由 + 真实在跑子 agent：A 会话 /stop → pristine A cancelled + **B 仍 running**；变异态 **A、B 双双 cancelled**（误伤） |
+| V175 ask_registered 丢 Report 分支 | **KILLED** | 桩三队列（main/sub/report）：变异态汇报轮 ask_user 被拒「当前会话未开放提问」；pristine 放行（ask_user_asked 审计行） |
+| V179 nudge 新鲜度判据删（第二轮复核） | **KILLED** | 同第一轮结论 |
+| V180 恢复链不剥熔断标记（第二轮复核） | **KILLED** | 同第一轮结论 |
+| V182 续跑成功不清 sidecar（第二轮复核） | **KILLED** | 同第一轮结论 |
+| V184 机器验收豁免放宽（第二轮复核） | **KILLED** | 同第一轮结论 |
+| V190 ort 预检删 | **不可激活（环境受限）** | 失败路径只在 Windows 缺 dll / 缺 MSVC 运行库场景可构造；macOS 动态库恒可用，删与不删行为一致——随 W25 Windows 轮验 |
+
+**第二轮基础设施升级（桩）**：新增 ① `main_routes` 按 body 关键词分派（并发会话各拿一套剧本，V174 必需）；② `fuse_submit` 步型（交卷 JSON 与熔断标记同轮，V180 必需）；③ 探针请求（body < 2KB 非流式）不再消费剧本队列；④ 汇报轮路由特征（REPORT_TURN_PROMPT 首句）；⑤ `/stop` 斜杠命令需双回车（命令选择器吃第一次回车）。
+
+**变异写法教训（两条，本轮踩到）**：
+1. SQL 变异「去条件但保留 `?1` 绑定」→ rusqlite 报「Wrong number of parameters」中断级联——测到的是崩溃不是越权；等价全表扫描须写成 `... OR ?1 IS NOT NULL` 仍消费参数。
+2. 等价小阈值变异（看门狗 660s→30s）必须**同步**调小被观测的另一个量（心跳 60s→5s），否则 pristine 也会判死、两态无差异。
 
 | 锚点 | 判定 | 一句话证据 |
 |---|---|---|
