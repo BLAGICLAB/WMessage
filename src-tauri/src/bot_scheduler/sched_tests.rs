@@ -284,12 +284,18 @@ fn classify_job_not_due_and_missed() {
     );
 }
 
+/// 过期一次性：开关开启才清理（删除是终局动作，须有通知兜底）；开关关闭期间
+/// 判 Held 不清理——删除不分场合会造成作业凭空消失且无通知。
 #[test]
-fn classify_job_expired_at_is_deleted_regardless_of_switch() {
+fn classify_job_expired_at_is_deleted_only_when_enabled() {
     let now = dt(2026, 8, 16, 12, 0);
     let j = job("at:2026-08-10T10:00");
     assert_eq!(classify_job(&j, now, true), JobAction::Delete);
-    assert_eq!(classify_job(&j, now, false), JobAction::Delete);
+    assert_eq!(
+        classify_job(&j, now, false),
+        JobAction::Held,
+        "开关关闭期间不清理：Held 语义（恢复后清理+通知）"
+    );
 }
 
 /// 从未执行的 at: 到点在首跑宽限（2×tick）内判「刚到点」，照常派发/Held——

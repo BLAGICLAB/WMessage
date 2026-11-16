@@ -144,6 +144,9 @@ export function useChatStream(params: ChatStreamParams) {
           sid !== null &&
           (streamState.isInflight(sid) || sid === sessionIdRef.current)
         ) {
+          // 序号去重：补齐与实时会重叠（同一条事件两边各来一次）——
+          // 缺这道闸回灌重放时思考文本重复拼接；闸内同时刷看门狗活跃戳
+          if (!streamState.noteSeq(sid, p?.seq)) return;
           const m = streamState.ensureMeta(sid);
           m.thinking = (m.thinking ?? "") + t;
         }
@@ -603,9 +606,19 @@ export function useChatStream(params: ChatStreamParams) {
         // 后端若真还挂着（判死只回收前端视图），顺手叫停。叫停前复核一次
         // 在途：判死放行后用户可能已开新轮（markInflight 已重新置位），
         // bot_stop 按 sessionId 置位全部实例——不复核会把新轮一并误停
-        if (!streamState.isInflight(sid)) {
-          invoke("bot_stop", { sessionId: sid }).catch(() => {});
-        }
+if (!streamState.isInflight(sid)) {
+  invoke("bot_stop", { sessionId: sid }).catch(() => {
+    // 叫停失败 = 后端轮仍在生成（继续烧 token），界面上却已是终态——
+    // 「已停止」与「实际没停」必须区分开：留痕迹 + 延迟重试一次。
+    // 再失败只能依赖后端回合自身的收尾（安全网熔断），此处无 UI 通道。
+    console.warn(`[watchdog] bot_stop 未送达（会话 ${sid}），后端轮可能仍在运行`);
+    setTimeout(() => {
+      invoke("bot_stop", { sessionId: sid }).catch((e) => {
+        console.warn(`[watchdog] bot_stop 重试仍未送达（会话 ${sid}）`, e);
+      });
+    }, 2000);
+  });
+}
       }
     }, 15_000);
     return () => {

@@ -73,6 +73,30 @@ fn truncate_enq_err(e: &str) -> String {
     crate::bot::truncate_for_log(e, 120)
 }
 
+/// 过期一次性作业被清理时的用户通知（与 Missed 同级）：删除是静默终局，
+/// 不补通知就是作业凭空消失——用户必须被告知「为什么它没了」。
+async fn notify_schedule_expired(app: &AppHandle, job_id: &str, target_title: &str) {
+    let title_short = crate::bot::truncate_for_log(target_title.trim(), 30);
+    let key = format!("sched_expired:{job_id}");
+    if let Err(e) = crate::bot::effects::enqueue_notify(
+        app,
+        &key,
+        format!("⏰ 定时未执行已清理：{title_short}"),
+        "到点时机器人处于关闭状态，恢复后仍未在一次性宽限内执行，本次已删除该定时任务；需要的话请重新创建。"
+            .to_string(),
+    )
+    .await
+    {
+        crate::bot::audit_log(
+            app,
+            &format!(
+                "notify_enqueue_failed | key: {key} | {}",
+                truncate_enq_err(&e)
+            ),
+        );
+    }
+}
+
 // 定时任务卡（阶段二：⏰ 到点自动执行）
 
 /// 正在执行的定时任务 id（防同一任务并发重复跑）
@@ -268,7 +292,9 @@ pub(crate) fn validate_schedule(s: &str) -> Result<(), String> {
 
 /// at: 一次性任务是否已错过且从未执行（应放弃补执行，防重启后补跑过期任务）。
 /// 首跑宽限（2×tick）内不算过期：运行中的调度器至多一个 tick 后扫到，此时
-/// 仍是「刚到点」，照常首跑；超宽限仍未跑过（应用关闭/机器人关闭期间到点）→ 清理。
+/// 仍是「刚到点」，照常首跑；超宽限仍未跑过（应用关闭期间到点，或开关关闭
+/// 期间到点且后来恢复了开关）→ 清理。开关关闭期间判 Held 不清理——
+/// classify_job 对 Delete 分支以 bot_on 为前提，恢复开关后才执行清理并通知。
 fn at_expired(sched: &str, sched_last: Option<i64>, now: chrono::DateTime<chrono::Local>) -> bool {
     let Some(at) = sched.strip_prefix("at:") else {
         return false;
@@ -932,7 +958,14 @@ fn classify_job(
         };
     }
     if at_expired(&job.schedule, job.sched_last, now) {
-        return JobAction::Delete;
+        // 开关关闭期间不清理：删除是终局动作（作业凭空消失且无通知），与 Held
+        // 的「恢复后按原语义补跑或判 missed」承诺对齐——开关开着才执行清理，
+        // 用户在场能收到通知。
+        return if bot_on {
+            JobAction::Delete
+        } else {
+            JobAction::Held
+        };
     }
     match classify_due(&job.schedule, job.sched_last, now) {
         DueVerdict::Run => {
@@ -995,12 +1028,15 @@ async fn jobs_tick(app: &AppHandle) {
                 })
                 .await;
             }
-            // 过期一次性（从未执行且已过点）→ 删除作业（防重启后补跑过期任务）
+            // 过期一次性（从未执行且仅开关开启时到达这里）→ 删除作业
+            //（防重启后补跑过期任务）。删除是静默终局，必须补一条用户可见
+            // 通知（与 Missed 同级），否则用户的作业从定时页凭空消失。
             JobAction::Delete => {
                 crate::bot::audit_log(
                     app,
                     &format!("sched_job_stale | id: {} | 过期一次性作业，删除", job.id),
                 );
+                notify_schedule_expired(app, &job.id, &job.content).await;
                 delete_job_row(app, &job.id).await;
             }
             JobAction::Missed => {

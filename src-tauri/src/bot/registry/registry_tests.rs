@@ -339,6 +339,10 @@ fn mutating_tools_matches_baseline() {
         "screenshot",
         // 终局提交不 mutating（只校验+透传）；跨进程续跑 mutating（翻行+派发待办）
         "resume_subagent",
+        // saveAs 真落盘（build_binary_file_receipt）：模型汇报「已保存」须有凭证归属
+        "http_request",
+        // 真写会话计划状态（plan_state::set_plan）：「已更新计划」话术须有凭证归属
+        "update_plan",
     ]
     .into_iter()
     .collect();

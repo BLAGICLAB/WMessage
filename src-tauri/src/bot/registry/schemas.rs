@@ -616,8 +616,11 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
     ToolDef {
         name: "http_request",
         schema: SCHEMA_HTTP_REQUEST,
-        mutating: false,
-        claims_patterns: &[],
+        // saveAs 分支真落盘（build_binary_file_receipt）：mutating:false 会让
+        // 守卫把模型如实汇报「已保存」判成凭空变更——推回重跑 = 重复下载，
+        // 第二次终稿还挂「这句没有对应凭证」的不实指控
+        mutating: true,
+        claims_patterns: &["已保存", "已下载"],
         max_output_bytes: 65536,
         call: call_http_request,
     },
@@ -994,8 +997,11 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
     ToolDef {
         name: "update_plan",
         schema: SCHEMA_UPDATE_PLAN,
-        mutating: false,
-        claims_patterns: &[],
+        // 真写会话计划状态（plan_state::set_plan 整表替换 + bot-plan 广播）：
+        // mutating:false 时模型如实复述「已更新计划」会撞 edit_task 词表里的
+        // 「已更新」而 mutation_done 恒 false，守卫推回纯规划回合
+        mutating: true,
+        claims_patterns: &["已更新"],
         max_output_bytes: 8192,
         call: call_update_plan,
     },

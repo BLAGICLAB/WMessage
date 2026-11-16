@@ -119,7 +119,7 @@ use crate::bot::registry::{claimed_doc_paths, claims_execution_with, path_missin
 
 // TOOLS / MUTATING_TOOLS 已在阶段 2 拆出到 crate::bot::registry：
 // - `crate::bot::registry::tools_json()` → 原 TOOLS JSON（OnceLock 缓存）
-// - `crate::bot::registry::mutating_tools()` → 原 MUTATING_TOOLS（15 个 mutating 工具名）
+// - `crate::bot::registry::mutating_tools()` → 原 MUTATING_TOOLS（成员清单单源在 TOOLS_TABLE，计数基线在 registry_tests）
 // 公开路径仍走 `pub use crate::bot::registry::tools_json as TOOLS;` / `as MUTATING_TOOLS;`
 // 但因 const → fn 类型变化（保持向后兼容需按函数调用），下游消费者已同步更新。
 

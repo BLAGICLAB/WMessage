@@ -514,7 +514,9 @@ pub(crate) fn compact_before_round(
             }
         }
         crate::bot::compaction::CompactionLevel::Fuse => {
-            // 100% 熔断：仅 audit，soft_warn_queued 由 70% soft_warn_at 路径另起一行
+            // 100% 档位（告警线语义）：仅 audit，请求照发——真兜底是上游 400/413
+            // 后的砍史；软压/硬压/滑动窗都够不着 tool_calls arguments，膨胀若来自
+            // 最近的调用参数这里不会有任何主动裁剪，见 CONTEXT_CHARS_HARD_CAP 注记
             (deps.audit)(
                 crate::audit::AuditLevel::Info,
                 "loop.msgs.over_budget",

@@ -579,4 +579,43 @@ describe("ChatPanel", () => {
     });
     expect(streamState.metaOf("s1")?.text).toBe("重发正文");
   });
+
+  it("bot-think-delta 走序号去重闸：回灌重放与实时重叠的同一条增量只累加一次", async () => {
+    const user = userEvent.setup();
+    const handlers: Record<
+      string,
+      (e: { payload: Record<string, unknown> }) => void
+    > = {};
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      handlers[event] = cb as (typeof handlers)[string];
+      return () => {};
+    });
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_chat") return new Promise(() => {});
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findAllByText("默认会话")).not.toHaveLength(0);
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "写个方案");
+    await user.keyboard("{Enter}");
+    // 同一条带 seq 的 think 增量（seq=7）投递两次：模拟「实时广播 + 回灌补齐」重叠
+    const fire = (payload: Record<string, unknown>) =>
+      handlers["bot-think-delta"]?.({ payload });
+    await act(async () => {
+      fire({ text: "思考片段A", sessionId: "s1", seq: 7 });
+      fire({ text: "思考片段A", sessionId: "s1", seq: 7 });
+    });
+    expect(
+      streamState.metaOf("s1")?.thinking,
+      "重复 seq 必须被去重闸挡掉，思考文本只累加一次",
+    ).toBe("思考片段A");
+    // 下一条更大的 seq 照常累加（正常流不受闸影响）
+    await act(async () => {
+      fire({ text: "思考片段B", sessionId: "s1", seq: 8 });
+    });
+    expect(streamState.metaOf("s1")?.thinking).toBe("思考片段A思考片段B");
+  });
 });
