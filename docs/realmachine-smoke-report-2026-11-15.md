@@ -339,3 +339,76 @@ tool.return | ms=7 | preview=MCP 工具报告错误：elicit 失败：Client doe
 映射，POST 时按 `mcp-session-id` 头取回同一实例；无状态接法会让 tools/call 的实例
 从未 initialize，能力集恒 null。`server.elicitInput()` 要在 `call_tool` handler
 作用域内调用（SEP-2260：服务端→客户端请求必须从处理某个客户端请求的 handler 内发出）。
+
+### 11.6 补跑轮（同日第二轮）：判据 3/5 构造 + F-1 复证 + 新发现「应答回声进日志」
+
+第二轮目标：把 M179 卡剩下的判据（3=60s 超时面、5=日志无应答值明文）构造出来，
+顺带复证 11-04/11-07 两轮登记的 **F-1（ask 卡选项对合成点击不响应）**。
+
+#### 新发现 F-新3（P2，已修）：应答回声经工具结果面回到审计与日志
+
+判据 5 的构造结果：**桥接自己的事件面是干净的**（`bot-ask-resolved` 只回占位符
+`[MCP 应答，值不落日志]`），但**服务器会把刚收到的应答原样回显**
+（官方 SDK 服务器的 elicit 结果文本含 `content={"agree":true}`），该回声经工具
+结果面回到两条日志行：
+
+```
+tool.return | tool=mcp_officialelicit_ask_demo | preview=elicit 应答 action=accept content={"agree":true}
+tool        | tool=mcp_officialelicit_ask_demo | result=elicit 应答 action=accept content={"agree":true}
+```
+
+即 SPEC 6-124 的「应答值不进审计/日志」在**服务器回显这条路径上没兑现**——应答值
+可能含凭据（这正是 SPEC 立这条的缘由），服务器一回显就进 bot.log。
+
+修法（窄口径，沿用仓里已有的 `sink_result_text` 脱敏位——同 http_request 的
+final_url 口径「sink 脱敏、模型面不脱敏」）：
+
+- 应答提交时登记回声指纹（整份 content 的紧凑 JSON + 字符串型字段值；数值/布尔
+  不单独登记——不是凭据，单独登记会误伤正常文本），按 server 维度限 8 条 / 5 分钟；
+- sink 面（tool.return preview / 子 agent 动作流 / 执行痕迹 span / tool 审计行 /
+  技能步日志）统一把命中的回声串换成 `[MCP 应答，值不落日志]`；
+- **模型可见面与 UI 面保留原值**——服务器回显什么模型就该看到什么，模型面不是
+  审计面。
+
+修后实机（同一官方 SDK 服务器）：
+
+```
+tool.return | preview=elicit 应答 action=accept content=[MCP 应答，值不落日志]
+tool        | result=elicit 应答 action=accept content=[MCP 应答，值不落日志]
+```
+
+bot.log 中本轮再无 `agree` 明文（仅存修复前的 07:17 / 07:20 两条历史行）。
+锚点测试两例：回声串在 sink 面必被脱敏（含字符串型字段值）；布尔/数值型应答值
+不单独登记（避免误伤正常文本）。
+
+#### 判据 3（60s 不答 → 过期面）：达成
+
+不答，等满 60s：卡片收起（前端收到 `bot-ask-resolved action=expired`），工具调用
+在 60.0s 结束并失败，回合正常收尾——**用户面无悬挂**。
+**观察项（非缺陷）**：本轮工具错误文案是服务器侧的「MCP error -32001: Request
+timed out」——客户端侧 60s 拒答与**服务器侧请求超时**（官方 SDK 默认也是 60s）
+同刻竞态，谁先到谁定型；服务器超时更长时才会出现客户端文案「60s 未获应答，按
+拒绝处理」。卡片收起与工具失败两个用户可见面都不受影响，故登记为观察项，
+不改 60s 节奏（SPEC 与 ConfirmMap 对齐的取值）。
+
+#### F-1（ask 卡选项对合成点击不响应）：不复现，按 obsolete 关闭
+
+11-04 轮登记、11-07 轮复证的 F-1（ask 卡 pill 按钮对合成点击不响应，绕行口径为
+「走文本回答」）在本轮**不复现**：`cliclick` 点选选项行 → 选中态出现（圆点实心 +
+行高亮）→ 点「回答并继续」→ `ask_answered | action=answer` → 工具返回
+「用户回答了你的提问：方案乙（加并发）」→ 回合收尾。
+
+原因登记：11-08 的 ask 卡 UI 重塑（0b463e59 + 754a9551）把原 pill 按钮换成
+「单选行 + 其他回答行 + 共用作答区」，旧 markup 已不存在；F-1 描述的组件形态在
+现行 UI 上没有对应物——按 obsolete 关闭（不是「修好了」，是「被替换掉了」）。
+
+#### 第二轮环境操作台账
+
+| 改了什么 | 改在哪 | 还原了吗 |
+|---|---|---|
+| env 密钥补丁（4 个读点 + 钥匙串跳闸，6 处） | keyring.rs / mcp/secrets.rs | ✓ 已还原（Edit 反向撤补丁，非 git checkout——Mimosa 钩子不许 Bash 直改源码） |
+| loopback 白名单（DNS 闸 + MCP URL 闸两处） | bot_web/fetch.rs / mcp/config.rs | ✓ 已还原 |
+| 密钥 env 文件（假值，8 个变量） | ~/.config/wmessage-smoke-test.env | ✓ 已删 |
+| bot-config：LocalStub 模型 + official-elicit-demo MCP 服务器 | bot-config.json | ✓ 还原（activeModel 回 anthropic/MiniMax-M3.1-Flash，openai 列表回 Ling-1T/Ring-1T，mcpServers 回 builtin-playwright） |
+| 两个桩进程（LLM 脚本桩 / 官方 SDK MCP 服务器） | 后台进程 | ✓ 已停 |
+| 测试会话 ×2（新对话 + 沿用 F7 复验十五） | bot_sessions | 留存不删（证据链），如实登记 |
