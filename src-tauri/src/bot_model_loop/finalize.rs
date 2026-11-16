@@ -37,7 +37,7 @@ const LENGTH_CONTINUE_PROMPT: &str = "\
 如果你刚才正准备调用工具，现在就直接调用它，不要只用文字描述下一步。";
 
 /// 终稿自检 N 判定追加到原文尾部的警告（in-loop 与侧调两条路径共用）。
-const FINAL_SELFCHECK_WARN: &str = "\n\n⚠️ 自检未达预期，请人工核对";
+pub(crate) const FINAL_SELFCHECK_WARN: &str = "\n\n⚠️ 自检未达预期，请人工核对";
 
 /// 出口闸追问「请把真实结果说出来」的上限：模型只回 Y/N 判定时不能无限追着问。
 /// 2 次仍不给结果就落到兜底文案（别把裸 Y 交给用户）。追问是完整的一轮 LLM
@@ -328,54 +328,73 @@ pub(crate) async fn finalize_selfcheck(
             return Ok(FinalizeOutcome::Continue);
         }
     }
-    // 终稿自检 verdict 解析：本轮是上一轮触发的 final 自检响应
-    // （expecting_final_selfcheck=true），Y/N 字样已被流式跳 emit，
-    // 据 verdict 决定还原 final_text：Y→原文；N→原文+⚠️+emit+audit。
-    // 判定用宽松前缀版 parse_selfcheck_reply_lenient——模型答「N，…」
-    // 带解释时整段严格匹配得 None，幻觉自白会被当通过静默丢弃。
-    // Y 路径不写 audit_log（成功是常态、记了会刷屏）。
-    if *expecting_final_selfcheck {
-        match crate::prompts::parse_selfcheck_reply_lenient(final_text.trim()) {
-            Some(false) => {
-                if let Some(snapshot) = final_selfcheck_snapshot.take() {
-                    *final_text = format!("{snapshot}{FINAL_SELFCHECK_WARN}");
-                    emit(
-                        "bot-chat-delta",
-                        serde_json::json!({ "text": FINAL_SELFCHECK_WARN }),
-                    );
-                    audit(
-                        crate::audit::AuditLevel::Warn,
-                        "final_selfcheck.fail",
-                        vec![("detail", crate::bot::truncate_for_log(&snapshot, 200))],
-                    );
-                }
-            }
-            Some(true) => {
-                if let Some(snapshot) = final_selfcheck_snapshot.take() {
-                    *final_text = snapshot;
-                }
-            }
-            // 宽松解析也认不出 Y/N（模型写了散文或别的）：快照照旧还原不改变
-            // 行为，但这段回复随流式抑制一起消失——留一条 Warn，不让内容无痕蒸发
-            None => {
+    Ok(FinalizeOutcome::Proceed)
+}
+
+/// 终稿自检 verdict 解析：本轮是上一轮触发的 final 自检响应
+/// （expecting_final_selfcheck=true），Y/N 字样已被流式跳 emit，
+/// 据 verdict 决定还原 final_text：Y→原文；N→原文+⚠️+emit+audit。
+/// 判定用宽松前缀版 parse_selfcheck_reply_lenient——模型答「N，…」
+/// 带解释时整段严格匹配得 None，幻觉自白会被当通过静默丢弃。
+/// Y 路径不写 audit_log（成功是常态、记了会刷屏）。
+///
+/// 必须在幻觉守卫（guard_collect/guard_verdict）**之前**调用：verdict 答复
+/// 是「对自检问句的回答」，不是给用户的终稿——模型照实答「N，我刚才说
+/// 已创建了任务卡」时，文本里的变更声称词会被守卫误判为谎报而推回，
+/// verdict 从未被消费，下一轮正式答复又被当 verdict 解析后还原旧快照，
+/// 用户永远看不到改口后的答复。先消费 verdict（还原快照）再让守卫判定
+/// 消费后的文本（快照当初已过守卫，必然放行）。
+pub(crate) fn consume_final_selfcheck_verdict(
+    expecting_final_selfcheck: &mut bool,
+    final_selfcheck_snapshot: &mut Option<String>,
+    selfcheck_question_pending: &mut bool,
+    final_text: &mut String,
+    deps: &ModelLoopDeps<'_>,
+) {
+    let emit = deps.emit;
+    let audit = deps.audit;
+    if !*expecting_final_selfcheck {
+        return;
+    }
+    match crate::prompts::parse_selfcheck_reply_lenient(final_text.trim()) {
+        Some(false) => {
+            if let Some(snapshot) = final_selfcheck_snapshot.take() {
+                *final_text = format!("{snapshot}{FINAL_SELFCHECK_WARN}");
+                emit(
+                    "bot-chat-delta",
+                    serde_json::json!({ "text": FINAL_SELFCHECK_WARN }),
+                );
                 audit(
                     crate::audit::AuditLevel::Warn,
-                    "final_selfcheck.reply_unparsed",
-                    vec![(
-                        "detail",
-                        crate::bot::truncate_for_log(final_text.trim(), 200),
-                    )],
+                    "final_selfcheck.fail",
+                    vec![("detail", crate::bot::truncate_for_log(&snapshot, 200))],
                 );
-                if let Some(snapshot) = final_selfcheck_snapshot.take() {
-                    *final_text = snapshot;
-                }
             }
         }
-        // expecting_final_selfcheck 在此处置 false 之后立即 return，flag 不
-        // 再被任何流式 emit 检查读取——下次循环触发由 trigger 分支重新置 true。
-        *expecting_final_selfcheck = false;
-        // 问句已被这句 Y/N 回答（或快照已还原）：悬着标志同步收掉
-        *selfcheck_question_pending = false;
+        Some(true) => {
+            if let Some(snapshot) = final_selfcheck_snapshot.take() {
+                *final_text = snapshot;
+            }
+        }
+        // 宽松解析也认不出 Y/N（模型写了散文或别的）：快照照旧还原不改变
+        // 行为，但这段回复随流式抑制一起消失——留一条 Warn，不让内容无痕蒸发
+        None => {
+            audit(
+                crate::audit::AuditLevel::Warn,
+                "final_selfcheck.reply_unparsed",
+                vec![(
+                    "detail",
+                    crate::bot::truncate_for_log(final_text.trim(), 200),
+                )],
+            );
+            if let Some(snapshot) = final_selfcheck_snapshot.take() {
+                *final_text = snapshot;
+            }
+        }
     }
-    Ok(FinalizeOutcome::Proceed)
+    // expecting_final_selfcheck 在此处置 false，后续守卫/出口段不再把它当
+    // verdict 答复处理——下次触发由 finalize_selfcheck 的 trigger 分支重新置 true。
+    *expecting_final_selfcheck = false;
+    // 问句已被这句 Y/N 回答（或快照已还原）：悬着标志同步收掉
+    *selfcheck_question_pending = false;
 }

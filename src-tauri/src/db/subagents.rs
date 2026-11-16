@@ -554,10 +554,21 @@ pub fn update_subagent_status(
     } else {
         row.finished_at
     };
-    conn.execute(
-        "UPDATE subagents SET status=?2, started_at=?3, finished_at=?4, error=COALESCE(?5, error) WHERE id=?1",
-        rusqlite::params![id, to.as_str(), started_at, finished_at, error],
-    )
+    // error 只在「换终态」时服从新值：成功终态显式清 NULL——续跑成功但上一轮
+    // 熔断留下的 error 会让前端把成功行渲染成失败态、check_subagent 的调用方
+    // 也会把成功误判为失败。COALESCE 的保留语义只服务「同态重入」（重试不改写
+    // 首收尾错误），覆盖不了「换终态」，且传 None 的 COALESCE 清不掉旧值。
+    if to == SubagentStatus::Succeeded {
+        conn.execute(
+            "UPDATE subagents SET status=?2, started_at=?3, finished_at=?4, error=NULL WHERE id=?1",
+            rusqlite::params![id, to.as_str(), started_at, finished_at],
+        )
+    } else {
+        conn.execute(
+            "UPDATE subagents SET status=?2, started_at=?3, finished_at=?4, error=COALESCE(?5, error) WHERE id=?1",
+            rusqlite::params![id, to.as_str(), started_at, finished_at, error],
+        )
+    }
     .map_err(|e| e.to_string())?;
     load_subagent(conn, id)?.ok_or_else(|| format!("subagent 回读失败：{id}"))
 }
@@ -977,5 +988,50 @@ mod subagent_db_tests {
             serde_json::to_value(SubagentStatus::Queued).unwrap(),
             "queued"
         );
+    }
+
+    /// 成功终态必须清掉上一轮残留的 error：续跑（resume_subagent）成功后
+    /// error 还是上一轮的熔断原因，前端把成功行渲染成失败态、
+    /// check_subagent 的调用方（主 agent 按 addendum「先读 error 与 summary」）
+    /// 也会把一次成功的续跑误判为失败。
+    #[test]
+    fn succeed_clears_stale_error_from_previous_run() {
+        let conn = test_conn();
+        // 熔断行：Running → BudgetExceeded 带错误原因
+        insert_subagent(&conn, &sample_row("sa_res", SubagentStatus::Running)).unwrap();
+        let fused = update_subagent_status(
+            &conn,
+            "sa_res",
+            SubagentStatus::BudgetExceeded,
+            1_000,
+            Some("max_tool_calls"),
+        )
+        .unwrap();
+        assert_eq!(fused.error.as_deref(), Some("max_tool_calls"));
+        // 续跑重开 → 成功：error 必须清空（换终态），不能保留熔断原因
+        reopen_subagent_for_resume(&conn, "sa_res").unwrap();
+        let ok =
+            update_subagent_status(&conn, "sa_res", SubagentStatus::Running, 3_000, None).unwrap();
+        let done = update_subagent_status(&conn, "sa_res", SubagentStatus::Succeeded, 4_000, None)
+            .unwrap();
+        assert_eq!(done.status, SubagentStatus::Succeeded);
+        assert!(
+            done.error.is_none(),
+            "成功终态必须清掉上一轮熔断残留的 error，实际：{:?}",
+            done.error
+        );
+        // 对照：失败终态的 error 照旧写入（COALESCE 语义只服务同态重入）
+        let _ = fused;
+        insert_subagent(&conn, &sample_row("sa_res2", SubagentStatus::Running)).unwrap();
+        let failed = update_subagent_status(
+            &conn,
+            "sa_res2",
+            SubagentStatus::Failed,
+            2_000,
+            Some("boom"),
+        )
+        .unwrap();
+        assert_eq!(failed.error.as_deref(), Some("boom"));
+        let _ = ok;
     }
 }

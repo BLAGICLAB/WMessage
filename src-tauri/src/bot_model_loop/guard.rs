@@ -186,6 +186,18 @@ pub(crate) async fn finalize_without_tools(
     thinking_blocks: &[serde_json::Value],
     last_finish_reason: &Option<String>,
 ) -> Result<FinalizeOutcome, CommandError> {
+    // 终稿自检 verdict 先于幻觉守卫消费：verdict 答复（「N，我刚才说已创建了
+    // 任务卡」这类带解释的自白）里的变更声称词会被守卫误判为谎报而推回，
+    // verdict 未被消费 → 下一轮正式答复又被当 verdict 解析后还原旧快照，
+    // 模型改口后的正确答复就永远到不了用户。先消费（还原快照），守卫随后
+    // 判定的是消费后的文本——快照当初已过守卫，必然放行。
+    super::finalize::consume_final_selfcheck_verdict(
+        expecting_final_selfcheck,
+        final_selfcheck_snapshot,
+        selfcheck_question_pending,
+        final_text,
+        deps,
+    );
     match finalize_selfcheck_reply(
         msgs,
         pending_selfcheck,

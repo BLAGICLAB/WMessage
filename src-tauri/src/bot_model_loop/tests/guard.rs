@@ -1121,3 +1121,194 @@ mod fuse_ladder_tests {
         );
     }
 }
+
+/// 终稿自检 verdict 消费与幻觉守卫的顺序锚点：verdict 答复必须先于守卫被消费，
+/// 否则「N，我刚才说已创建了任务卡」这类带解释的自白会被守卫误判为谎报推回，
+/// verdict 永不消费 → 下一轮正式答复被当 verdict 解析后还原旧快照，改口后的
+/// 答复到不了用户。
+#[cfg(test)]
+mod final_selfcheck_verdict_order_tests {
+    use super::*;
+    use crate::bot_model_loop::finalize::consume_final_selfcheck_verdict;
+
+    /// deps 与桩必须同作用域：ModelLoopDeps<'a> 持桩的引用，块表达式返回后
+    /// 桩即悬垂——宏展开成一组 let 声明（桩 + deps），不做块表达式。
+    macro_rules! make_deps {
+        ($deps:ident, $emit:expr, $audit:expr) => {
+            let skill_finish = |_: bool, _: &str| String::new();
+            let no_skill_run = |_: Option<&str>| None;
+            let on_round = |_: usize| {};
+            let no_keywords: Vec<String> = Vec::new();
+            let $deps = ModelLoopDeps {
+                fuse_cap_override: None,
+                emit: &$emit,
+                audit: &$audit,
+                skill_finish: &skill_finish,
+                active_skill_run: &no_skill_run,
+                conv_sidecar_dir: None,
+                final_selfcheck_round_gap: Some(0),
+                final_selfcheck_http: None,
+                on_round: &on_round,
+                turn_status: None,
+                deliverable_ready: None,
+                repeat_ask: None,
+                session_tools: None,
+                guard_claim_keywords: &no_keywords,
+                file_receipts: None,
+            };
+        };
+    }
+
+    /// 带解释的 N 答复按 N 分支处理：还原快照 + fail 审计 + ⚠️ emit，flag 收掉。
+    #[test]
+    fn verdict_with_explanation_consumes_as_n_before_guard() {
+        let snapshot = "任务卡已经建好，编号 42。".to_string();
+        let mut expecting = true;
+        let mut snap = Some(snapshot.clone());
+        let mut pending = true;
+        let mut final_text = "N，我刚才说已创建了任务卡，但实际没建成功。".to_string();
+
+        // 修复前顺序下守卫会对这段文本误判谎报——钉住根因本身
+        assert!(
+            crate::bot::registry::claims_mutation(&final_text),
+            "前置自证：verdict 答复含变更声称词（旧顺序误判的根因）"
+        );
+
+        let emitted: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = emitted.clone();
+        let emit = move |ev: &str, _: serde_json::Value| {
+            sink.lock().expect("锁不该中毒").push(ev.to_string());
+        };
+        let audits: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let asink = audits.clone();
+        let audit =
+            move |_: crate::audit::AuditLevel, ev: &'static str, _: Vec<(&'static str, String)>| {
+                asink.lock().expect("锁不该中毒").push(ev.to_string());
+            };
+        make_deps!(deps, emit, audit);
+        consume_final_selfcheck_verdict(
+            &mut expecting,
+            &mut snap,
+            &mut pending,
+            &mut final_text,
+            &deps,
+        );
+
+        assert!(
+            !expecting,
+            "verdict 必须被消费（flag 收掉，不再劫走后续答复）"
+        );
+        assert!(!pending, "悬着的问句同步收掉");
+        assert!(snap.is_none(), "快照消费即清");
+        assert_eq!(
+            final_text,
+            format!(
+                "{snapshot}{}",
+                crate::bot_model_loop::finalize::FINAL_SELFCHECK_WARN
+            ),
+            "final_text = 原答复 + ⚠️（模型改口前的那版已过守卫，警告追加其后）"
+        );
+        assert!(
+            audits
+                .lock()
+                .expect("锁不该中毒")
+                .iter()
+                .any(|e| e == "final_selfcheck.fail"),
+            "N 自白必须留 fail 审计"
+        );
+        assert!(
+            emitted
+                .lock()
+                .expect("锁不该中毒")
+                .iter()
+                .any(|e| e == "bot-chat-delta"),
+            "⚠️ 警告必须随流式 emit"
+        );
+    }
+
+    /// 消费后的文本（还原快照）不再命中变更声称 → 守卫放行（新顺序链闭环）。
+    #[test]
+    fn consumed_text_passes_the_guard() {
+        let snapshot = "任务卡已经建好，编号 42。".to_string();
+        let mut expecting = true;
+        let mut snap = Some(snapshot.clone());
+        let mut pending = true;
+        let mut final_text = "N，已创建。".to_string();
+        let noop = |_: &str, _: serde_json::Value| {};
+        let noop_audit =
+            |_: crate::audit::AuditLevel, _: &'static str, _: Vec<(&'static str, String)>| {};
+        make_deps!(deps, noop, noop_audit);
+        consume_final_selfcheck_verdict(
+            &mut expecting,
+            &mut snap,
+            &mut pending,
+            &mut final_text,
+            &deps,
+        );
+        assert!(
+            !crate::bot::registry::claims_mutation(&final_text),
+            "消费后的 final_text 是当初已过守卫的原答复，守卫必须放行"
+        );
+    }
+
+    /// Y 答复照旧还原原文，无 fail 审计。
+    #[test]
+    fn verdict_y_restores_snapshot_without_fail_audit() {
+        let snapshot = "任务卡已经建好，编号 42。".to_string();
+        let mut expecting = true;
+        let mut snap = Some(snapshot.clone());
+        let mut pending = true;
+        let mut final_text = "Y".to_string();
+        let noop = |_: &str, _: serde_json::Value| {};
+        let audits: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let asink = audits.clone();
+        let audit =
+            move |_: crate::audit::AuditLevel, ev: &'static str, _: Vec<(&'static str, String)>| {
+                asink.lock().expect("锁不该中毒").push(ev.to_string());
+            };
+        make_deps!(deps, noop, audit);
+        consume_final_selfcheck_verdict(
+            &mut expecting,
+            &mut snap,
+            &mut pending,
+            &mut final_text,
+            &deps,
+        );
+        assert_eq!(final_text, snapshot);
+        assert!(!expecting);
+        assert!(
+            !audits
+                .lock()
+                .expect("锁不该中毒")
+                .iter()
+                .any(|e| e == "final_selfcheck.fail"),
+            "Y 是常态路径，不写 fail 审计"
+        );
+    }
+
+    /// 非 verdict 轮（flag 已 false）：纯 no-op，不碰 final_text。
+    #[test]
+    fn non_verdict_round_is_noop() {
+        let mut expecting = false;
+        let mut snap = None;
+        let mut pending = false;
+        let mut final_text = "正常答复，已创建任务卡。".to_string();
+        let before = final_text.clone();
+        let noop = |_: &str, _: serde_json::Value| {};
+        let noop_audit =
+            |_: crate::audit::AuditLevel, _: &'static str, _: Vec<(&'static str, String)>| {};
+        make_deps!(deps, noop, noop_audit);
+        consume_final_selfcheck_verdict(
+            &mut expecting,
+            &mut snap,
+            &mut pending,
+            &mut final_text,
+            &deps,
+        );
+        assert_eq!(final_text, before, "非 verdict 轮不得改写终稿");
+        assert!(!expecting);
+    }
+}

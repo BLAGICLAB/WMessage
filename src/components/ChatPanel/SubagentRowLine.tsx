@@ -46,7 +46,13 @@ const STATUS_ICON = {
 
 function statusOf(s: SubagentRun): keyof typeof STATUS_ICON {
   if (s.status === "cancelled") return "cancelled";
-  if (s.status === "failed" || (s.error && !s.running)) return "failed";
+  // succeeded 行永不判失败：跨进程续跑的历史 error 若后端未清（旧库残留），
+  // 前端不把成功行渲染成 ❌
+  if (
+    s.status === "failed" ||
+    (s.status !== "succeeded" && s.error && !s.running)
+  )
+    return "failed";
   if (s.running) return "running";
   return "done";
 }
