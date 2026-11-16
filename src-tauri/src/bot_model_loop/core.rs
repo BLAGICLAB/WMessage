@@ -670,7 +670,8 @@ where
     // in-loop 一轮）就是一片静止。
     let final_status = match (&body, body_outcome, stop.stopped()) {
         (_, Some("fused"), _) => TurnStatus::Completed,
-        (_, Some("interrupted"), _) => TurnStatus::Interrupted,
+        // 中断态由 (Ok(_), _, true)（stop.stopped()）兜住——body_outcome 的
+        // 7 个实际赋值里没有 "interrupted"，见各赋值点
         (Err(_), _, _) => TurnStatus::Failed,
         (Ok(_), _, true) => TurnStatus::Interrupted,
         (Ok(_), _, false) => TurnStatus::Completed,

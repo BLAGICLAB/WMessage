@@ -1,4 +1,5 @@
-//! 工具转发层：65 个 `call_*` 一行转发（`ToolCtx` + args → 工具实现）。
+//! 工具转发层：`call_*` 一行转发（`ToolCtx` + args → 工具实现），
+//! 数量与 TOOLS_TABLE 一一对应（计数基线见 BUILTIN_TOOL_COUNT 与 registry_tests）。
 
 use super::{ToolCtx, ToolFuture};
 

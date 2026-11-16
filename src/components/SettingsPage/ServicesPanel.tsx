@@ -93,8 +93,12 @@ const VIOLATION_LABEL: Record<string, string> = {
   L3: "特权端口",
 };
 
-/** 受管服务面板：看状态与资源占用，随时停掉不用的服务 */
-export function ServicesPanel() {
+/** 受管服务面板：看状态与资源占用，随时停掉不用的服务。
+ *
+ *  active：本分类是否正在显示。设置页分类是「惰性挂载 + hidden 隐藏」，
+ *  面板挂上后不会卸载——可见性要由外面告知，否则不可见时也在后台
+ *  5s 一次地调 services_list（后端每轮都要拍进程快照）。 */
+export function ServicesPanel({ active = true }: { active?: boolean }) {
   const [snapshot, setSnapshot] = useState<ServicesSnapshot | null>(null);
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
@@ -109,13 +113,14 @@ export function ServicesPanel() {
   };
 
   useEffect(() => {
+    if (!active) return;
     // 挂载即拉一次（外部数据同步既有模式）
     // oxlint-disable-next-line react/set-state-in-effect
     refresh();
     // 服务在跑时状态一直在变（pid / 运行时长 / 资源占用）→ 定时刷新
     const timer = setInterval(refresh, 5000);
     return () => clearInterval(timer);
-  }, []);
+  }, [active]);
 
   const stop = async (id: string) => {
     if (busyId) return;
@@ -133,7 +138,7 @@ export function ServicesPanel() {
   };
 
   const services = snapshot?.services ?? [];
-  const active = services.filter(
+  const runningServices = services.filter(
     (s) => s.state === "running" || s.state === "starting",
   );
 
@@ -158,7 +163,7 @@ export function ServicesPanel() {
 
       {snapshot && (
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--t5)]">
-          <span>运行中 {active.length} 个</span>
+          <span>运行中 {runningServices.length} 个</span>
           {/* 采不到资源时不显示合计内存——写「合计内存 0 MB」等于告诉用户
               「这些服务不占内存」，而真相是「这台机器采不到」 */}
           {snapshot.totalRssMb !== null && snapshot.totalRssMb !== undefined && (

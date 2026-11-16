@@ -30,20 +30,6 @@ pub enum RouteAction {
     PassThrough,
 }
 
-impl RouteAction {
-    /// 审计 kv：`action` 是稳定短名（`grep 'action=skill'` 统计中间件命中率），
-    /// `detail` 供人读（技能名 / 命中任务数）。
-    /// PassThrough 也给值——它同样是一次「中间件命中」（IntentRouter 恒短路），
-    /// 没有它就算不出真实命中率。
-    pub fn audit_kv(&self) -> (&'static str, String) {
-        match self {
-            RouteAction::Skill(name) => ("skill", name.clone()),
-            RouteAction::ExecuteTasks(tasks) => ("execute_tasks", format!("tasks={}", tasks.len())),
-            RouteAction::PassThrough => ("pass_through", String::new()),
-        }
-    }
-}
-
 /// [已选任务] 引用块标记（与前端 ChatPanel.tsx 拼装格式逐字对齐）
 const TASK_BLOCK_MARKER: &str = "[已选任务]";
 /// [附件文件] 块标记（引用块可以跟在它后面）
@@ -567,26 +553,6 @@ pub fn route_with_rules_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── RouteAction::audit_kv：中间件命中率统计的稳定口径 ──
-
-    #[test]
-    fn audit_kv_names_are_stable_and_detail_is_human_readable() {
-        assert_eq!(
-            RouteAction::Skill("minimax-docx".into()).audit_kv(),
-            ("skill", "minimax-docx".to_string())
-        );
-        assert_eq!(
-            RouteAction::ExecuteTasks(vec![("a".into(), "标题A".into())]).audit_kv(),
-            ("execute_tasks", "tasks=1".to_string())
-        );
-        // PassThrough 也必须给 action 值——它是 IntentRouter 恒短路的「命中」，
-        // 缺了它命中率统计的分母就错了
-        assert_eq!(
-            RouteAction::PassThrough.audit_kv(),
-            ("pass_through", String::new())
-        );
-    }
 
     fn rule(name: &str, patterns: &[&str]) -> IntentRule {
         rule_scoped(name, patterns, None)

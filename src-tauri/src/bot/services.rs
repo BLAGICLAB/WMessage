@@ -123,7 +123,10 @@ pub enum ServiceState {
     Stopping,
     /// 进程已退出（正常结束或被杀）
     Exited,
-    /// 根本没起来（spawn 失败 / 闸拒绝）
+    /// 根本没起来（spawn 失败 / 闸拒绝）。
+    /// 当前**无写点**：spawn 失败走 `lock_table().remove(&id)`（条目直接摘掉，
+    /// 报错文案在返回值里），本态仅作「条目缺失」的兜底读值——写侧引入前，
+    /// 按 as_str 写前端 failed 分支不会触达。
     Failed,
 }
 

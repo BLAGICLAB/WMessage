@@ -40,15 +40,6 @@ export function applySetting(setting: ThemeSetting) {
   }
 }
 
-/** 三态循环：浅色 → 深色 → 跟随系统 → 浅色 */
-export function cycleSetting(): ThemeSetting {
-  const cur = getSetting();
-  const next: ThemeSetting =
-    cur === "light" ? "dark" : cur === "dark" ? "system" : "light";
-  applySetting(next);
-  return next;
-}
-
 /** 全局快捷键：浅/深快速来回切（system 态下按当前生效值取反，落到具体模式） */
 export function toggleTheme(): ThemeSetting {
   const cur = getSetting();

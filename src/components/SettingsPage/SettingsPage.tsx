@@ -558,7 +558,8 @@ export function SettingsPage({
               hidden={activeSection !== "services"}
               className="space-y-4 pt-4"
             >
-              <ServicesPanel />
+              {/* active：同 McpPanel——分类隐藏时面板不卸载，可见性要传下去 */}
+              <ServicesPanel active={activeSection === "services"} />
             </section>
           )}
           {mountedSections.has("graph") && (

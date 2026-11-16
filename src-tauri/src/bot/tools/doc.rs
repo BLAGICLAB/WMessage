@@ -780,9 +780,9 @@ pub(super) fn script_source(v: &serde_json::Value) -> ScriptSource {
     }
 }
 
-/// 自由 Python 编程：开关开启才放行（超时 60s、独立临时目录、输出截断）
-/// py_exec_sync 是 sync 阻塞（最长 300s），必须经 async 包装挪到 blocking
-/// 线程池，不得占住 async runtime worker（与 doc_* 同模式）。
+/// 自由 Python 编程：开关开启才放行（超时 PYTHON_TIMEOUT_SECS、独立临时目录、输出截断）
+/// py_exec_sync 是 sync 阻塞（最长 PY_MAX_TIMEOUT_SECS），必须经 async 包装挪到
+/// blocking 线程池，不得占住 async runtime worker（与 doc_* 同模式）。
 /// 透传 /stop 令牌，在途 Python 可被中断（StopGuard → owned StopToken）。
 ///
 /// 代码从两处来：`code`（内联）或 `scriptPath`（已落盘的脚本文件）。

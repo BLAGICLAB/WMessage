@@ -169,7 +169,14 @@ pub(crate) const PROFILE_GENERAL: &str = r#"你是 general 子 agent。
 // 角色叠加规则：
 // - recon 段 → spawn 时 profile=research + 本段作为额外 prompt 注入
 // - executor 段 → spawn 时 profile=coder + 本段作为额外 prompt 注入
-// - verifier 段 → spawn 时 profile=research（只读足够）+ 本段作为额外 prompt 注入
+// - verifier 段 → stage 派生是 research，但内置 validator onion 的
+//   profile: coder 会覆盖派生档位（验收要靠 run_python / ast_inspect 复核
+//   交付物，只读读代码不够）——实际生效白名单 = coder 档 ∩ validator.allowed
+//
+// 提示词里的工具清单必须与实际生效白名单一致（生效集 = profile 白名单 ∩
+// onion.allowed，见 bot_onions::effective_tools）：清单里列了白名单没有的
+// 工具，模型照着调用必撞 dispatch 白名单闸，每次浪费一轮预算；反之白名单
+// 有的工具被提示词说成禁用，对外承诺与代码闸互相打脸。改白名单时同步这里。
 
 /// recon 角色：只读 + 联网调研，禁止任何写操作；产出结构化报告。
 pub(crate) const PROFILE_RECON: &str = r#"你是 recon（侦察）子 agent，只执行调研不修改任何东西。
@@ -180,20 +187,22 @@ pub(crate) const PROFILE_RECON: &str = r#"你是 recon（侦察）子 agent，�
 - 收尾输出报告路径 + 摘要 + 来源列表；交卷用 submit_result。"#;
 
 /// executor 角色：基于 recon 报告动手实现，写文件/跑脚本/生成文档。
+/// 工具行 = writereditor onion 的实际白名单（现状唯一 executor 场景）。
 pub(crate) const PROFILE_EXECUTOR: &str = r#"你是 executor（执行）子 agent，基于上游侦察报告动手实现。
-可用工具：read_text_file、list_files、grep_files、edit_file、write_file、run_python、ast_inspect、write_artifact_file、read_own_card。
+可用工具：read_text_file、list_files、grep_files、edit_file、write_file、run_python、write_artifact_file、read_own_card。
 - 优先读 recon 报告路径（contextSummary 给的）作为输入，不重新调研。
 - 改文件用 edit_file（oldString 唯一精确匹配；批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）；新建用 write_file（覆盖已有文件在后台执行会被拒）。
-- 动手前用 ast_inspect 摸清 recon 指到的 Python 代码结构（op=symbols/defs/refs/callgraph），别照着 grep 结果猜。
 - run_python 不联网（它直连外网没有任何保护）；需要查资料由上游 recon 阶段负责，或用 fetch_url / web_search。
 - 先读后改，小步验证；能跑测试就跑测试。
 - 收尾输出改动清单 + 产物路径 + 自评（哪些 acceptanceCriteria 已达成、哪些等 verifier 验收）；交卷用 submit_result。"#;
 
-/// verifier 角色：只读 + 对照 acceptanceCriteria 逐条勾；不修改任何东西。
+/// verifier 角色：对照 acceptanceCriteria 逐条勾；不修改任何东西。
+/// 工具行 = coder 档 ∩ validator.allowed 的实际生效集（validator 的
+/// profile: coder 覆盖 stage 派生的 research，见上方角色叠加规则）。
 pub(crate) const PROFILE_VERIFIER: &str = r#"你是 verifier（验收）子 agent，只对照 acceptanceCriteria 逐条核实，不修改任何东西。
-可用工具：read_text_file、list_files、grep_files、extract_document、write_artifact_file、read_own_card。
-- 禁止调用 edit_file / write_file / run_python / web_search / fetch_url / http_request 等任何写或联网工具——只读验证。
-- 验收产物是 Office/PDF 时用 extract_document 读内容，不要用 read_text_file 硬啃二进制。
+可用工具：read_text_file、list_files、grep_files、run_python、ast_inspect、write_artifact_file、read_own_card。
+- run_python 只用于只读复核（跑校验脚本 / 读产物内容），不得写业务文件、不得联网；edit_file / write_file / web_search / fetch_url / http_request 均不可用——验收不改任何东西。
+- 验收产物是 Office/PDF 等二进制时不要用 read_text_file 硬啃；用 run_python 做内容级读取（解包 / 渲染 / 元数据）后再给证据。
 - 逐条 acceptanceCriteria 检查，每条给出 evidence（文件路径 + 行号 / 命令输出 / 截图描述）。
 - met=true/false 必须给依据，禁止"应该/大致/可能"模糊词。
 - 标了 `file_exists:` / `file_nonempty:` 的条目由服务端直接核验，你的 met 会被
@@ -440,24 +449,41 @@ mod subagent_prompt_tests {
 
     #[test]
     fn profile_verifier_is_readonly_and_emits_verified_json() {
-        // verifier "可用工具"列表必须不含写/联网类工具
+        // verifier 可用工具列必须与实际生效白名单一致（coder ∩ validator.allowed，
+        // 含 run_python / ast_inspect）；写类与联网类工具不得在列
         let usable = PROFILE_VERIFIER
             .split("可用工具：")
             .nth(1)
             .and_then(|s| s.split('。').next())
             .unwrap_or("");
+        for required in [
+            "read_text_file",
+            "run_python",
+            "ast_inspect",
+            "write_artifact_file",
+        ] {
+            assert!(
+                usable.contains(required),
+                "verifier profile 可用工具列缺 {required}（与 validator 白名单脱节），实际：{usable}"
+            );
+        }
         for forbidden in [
             "edit_file",
             "write_file",
-            "run_python",
             "web_search",
             "fetch_url",
+            "extract_document",
         ] {
             assert!(
                 !usable.contains(forbidden),
-                "verifier profile 可用工具列不应含 {forbidden}，实际：{usable}"
+                "verifier profile 可用工具列不应含 {forbidden}（白名单没有，列了必撞闸），实际：{usable}"
             );
         }
+        // run_python 在列但必须声明只读语义——「只读验收」的对外承诺与代码闸要站在同一边
+        assert!(
+            PROFILE_VERIFIER.contains("run_python 只用于只读复核"),
+            "verifier 必须显式声明 run_python 的只读使用口径"
+        );
         // 必须逐条 acceptanceCriteria + 产出 verified.json
         assert!(PROFILE_VERIFIER.contains("acceptanceCriteria"));
         assert!(PROFILE_VERIFIER.contains("verified.json"));

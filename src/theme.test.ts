@@ -3,7 +3,6 @@ import {
   getSetting,
   effectiveTheme,
   applySetting,
-  cycleSetting,
   toggleTheme,
   subscribeSystem,
 } from "./theme";
@@ -81,15 +80,6 @@ describe("theme 设置读写与解析", () => {
 });
 
 describe("theme 切换", () => {
-  it("cycleSetting：light → dark → system → light 三态循环，每步持久化", () => {
-    expect(cycleSetting()).toBe("dark");
-    expect(localStorage.getItem(THEME_KEY)).toBe("dark");
-    expect(cycleSetting()).toBe("system");
-    expect(localStorage.getItem(THEME_KEY)).toBe("system");
-    expect(cycleSetting()).toBe("light");
-    expect(localStorage.getItem(THEME_KEY)).toBe("light");
-  });
-
   it("toggleTheme：light ↔ dark 来回切", () => {
     expect(toggleTheme()).toBe("dark");
     expect(toggleTheme()).toBe("light");

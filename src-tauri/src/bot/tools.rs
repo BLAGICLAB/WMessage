@@ -1,4 +1,4 @@
-//! 工具实现层（22 个 tool_* 函数 + 测试段）。
+//! 工具实现层（tool_* 函数 + 测试段；工具清单单源在 registry::TOOLS_TABLE）。
 //!
 //! 原 bot.rs 行 1393–2661 全部工具代码 +
 //! 行 3070–3138 (tool_extract_document_tests) /

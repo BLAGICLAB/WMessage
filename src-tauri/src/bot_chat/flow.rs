@@ -471,7 +471,7 @@ pub(super) async fn bot_chat_guarded(
     };
     // 选择任务卡批量执行（路由终态，不是前置短路：步骤 1-3 已按序完成）：
     // B 方案（1=宽松 / 2=继续 / 3=共用 stop）：每张卡复用
-    // run_task_in_chat（EXECUTE_SYSTEM_PROMPT + 50 轮工具循环）；外层 stop 在
+    // run_task_in_chat（EXECUTE_SYSTEM_PROMPT + MAX_ROUNDS 轮工具循环）；外层 stop 在
     // 卡片之间判定：聊天里 /stop 一次能阻止后续所有卡启动（正在执行的卡有
     // 自己新会话的 StopGuard，不受影响，跑到本卡结束）。定时任务模式
     // （bot_scheduler，有人在场 interactive=true）同样只走 run_task_in_chat，不经本聊天流程，互不干扰。

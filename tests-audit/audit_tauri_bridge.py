@@ -395,17 +395,17 @@ def test_plugin_calls_have_registered_plugin():
 
 
 def test_registered_but_uncalled_warn_only():
+    """注册了但前端不调 → FAIL（2026-11-16 审计后从 warn 升级：warn-only 期间
+    堆了 4 条无消费方命令——两条纯死代码、两条已实现却无 UI 入口的能力）。
+    临时内部用途的命令应在测试期用 tauri mock invoke 覆盖，或明确不进
+    generate_handler!（直测函数）。"""
     registered = registered_commands()
     called = set(frontend_invokes())
     unused = sorted(registered - called)
-    if unused:
-        import warnings
-
-        warnings.warn(
-            "已注册但前端未调用的命令（仅提示，可能有内部/测试用途）："
-            + ", ".join(unused),
-            stacklevel=1,
-        )
+    assert not unused, (
+        "已注册但前端未调用的命令（死代码或未接线的能力，接 UI 或删注册行）："
+        + ", ".join(unused)
+    )
 
 
 # ───────────────────────── 事件一致性 ─────────────────────────

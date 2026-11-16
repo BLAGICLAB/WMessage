@@ -257,20 +257,6 @@ pub fn list_needing_human(
     list_by_stages(conn, &PERSON_STAGES, limit)
 }
 
-/// 最近工作项（活动页/面板数据源）
-pub fn list_recent(conn: &rusqlite::Connection, limit: usize) -> Result<Vec<WorkItemRow>, String> {
-    list_by_stages(
-        conn,
-        &[
-            STAGE_WORKING,
-            STAGE_AWAITING_ANSWER,
-            STAGE_IDLE,
-            STAGE_FAILED,
-        ],
-        limit,
-    )
-}
-
 fn list_by_stages(
     conn: &rusqlite::Connection,
     stages: &[&str],
@@ -456,36 +442,6 @@ pub async fn needs_attention_list(
     })
     .await
     .map_err(|e| crate::error::CommandError::Internal(format!("聚合读取线程 join 失败：{e}")))?
-}
-
-/// 最近工作项（前端面板/活动页增补数据源）
-#[tauri::command]
-pub async fn work_items_list(
-    app: tauri::AppHandle,
-    limit: Option<usize>,
-) -> Result<Vec<WorkItemRow>, crate::error::CommandError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = super::open_db(&app).map_err(crate::error::CommandError::DbError)?;
-        list_recent(&conn, limit.unwrap_or(50).min(200))
-            .map_err(crate::error::CommandError::DbError)
-    })
-    .await
-    .map_err(|e| crate::error::CommandError::Internal(format!("工作项读取线程 join 失败：{e}")))?
-}
-
-/// 「需要人处理」聚合查询（批 7 查询时聚合：不新增 notifications kind）
-#[tauri::command]
-pub async fn work_items_needing_human(
-    app: tauri::AppHandle,
-    limit: Option<usize>,
-) -> Result<Vec<WorkItemRow>, crate::error::CommandError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = super::open_db(&app).map_err(crate::error::CommandError::DbError)?;
-        list_needing_human(&conn, limit.unwrap_or(50).min(200))
-            .map_err(crate::error::CommandError::DbError)
-    })
-    .await
-    .map_err(|e| crate::error::CommandError::Internal(format!("工作项读取线程 join 失败：{e}")))?
 }
 
 #[cfg(test)]
