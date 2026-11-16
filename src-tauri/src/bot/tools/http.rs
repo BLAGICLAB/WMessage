@@ -292,35 +292,50 @@ pub async fn tool_http_request(
                 if method == "HEAD" {
                     return ToolResult::error("HEAD 请求没有响应体，saveAs 无意义", Vec::new());
                 }
-                let dir = match crate::db::gen_dir(app) {
-                    Ok(d) => d,
-                    Err(e) => return ToolResult::error(format!("产物目录不可用：{e}"), Vec::new()),
+                // gen_dir + 重名探测 + atomic_write（tmp+rename，最大 50MB）都是
+                // 同步文件 IO——在 async runtime 线程上会阻塞全部 Tauri command/event
+                //（与 bot_fs.rs:328 的约定同源），整体挪 blocking 线程
+                let app2 = app.clone();
+                let save_name = name.clone();
+                let body = reply.body.clone();
+                let save_out = tauri::async_runtime::spawn_blocking(
+                    move || -> Result<(std::path::PathBuf, usize), String> {
+                        let dir = crate::db::gen_dir(&app2).map_err(|e| e.to_string())?;
+                        let mut path = dir.join(&save_name);
+                        // 重名不覆盖（与 manage_file 同口径）：追加毫秒时间戳到 stem
+                        if path.exists() {
+                            let stem = path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("download")
+                                .to_string();
+                            let ext = path
+                                .extension()
+                                .and_then(|s| s.to_str())
+                                .map(|e| format!(".{e}"))
+                                .unwrap_or_default();
+                            path = dir.join(format!("{stem}_{}{ext}", crate::db::now_ms()));
+                        }
+                        // 原子写：tmp+rename，防半截下载文件（原裸写无临时文件）
+                        crate::db::atomic_write_bytes(&path, &body)?;
+                        Ok((path, body.len()))
+                    },
+                )
+                .await
+                .map_err(|e| format!("saveAs 落盘线程失败：{e}"))
+                .and_then(|r| r);
+                let (path, body_len) = match save_out {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return ToolResult::error(format!("写入产物文件失败：{e}"), Vec::new())
+                    }
                 };
-                let mut path = dir.join(name);
-                // 重名不覆盖（与 manage_file 同口径）：追加毫秒时间戳到 stem
-                if path.exists() {
-                    let stem = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("download")
-                        .to_string();
-                    let ext = path
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .map(|e| format!(".{e}"))
-                        .unwrap_or_default();
-                    path = dir.join(format!("{stem}_{}{ext}", crate::db::now_ms()));
-                }
-                // 原子写：tmp+rename，防半截下载文件（原裸写无临时文件）
-                if let Err(e) = crate::db::atomic_write_bytes(&path, &reply.body) {
-                    return ToolResult::error(format!("写入产物文件失败：{e}"), Vec::new());
-                }
                 // 落盘凭证：saveAs 重名不覆盖（追加时间戳），恒为 create——
                 // 无 before 快照可存，凭证的存在性是「这文件是工具产物」的凭据
                 out.push_str(&format!(
                     "\n[已保存] {}（{} 字节）\n数据文件交给 run_python / extract_document 按路径直读，不必经过对话上下文",
                     path.display(),
-                    reply.body.len()
+                    body_len
                 ));
                 return ToolResult::ok(out, Vec::new()).with_file_change(
                     crate::bot_fs::build_binary_file_receipt(&path.display().to_string()),

@@ -162,6 +162,15 @@ fn active_groups() -> &'static Mutex<HashMap<String, HashSet<&'static str>>> {
     MAP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// 会话删除时回收其激活组条目（bot_session_delete 调）：
+/// 进程级 HashMap 按 session_id 累积，无删除路径就只增不减。
+pub fn deactivate_session_groups(session_id: &str) {
+    active_groups()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(session_id);
+}
+
 /// activate_tools 的执行体：groups 只接受休眠组名；子 agent 会话拒（白名单
 /// 链路正交，不该走到这）。返回确认文案。
 pub fn activate_groups(session_id: &str, groups: &[String]) -> Result<String, String> {
@@ -171,13 +180,18 @@ pub fn activate_groups(session_id: &str, groups: &[String]) -> Result<String, St
     let mut activated = Vec::new();
     {
         let mut map = active_groups().lock().unwrap_or_else(|p| p.into_inner());
-        let entry = map.entry(session_id.to_string()).or_default();
+        // 先整体校验再写入（两趟）：循环内边插边验时，遇非法组返回 Err 已写入
+        // 的组不回滚——模型看到「失败」但下轮 schema 把前面的组挂上了，状态与
+        // 回执分叉
         for g in groups {
             if !DEFERRED_GROUPS.contains(&g.as_str()) {
                 return Err(format!(
                     "未知或非休眠组：{g}（只有 desktop / services / apps 三组可激活）"
                 ));
             }
+        }
+        let entry = map.entry(session_id.to_string()).or_default();
+        for g in groups {
             entry.insert(leak_group_name(g)?);
             activated.push(g.clone());
         }
@@ -222,7 +236,9 @@ pub fn deferred_gate(
         return None;
     }
     Some(crate::bot::registry::ToolResult::denied(
-        "该工具属于休眠组（桌面系统/受管服务/程序），当前未启用。先调用 activate_tools（groups 传组名）启用，下一轮即可使用。",
+        // ⚠️ 前缀不是装饰：audit.rs 的 error_class 判据是 starts_with("⚠️") →
+        // GateDenied——没有它执行痕迹面板回落通用「失败」，无法与其他门禁拦截区分
+        "⚠️ 该工具属于休眠组（桌面系统/受管服务/程序），当前未启用。先调用 activate_tools（groups 传组名）启用，下一轮即可使用。",
     ))
 }
 

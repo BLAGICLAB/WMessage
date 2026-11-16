@@ -1,8 +1,7 @@
 /** 聊天面板的「stream」逻辑块（从 ChatPanel 主组件搬出）。
  *
- *  流式事件订阅：把后端事件接到消息与用量上。
- *
- *  搬移是逐字的：语句原样保留、顺序不变；对外接口只有 params 与返回值。
+ *  流式事件订阅：把后端事件接到消息与用量上。纯副作用 hook，无返回值
+ *  （调用方也不消费）。
  */
 import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -646,7 +645,4 @@ if (!streamState.isInflight(sid)) {
       streamHandlersRef.current = {};
     };
   }, [loadFinalText]);
-
-  return {
-  };
 }

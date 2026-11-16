@@ -618,9 +618,9 @@ fn require_api_key(api_key: &str) -> CommandResult<()> {
 /// 摘要请求的历史字符上限：超长会话只保留最近的消息（最旧的先丢），
 /// 防止压缩请求超 context。截断路径的待摘要消息已被 constants::HISTORY_BUDGET_CHARS
 /// 限住，此上限对 /compact 的全量历史才实际生效。
-/// 与 constants::CONTEXT_CHARS_HARD_CAP 同值不同域（摘要请求 vs 主请求），
-/// 改其中一处前先看另一处。
-const SUMMARIZE_MAX_CHARS: usize = 200_000;
+/// 与主请求共用同一上限：直接引用 CONTEXT_CHARS_HARD_CAP——摘要请求塞给
+/// 模型的上下文量级不该超过主请求上限，两处永远同步，漂移在编译期消失。
+const SUMMARIZE_MAX_CHARS: usize = crate::bot::constants::CONTEXT_CHARS_HARD_CAP;
 
 /// /compact 快捷命令（真源化契约）：读库取全会话历史交给模型总结成摘要
 /// （单次非流式请求，不带工具）。摘要行落库走 bot_history_replace_summary

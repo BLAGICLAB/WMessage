@@ -183,7 +183,11 @@ pub fn start_output_sweeper<R: tauri::Runtime>(app: AppHandle<R>) {
         ticker.tick().await; // 消耗首个立即触发的 tick
         loop {
             ticker.tick().await;
-            sweep_round(&app);
+            // sweep_round 是纯同步阻塞（逐服务截断日志文件 + 两张全机 ps 快照
+            // + 端口闸）——必须挪 blocking 线程，不占 async runtime worker
+            //（take_snapshot 的注释自己也这么要求）
+            let app2 = app.clone();
+            let _ = tauri::async_runtime::spawn_blocking(move || sweep_round(&app2)).await;
         }
     });
 }

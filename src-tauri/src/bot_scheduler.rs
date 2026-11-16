@@ -332,6 +332,9 @@ pub const SCHED_TICK_SECS: u64 = 30;
 /// at: 一次性首跑宽限：2×tick。从未执行的 at: 到点超窗才判过期清理（at_expired）；
 /// 窗口内视为「刚到点」，保留既有首跑语义——运行中的调度器至多一个 tick 后
 /// 必扫到，宽限取 2 倍留余量。
+/// 与提醒侧的一次性宽限（ONE_SHOT_GRACE 24h）**有意不同**：作业错过是「没跑成
+/// 的事」（超窗补跑会与后续排期打架），提醒错过是「没听到那句话」（24h 内补上
+/// 仍有价值）；SPEC 两处各自明文，不共用常量。
 const AT_FIRST_RUN_GRACE: chrono::Duration =
     chrono::Duration::seconds((SCHED_TICK_SECS * 2) as i64);
 
@@ -1252,13 +1255,21 @@ fn build_job_entry(
     enabled: bool,
     now: chrono::DateTime<chrono::Local>,
 ) -> JobEntry {
+    // 从未执行的作业（sched_last=None）首跑立即生效（occurrence_after 以 epoch0
+    // 为基准算出「已到点」）——列表侧也按同一基准展示「现在」，否则同一响应里
+    // 列表写「明天 09:00」实际 ≤30s 后就真跑，自相矛盾
+    let next_run_at = if sched_last.is_none() {
+        Some(now.timestamp_millis())
+    } else {
+        next_fire_at(sched, now)
+    };
     JobEntry {
         target_id,
         title,
         detail,
         schedule: sched.to_string(),
         sched_last,
-        next_run_at: next_fire_at(sched, now),
+        next_run_at,
         missed: matches!(classify_due(sched, sched_last, now), DueVerdict::Missed)
             || at_expired(sched, sched_last, now),
         enabled,

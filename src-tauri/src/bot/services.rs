@@ -274,7 +274,9 @@ pub(crate) struct StopOutcome {
 fn sweep_round<R: tauri::Runtime>(app: &AppHandle<R>) {
     enforce_output_caps(app);
     sample_resources(app);
-    // P2-③：监听采样与判定（发现违规 → 杀进程组 + 记审计 + 面板标红）
+    // P2-③：监听采样与判定（发现违规 → 杀进程组 + 记审计 + 面板标红）。
+    // sample_resources 与 enforce_listening_gate 各拍一张全机快照（ps -ax
+    // ~50ms）——可优化为单轮共用，需改两个函数签名，等有实测压力再做
     enforce_listening_gate(app);
 }
 

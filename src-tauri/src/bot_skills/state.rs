@@ -260,6 +260,20 @@ pub(crate) fn load_skill_meta<R: tauri::Runtime>(
         if !path.is_file() {
             continue;
         }
+        // 读入字节闸：MAX_SKILL_BODY 只截「保留下的 body」，不拦实际读入量——
+        // 手工放进 skills 目录的超大文件（远程装的单文件上限 16MB）此前会被
+        // 整文件读进内存再全量走 chars()。与导入闸同口径。
+        if let Ok(meta_bytes) = std::fs::metadata(&path) {
+            if meta_bytes.len() > crate::bot_skills::IMPORT_MAX_SKILL_MD_BYTES {
+                return Err(CommandError::DomainRule {
+                    domain: "skill".to_string(),
+                    reason: format!(
+                        "技能「{name}」的 SKILL.md 超过大小上限（{}MB），拒绝读取",
+                        crate::bot_skills::IMPORT_MAX_SKILL_MD_BYTES / (1024 * 1024)
+                    ),
+                });
+            }
+        }
         // 直接读并按 NotFound 继续 fallback——消除「预检通过后、读取前被删」
         // 间隙误报「读取失败」；其余 I/O 错误带原因报错（不再吞掉错误详情）
         let text = match std::fs::read_to_string(&path) {

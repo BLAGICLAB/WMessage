@@ -409,12 +409,14 @@ pub async fn needs_attention_list(
                 at: r.updated_at,
             });
         }
-        // ② 失败/超预算的子 agent
+        // ② 失败/超预算的子 agent（limit 下推到 SQL：失败行随历史线性增长，
+        // 全量读入再 truncate 是白付的读放大；每状态各取 limit 条已够聚合面用）
         for st in [
             crate::db::subagents::SubagentStatus::Failed,
             crate::db::subagents::SubagentStatus::BudgetExceeded,
         ] {
-            for r in crate::db::subagents::load_subagents_by_status(&conn, st)? {
+            for r in crate::db::subagents::load_subagents_by_status_recent(&conn, st, limit as u32)?
+            {
                 out.push(NeedsAttentionItem {
                     source: "subagent".into(),
                     id: r.id,

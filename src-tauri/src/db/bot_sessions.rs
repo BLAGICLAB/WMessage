@@ -240,7 +240,11 @@ pub fn bot_session_delete_inner(conn: &mut rusqlite::Connection, id: &str) -> Co
     tx.execute("DELETE FROM bot_sessions WHERE id = ?1", [id])
         .map_err(|e| CommandError::DbError(e.to_string()))?;
     tx.commit()
-        .map_err(|e| CommandError::DbError(e.to_string()))
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    // 会话激活的休眠工具组随会话回收：进程级 HashMap 按会话号累积，无删除路径
+    // 就只增不减（开关默认关不显，开了才见堆积）
+    crate::bot::registry::groups::deactivate_session_groups(id);
+    Ok(())
 }
 
 #[tauri::command]

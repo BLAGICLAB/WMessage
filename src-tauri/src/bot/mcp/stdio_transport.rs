@@ -173,6 +173,7 @@ impl Transport<RoleClient> for CappedChildProcess {
         // 先关 stdin：MCP 服务器看见 EOF 会自己退（rmcp 原实现同口径）
         self.inner.close().await?;
         if let Some(mut child) = self.child.take() {
+            let pid = child.id();
             match tokio::time::timeout(Duration::from_secs(GRACEFUL_SHUTDOWN_SECS), child.wait())
                 .await
             {
@@ -182,9 +183,28 @@ impl Transport<RoleClient> for CappedChildProcess {
                     let _ = child.wait().await;
                 }
             }
+            kill_descendants_async(pid);
         }
         Ok(())
     }
+}
+
+/// 树杀兜底（异步收尾）：直接子进程死后，它拉起的真实服务器进程（npx → node）
+/// 会被 reparent 继续跑、占端口——按组补杀孙进程。fire-and-forget 挪 blocking
+/// 线程，与 manager 的正常回收路径 stop_stdio_tree 同一底层。
+fn kill_descendants_async(pid: Option<u32>) {
+    let Some(pid) = pid else {
+        return;
+    };
+    if pid <= 1 {
+        return;
+    }
+    let handle = tauri::async_runtime::spawn_blocking(move || {
+        let _ = crate::bot::procs::stop_tree(pid, pid as i32, |grace| {
+            crate::bot::procs::wait_pid_exit(pid, grace)
+        });
+    });
+    drop(handle); // fire-and-forget：收尾自管，JoinHandle 显式丢弃（不阻塞 Drop 上下文）
 }
 
 impl Drop for CappedChildProcess {
@@ -193,7 +213,12 @@ impl Drop for CappedChildProcess {
         // 用 start_kill（同步 SIGKILL）而不是 rmcp 的 tokio::spawn(kill)：
         // 后者在没有运行时的 Drop 里会 panic。
         if let Some(mut child) = self.child.take() {
+            let pid = child.id();
             let _ = child.start_kill();
+            // 错误路径（握手超时 / 传输 drop）此前只杀直接子进程——包装器
+            // 拉起的服务器进程成孤儿占端口；与 close 同款树杀兜底。
+            // spawn_blocking 在运行时存活期（AppHandle 常驻）内总是可用。
+            kill_descendants_async(pid);
         }
     }
 }

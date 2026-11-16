@@ -615,7 +615,12 @@ pub(crate) fn bot_enabled<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool 
     bot_flag_path(app).exists()
 }
 
-/// 机器人聊天当前是否开启
+/// 机器人聊天当前是否开启。
+///
+/// **覆盖面**：聊天发起（bot_chat）与定时作业派发（bot_scheduler 判 Held）。
+/// 提醒（bot_reminders）与任务卡截止通知（due_notify）**不读本开关**——
+/// 「到点说一句话」是系统通知不是机器人动作，关开关期间照发（见两模块头
+/// 注释与 SPEC 总开关段；这是有意口径，不是漏接）。
 #[tauri::command]
 pub fn bot_get_enabled(app: AppHandle) -> bool {
     bot_enabled(&app)

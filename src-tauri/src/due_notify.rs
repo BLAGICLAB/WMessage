@@ -5,6 +5,10 @@
 //! - 截止时刻一条「任务已到截止时间」（截止后 24h 内有效；超 24h 的老任务不补发，
 //!   直接标记已发——防升级/重启后对历史任务轰炸通知）
 //!
+//! **总开关不门控本链路**：机器人总开关（bot_get_enabled）只拦聊天与作业派发；
+//! 截止通知是系统提醒不是机器人动作——关开关期间照发（与 bot_reminders 同
+//! 口径，见其模块头与 SPEC 总开关段；有意如此，不是漏接）。
+//!
 //! 平台差异约定（macOS / Windows 系统通知行为不同，代码层面统一走插件 API）：
 //! - macOS：系统通知必须显式授权（UNUserNotificationCenter），未授权时通知静默失败——
 //!   授权请求在前端 App.tsx 启动时发起（isPermissionGranted → requestPermission）；

@@ -47,3 +47,52 @@ fn async_tool_paths_do_not_run_sync_syscalls_inline() {
         );
     }
 }
+
+/// 含同步 DB / 落盘 IO 的 async 工具，其 spawn_blocking 必须先于同步调用出现
+///（= 同步调用在 blocking 闭包体内）。
+///
+/// trace.rs 的 lookup_receipt 曾裸跑 open_db（建目录 + PRAGMA + 全量 DDL）+
+/// session_spans（同步 join，result 列按 16KB 存）在 async runtime 上；http.rs
+/// 的 saveAs 曾在 runtime 线程同步写 50MB。行为级测试测不出跑在哪个线程，
+/// 按接线顺序钉：`spawn_blocking` 首现行 < 同步调用首现行。
+#[test]
+fn async_tools_with_sync_io_wrap_it_in_spawn_blocking() {
+    for (file, sig, sync_calls) in [
+        (
+            "trace.rs",
+            "pub(crate) async fn tool_lookup_receipt<",
+            vec!["crate::db::open_db("],
+        ),
+        (
+            "http.rs",
+            "pub async fn tool_http_request(",
+            vec!["crate::db::gen_dir(", "crate::db::atomic_write_bytes("],
+        ),
+    ] {
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/bot/tools")
+                .join(file),
+        )
+        .unwrap_or_else(|e| panic!("读不到 {file}：{e}"));
+        let start = text
+            .find(sig)
+            .unwrap_or_else(|| panic!("{file} 应能找到 {sig} 的定义"));
+        let rest = &text[start..];
+        let end = rest[1..].find("\n}\n").map(|i| i + 1).unwrap_or(rest.len());
+        let body = rest[..end].to_string();
+        let spawn_pos = body.find("spawn_blocking").unwrap_or_else(|| {
+            panic!("{sig} 体内必须出现 spawn_blocking（同步 IO 挪 blocking 线程）")
+        });
+        for call in sync_calls {
+            let call_pos = body
+                .find(call)
+                .unwrap_or_else(|| panic!("{sig} 体内应能找到 {call}"));
+            assert!(
+                spawn_pos < call_pos,
+                "{sig} 的 {call} 必须出现在 spawn_blocking 之后（挪进 blocking 闭包），\
+                 现状：spawn_blocking@{spawn_pos}, {call}@{call_pos}"
+            );
+        }
+    }
+}

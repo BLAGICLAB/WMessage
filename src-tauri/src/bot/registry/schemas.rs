@@ -522,7 +522,10 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_EXTRACT_DOCUMENT,
         mutating: false,
         claims_patterns: &[],
-        max_output_bytes: 8192,
+        // 默认页 30000 字符（中文 ≈90KB UTF-8），预算只有 8KB 时模型以为读完了
+        // 一页、实际只拿到头尾各 4KB + 指针，按 offset 续读会跳过从未见过的
+        // 中段——预算提到与页面上限同量级（96KB > 90KB 覆盖单页）
+        max_output_bytes: 98304,
         call: call_extract_document,
     },
     ToolDef {
@@ -610,7 +613,9 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_FETCH_URL,
         mutating: false,
         claims_patterns: &[],
-        max_output_bytes: 65536,
+        // 正文切片按字符 30000（中文 ≈90KB UTF-8），预算小于页面上限时
+        // 回灌截断 + offset 续读会系统性跳过中段——与页面同量级
+        max_output_bytes: 98304,
         call: call_fetch_url,
     },
     ToolDef {
@@ -621,7 +626,9 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         // 第二次终稿还挂「这句没有对应凭证」的不实指控
         mutating: true,
         claims_patterns: &["已保存", "已下载"],
-        max_output_bytes: 65536,
+        // 正文切片按字符 30000（中文 ≈90KB UTF-8），预算小于页面上限时
+        // 回灌截断 + offset 续读会系统性跳过中段——与页面同量级
+        max_output_bytes: 98304,
         call: call_http_request,
     },
     ToolDef {

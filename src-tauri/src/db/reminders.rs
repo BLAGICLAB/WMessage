@@ -13,7 +13,7 @@
 
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::error::{CommandError, CommandResult};
 
@@ -246,6 +246,13 @@ pub fn validate_reminder_text(text: &str) -> Result<String, String> {
 
 // ── Tauri 命令（定时任务模块的提醒入口）────────────────────────────────────
 
+/// 写路径广播：前端「定时」页据此刷新。tick 消费侧只在「有行因触发而变化」时
+/// 广播；模型经聊天建/改/删/停的提醒不属于触发变化——不广播的话页面停在旧
+/// 快照（文档口径「提醒写路径广播」即此四命令）。
+fn emit_reminders_changed(app: &AppHandle) {
+    let _ = app.emit("reminders-changed", serde_json::json!({}));
+}
+
 /// 新建提醒（定时任务模块「新建提醒」入口）
 ///
 /// 到点只发一条系统通知——不建任务卡、不执行任何内容（与内容型作业的分界）。
@@ -304,6 +311,7 @@ pub async fn reminder_create(
             ("schedule", row.schedule.clone()),
         ],
     );
+    emit_reminders_changed(&app_emit);
     Ok(row)
 }
 
@@ -373,6 +381,7 @@ pub async fn reminder_update(
         "reminder.update",
         &[("reminderId", row.id.clone())],
     );
+    emit_reminders_changed(&app_emit);
     Ok(row)
 }
 
@@ -396,6 +405,7 @@ pub async fn reminder_delete(app: AppHandle, id: String) -> CommandResult<bool> 
         "reminder.delete",
         &[("reminderId", id_for_audit)],
     );
+    emit_reminders_changed(&app_emit);
     Ok(ok)
 }
 
@@ -426,6 +436,7 @@ pub async fn reminder_set_enabled(
             ("enabled", enabled.to_string()),
         ],
     );
+    emit_reminders_changed(&app_emit);
     Ok(ok)
 }
 

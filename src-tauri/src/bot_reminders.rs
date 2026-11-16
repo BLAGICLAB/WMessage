@@ -6,6 +6,11 @@
 //! `occurrence_after`），但存储与触发路径各走各的——提醒不进执行历史、不占
 //! 重试与自动暂停语义。
 //!
+//! **总开关不门控本链路**：机器人总开关（bot_get_enabled）只拦聊天与作业派发；
+//! 提醒「到点说一句话」是系统通知不是机器人动作——关开关期间提醒照发、
+//! 水位照常推进（与作业链路的 Held 不推进语义**有意不同**，见 SPEC「机器人
+//! 总开关」段；改口径须先改 SPEC 两处再动代码）。
+//!
 //! 触发通道：系统通知（`tauri-plugin-notification`，与任务卡截止提醒
 //! `due_notify` 同一套）。macOS 需用户授权系统通知（未授权时静默失败，
 //! 授权流程在前端启动时发起，与 due_notify 一致）。
@@ -16,7 +21,10 @@ use tauri::{AppHandle, Emitter};
 use crate::bot::registry::ToolResult;
 use crate::db::reminders::Reminder;
 
-/// 一次性提醒错过多久就不再补提醒（超过 24h 视为过期，静默丢弃）
+/// 一次性提醒错过多久就不再补提醒（超过 24h 视为过期，静默丢弃）。
+/// 与作业侧的一次性宽限（AT_FIRST_RUN_GRACE 60s）**有意不同**：提醒错过是
+/// 「没听到那句话」（24h 内补上仍有价值），作业错过是「没跑成的事」（超窗补跑
+/// 会与后续排期打架）；SPEC 两处各自明文，不共用常量。
 const ONE_SHOT_GRACE: Duration = Duration::hours(24);
 /// 周期提醒错过多久就不补提醒（关机 / 休眠期间错过的到点，恢复后只推进不打扰）
 const RECUR_GRACE: Duration = Duration::hours(2);

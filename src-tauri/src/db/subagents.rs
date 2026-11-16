@@ -323,6 +323,12 @@ const SQL_SELECT_BY_STATUS: &str =
     "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
      trace_id, acceptance_json, context_summary, result_json, error, \
      created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE status = ?1 ORDER BY created_at";
+/// 聚合面专用：按状态取最近 N 行（新→旧）。失败/熔断行随历史线性增长，
+/// 「全量读入 + 内存截断」是白付的读放大。
+const SQL_SELECT_BY_STATUS_RECENT: &str =
+    "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
+     trace_id, acceptance_json, context_summary, result_json, error, \
+     created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE status = ?1 ORDER BY created_at DESC LIMIT ?2";
 /// 按派发者主会话取全部子 agent（新→旧）。聊天内嵌子 agent 区域与右侧栏
 /// 「子 Agent」工作面的数据源：子 agent 不再建独立会话后，用户只能从这里
 /// 看到自己派出去的那些还活着/刚跑完。
@@ -438,6 +444,26 @@ pub fn load_subagents_by_status(
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([status.as_str()], row_to_subagent)
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// 按状态取最近 N 行（新→旧）。「需要人处理」聚合面专用：limit 下推到 SQL，
+/// 不做全量读入后内存截断。
+pub fn load_subagents_by_status_recent(
+    conn: &rusqlite::Connection,
+    status: SubagentStatus,
+    limit: u32,
+) -> Result<Vec<SubagentRow>, String> {
+    let mut stmt = conn
+        .prepare(SQL_SELECT_BY_STATUS_RECENT)
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![status.as_str(), limit], row_to_subagent)
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for r in rows {

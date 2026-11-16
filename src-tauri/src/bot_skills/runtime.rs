@@ -16,6 +16,10 @@ use tauri::AppHandle;
 /// auto 模式（DSL 调度器）不适用：它的步骤失败必须立刻终止该步并跑回滚。
 pub(crate) const SKILL_INTERACTIVE_FAIL_LIMIT: usize = 3;
 
+/// use_skill 第三层披露的 references 清单条数上限：远程安装可合法装入 2000 个
+/// 文件，全量路径注入上下文是第三方内容的无界放量——列前 N 条 + 余量提示。
+pub(crate) const REFERENCE_LIST_MAX: usize = 30;
+
 /// 意图/描述危险关键词黑名单（与系统提示词安全红线一致）：命中即拒绝启动；
 /// create_skill 创建时也做同款预检（创建早于启动，把拒绝提前到落盘前）。
 pub(crate) const INTENT_BLACKLIST: [&str; 5] = [
@@ -416,7 +420,9 @@ pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> 
                     "\n\n（运行约束：本技能为人机协同模式，中高危动作执行前会暂停等待用户确认）",
                 );
             }
-            // 第三层渐进披露——技能目录附带资料按需读（会话级读白名单已放行）
+            // 第三层渐进披露——技能目录附带资料按需读（会话级读白名单已放行）。
+            // 条数闸：远程安装上限 2000 个文件，全部路径拼进结果会一次注入
+            // 上百 KB 的第三方内容——只列前 N 条 + 余量提示
             if let Some(run) = active_skill_run_for(app, session_id) {
                 if run.name == meta.name {
                     if let Some(dir) = &run.dir {
@@ -435,10 +441,19 @@ pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> 
                                 .collect();
                             if !files.is_empty() {
                                 files.sort();
+                                let total = files.len();
+                                let truncated = total > REFERENCE_LIST_MAX;
+                                files.truncate(REFERENCE_LIST_MAX);
                                 out.push_str(
                                     "\n\n（本技能附带资料，需要时用 read_text_file 读取：\n- ",
                                 );
                                 out.push_str(&files.join("\n- "));
+                                if truncated {
+                                    out.push_str(&format!(
+                                        "\n- ……（另有 {} 条未列出，用 read_dir/read_text_file 自行浏览）",
+                                        total - REFERENCE_LIST_MAX
+                                    ));
+                                }
                                 out.push('）');
                             }
                         }

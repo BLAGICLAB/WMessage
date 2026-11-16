@@ -101,7 +101,25 @@ enum Slot {
     /// 连接建立中（spawn 在途，最长 20s）：占住槽位，让「工具是否已知」
     /// 判定与工具发现不再把这段窗口误当成「从未发现过」——那会对同一台
     /// 服务器并发拉起第二个子进程。建立完成转 Connected / 失败转 Down。
-    Connecting,
+    /// future 在 await 处被 drop（模型循环中止）时槽位会永停此态——读侧
+    /// 对超过 `CONNECTING_STALE_MS` 的本态按 Down 处理（兜底自愈）。
+    Connecting {
+        /// 写入时刻（毫秒），读侧判停滞用
+        since_ms: i64,
+    },
+}
+
+/// Connecting 的停滞判定窗：spawn 正常最长 20s，超窗 2 倍还没落定 = 在途
+/// future 已被 drop（模型循环中止），槽位不会自己落定——读侧按 Down 处理，
+/// 发现路径重新走起来（自愈），面板不再永远「待发现」。
+const CONNECTING_STALE_MS: i64 = 40_000;
+
+/// 槽位是否停在超时的 Connecting（= 写入方已死，永远不会转终态）。
+fn slot_connecting_stale(slot: &Slot) -> bool {
+    let Slot::Connecting { since_ms } = slot else {
+        return false;
+    };
+    crate::db::now_ms().saturating_sub(*since_ms) > CONNECTING_STALE_MS
 }
 
 /// 一份进程快照（带采样时刻）。
@@ -350,7 +368,12 @@ impl McpManager {
         let old = self.slots().remove(&cfg.id);
         // 先落 Connecting 占位：spawn 最长 20s，这段窗口里槽位不能「不存在」，
         // 否则 tools_known 误判为未发现、发现路径会对同一台服务器再 spawn 一个子进程
-        self.slots().insert(cfg.id.clone(), Slot::Connecting);
+        self.slots().insert(
+            cfg.id.clone(),
+            Slot::Connecting {
+                since_ms: crate::db::now_ms(),
+            },
+        );
         self.prune_stderr(&cfg.id);
         Self::close_old(old).await;
         match self.spawn_service(cfg).await {
@@ -407,8 +430,11 @@ impl McpManager {
         match self.slots().get(id) {
             Some(Slot::Idle { discovered, .. }) => *discovered,
             // 活连接 / 连接建立中都算已知：连接成功会带回工具清单，
-            // 此刻再发现一次只会跟调用路径抢同一台服务器
-            Some(Slot::Connected { .. }) | Some(Slot::Connecting) => true,
+            // 此刻再发现一次只会跟调用路径抢同一台服务器。
+            // 停滞的 Connecting（future 被 drop）不算已知——让发现路径重新
+            // 走起来，否则该服务器整个会话不可见且无自愈
+            Some(Slot::Connected { .. }) => true,
+            Some(s @ Slot::Connecting { .. }) => !slot_connecting_stale(s),
             _ => false,
         }
     }
@@ -1093,12 +1119,25 @@ impl McpManager {
                 error: Some(error.clone()),
                 tool_count: 0,
             },
-            // 连接建立中（spawn 在途）：按「待发现」上报，面板语义兼容
-            Some(Slot::Connecting) => McpSlotStatus {
-                state: "pending".into(),
-                error: None,
-                tool_count: 0,
-            },
+            // 连接建立中（spawn 在途）：按「待发现」上报，面板语义兼容；
+            // 停滞的按 Down 上报——用户看到的不能再是永远转圈的「待发现」
+            Some(s @ Slot::Connecting { .. }) => {
+                if slot_connecting_stale(s) {
+                    McpSlotStatus {
+                        state: "down".into(),
+                        error: Some(
+                            "连接长时间未完成（在途任务被中止），改配置或重开会话可重连".into(),
+                        ),
+                        tool_count: 0,
+                    }
+                } else {
+                    McpSlotStatus {
+                        state: "pending".into(),
+                        error: None,
+                        tool_count: 0,
+                    }
+                }
+            }
             None => McpSlotStatus {
                 state: "absent".into(),
                 error: None,

@@ -150,9 +150,20 @@ pub(crate) async fn run_subagent(
     // 排队可取消——每轮退避同时查行终态，取消即退队；Running 改在**拿到槽位并复核后**
     // 才写，排队中的行不再假挂运行中。
     let sid_gate_check = row.id.clone();
-    let app_gate_check = app.clone();
-    // 评审 M 采纳：节流 DB 读——open_db 含建目录+pragmas 文件 IO，不该 50ms
-    // 一次压在 async worker 上；取消检测 500ms 粒度足够（槽后复核兜底）
+    // 评审 M 采纳 + 挪线修正：取消检测的 DB 读不该压在 async worker 上——
+    // open_db 含建目录 + PRAGMA + 全量 DDL 迁移，500ms 一次就是反复整套迁移。
+    // 闸门闭包是同步 FnMut（放不进 await），改用排队期专用轻连接：直接 open
+    //（不跑 DDL）+ busy_timeout，单行 SELECT 只花微秒级；拿到槽位后的复核
+    // 仍走 open_db 全量路径。
+    let gate_conn: Option<std::sync::Mutex<rusqlite::Connection>> = {
+        let path = crate::db::data_dir(&app).join("wmessage.db");
+        rusqlite::Connection::open(&path)
+            .map(|conn| {
+                let _ = conn.busy_timeout(std::time::Duration::from_secs(2));
+                std::sync::Mutex::new(conn)
+            })
+            .ok() // 开不出连接 = 取消检测降级为 no-op（槽后复核兜底）
+    };
     let gate_tick = std::cell::Cell::new(0u32);
     let mut cancelled_while_queued = move || {
         let n = gate_tick.get();
@@ -160,15 +171,17 @@ pub(crate) async fn run_subagent(
         if !n.is_multiple_of(10) {
             return false;
         }
-        crate::db::open_db(&app_gate_check)
+        let Some(conn) = &gate_conn else {
+            return false; // DB 读失败不误判取消（拿到槽位后的复核兜底）
+        };
+        let Ok(conn) = conn.lock() else {
+            return false;
+        };
+        crate::db::load_subagent(&conn, &sid_gate_check)
             .ok()
-            .and_then(|conn| {
-                crate::db::load_subagent(&conn, &sid_gate_check)
-                    .ok()
-                    .flatten()
-            })
+            .flatten()
             .map(|r| r.status.is_terminal())
-            .unwrap_or(false) // DB 读失败不误判取消（拿到槽位后的复核兜底）
+            .unwrap_or(false)
     };
     let ticket = crate::bot_orchestrator::SubagentGate::wait_slot_cancellable(
         row.parent_session_id.clone(),

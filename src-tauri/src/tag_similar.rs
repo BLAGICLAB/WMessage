@@ -42,9 +42,15 @@ pub struct TagPair {
 }
 
 /// 缓存回填（纯函数，单测锚点）：满仓先按插入序逐出最旧一条再插入——
-/// 整表 clear 会把热词表也丢掉，下一轮调用全量重跑嵌入
+/// 整表 clear 会把热词表也丢掉，下一轮调用全量重跑嵌入。
+/// 已在缓存的 tag 只刷新值不重复入队：重复入队会让同一 tag 占多条 order，
+/// 逐出时 pop_front 只删一条、map 里的 tag 留着 → order 与 map 永久错位。
 fn cache_insert(state: &mut VectorCache, tag: String, v: Vec<f32>) {
-    if state.map.len() >= CACHE_LIMIT && !state.map.contains_key(&tag) {
+    if let Some(slot) = state.map.get_mut(&tag) {
+        *slot = v; // 已在缓存：只刷新值，不重复入队
+        return;
+    }
+    if state.map.len() >= CACHE_LIMIT {
         if let Some(oldest) = state.order.pop_front() {
             state.map.remove(&oldest);
         }

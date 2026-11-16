@@ -584,6 +584,18 @@ async fn execute_tool_impl(
         // 开关关/已激活/非休眠工具都直通；子 agent 会话没有激活组记录，休眠工具
         // 在此即拒（其后的 1.6 白名单闸还有一层）。
         if let Some(denied) = crate::bot::registry::groups::deferred_gate(name, session_id) {
+            // 入口已发 tool.call，这里必须以 tool.return 配平（与规则闸/skill 熔断
+            // 同走 early_return_events），否则统计面板出现悬挂调用（call > return）
+            for (level, event, kv) in early_return_events(
+                name,
+                "deferred_group",
+                start.elapsed().as_millis() as u64,
+                None,
+                session_id,
+                trace,
+            ) {
+                crate::audit::write_event(app, level, event, &kv);
+            }
             return denied;
         }
         if let Some(denied) =

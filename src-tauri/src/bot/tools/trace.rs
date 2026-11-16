@@ -38,82 +38,96 @@ pub(crate) async fn tool_lookup_receipt<R: tauri::Runtime>(
         );
     };
     let v = crate::bot::dispatch::parse_args(args);
-    let tool_call_id = v["tool_call_id"]
+    // 参数转 owned 再进闭包：parse_args 的 Value 是局部，引用挪不进 'static 闭包
+    let tool_call_id: Option<String> = v["tool_call_id"]
         .as_str()
         .map(str::trim)
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let span_id = v["span_id"].as_i64();
     let trace_id = v["trace_id"].as_i64();
 
-    let conn = match crate::db::open_db(app) {
-        Ok(c) => c,
-        Err(e) => {
-            return ToolResult::error(format!("lookup_receipt 读取执行痕迹失败：{e}"), Vec::new());
-        }
-    };
+    // open_db 含建目录 + PRAGMA + 全量 DDL 迁移，session_spans 是同步 join 查询
+    //（result 列按 16KB 存，最坏数 MB 级物化）——同步 syscall 在 async runtime
+    // 上会阻塞全部 Tauri command/event，与同目录其他工具一致必须挪 blocking 线程。
+    let app2 = app.clone();
+    let session_owned = session_id.to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = match crate::db::open_db(&app2) {
+            Ok(c) => c,
+            Err(e) => {
+                return ToolResult::error(
+                    format!("lookup_receipt 读取执行痕迹失败：{e}"),
+                    Vec::new(),
+                );
+            }
+        };
 
-    // 精确调取：span_id 最准（一次调用一条 span），tool_call_id 次之
-    // （LLM 签发的调用 id），trace_id 最粗（一次执行里的全部调用）。
-    if let Some(sid) = span_id {
-        return match crate::db::trace::span_get_row(&conn, sid) {
-            Ok(Some(row)) => {
-                if !belongs_to_session(&conn, &row, session_id) {
-                    return not_found("span_id");
+        // 精确调取：span_id 最准（一次调用一条 span），tool_call_id 次之
+        //（LLM 签发的调用 id），trace_id 最粗（一次执行里的全部调用）。
+        if let Some(sid) = span_id {
+            return match crate::db::trace::span_get_row(&conn, sid) {
+                Ok(Some(row)) => {
+                    if !belongs_to_session(&conn, &row, &session_owned) {
+                        return not_found("span_id");
+                    }
+                    ToolResult::ok(render_detail(&row), Vec::new())
                 }
-                ToolResult::ok(render_detail(&row), Vec::new())
-            }
-            Ok(None) => not_found("span_id"),
-            Err(e) => ToolResult::error(format!("lookup_receipt 查询失败：{e}"), Vec::new()),
-        };
-    }
-    if let Some(tcid) = tool_call_id {
-        let spans = match crate::db::trace::session_spans(&conn, session_id, 500) {
-            Ok(s) => s,
-            Err(e) => {
-                return ToolResult::error(format!("lookup_receipt 查询失败：{e}"), Vec::new());
-            }
-        };
-        let hits: Vec<&SpanRow> = spans
-            .iter()
-            .filter(|s| s.tool_call_id.as_deref() == Some(tcid))
-            .collect();
-        if hits.is_empty() {
-            return not_found("tool_call_id");
+                Ok(None) => not_found("span_id"),
+                Err(e) => ToolResult::error(format!("lookup_receipt 查询失败：{e}"), Vec::new()),
+            };
         }
-        if hits.len() == 1 {
-            return ToolResult::ok(render_detail(hits[0]), Vec::new());
-        }
-        return ToolResult::ok(render_list(&hits, session_id), Vec::new());
-    }
-    if let Some(tid) = trace_id {
-        let spans = match crate::db::trace::session_spans(&conn, session_id, 500) {
-            Ok(s) => s,
-            Err(e) => {
-                return ToolResult::error(format!("lookup_receipt 查询失败：{e}"), Vec::new());
+        if let Some(tcid) = &tool_call_id {
+            let spans = match crate::db::trace::session_spans(&conn, &session_owned, 500) {
+                Ok(s) => s,
+                Err(e) => {
+                    return ToolResult::error(format!("lookup_receipt 查询失败：{e}"), Vec::new());
+                }
+            };
+            let hits: Vec<&SpanRow> = spans
+                .iter()
+                .filter(|s| s.tool_call_id.as_deref() == Some(tcid.as_str()))
+                .collect();
+            if hits.is_empty() {
+                return not_found("tool_call_id");
             }
-        };
-        let hits: Vec<&SpanRow> = spans.iter().filter(|s| s.trace_id == tid).collect();
-        if hits.is_empty() {
-            return not_found("trace_id");
+            if hits.len() == 1 {
+                return ToolResult::ok(render_detail(hits[0]), Vec::new());
+            }
+            return ToolResult::ok(render_list(&hits, &session_owned), Vec::new());
         }
-        return ToolResult::ok(render_list(&hits, session_id), Vec::new());
-    }
+        if let Some(tid) = trace_id {
+            let spans = match crate::db::trace::session_spans(&conn, &session_owned, 500) {
+                Ok(s) => s,
+                Err(e) => {
+                    return ToolResult::error(format!("lookup_receipt 查询失败：{e}"), Vec::new());
+                }
+            };
+            let hits: Vec<&SpanRow> = spans.iter().filter(|s| s.trace_id == tid).collect();
+            if hits.is_empty() {
+                return not_found("trace_id");
+            }
+            return ToolResult::ok(render_list(&hits, &session_owned), Vec::new());
+        }
 
-    // 清单模式：本会话最近的工具调用凭证
-    let spans = match crate::db::trace::session_spans(&conn, session_id, LIST_LIMIT) {
-        Ok(s) => s,
-        Err(e) => {
-            return ToolResult::error(format!("lookup_receipt 查询失败：{e}"), Vec::new());
+        // 清单模式：本会话最近的工具调用凭证
+        let spans = match crate::db::trace::session_spans(&conn, &session_owned, LIST_LIMIT) {
+            Ok(s) => s,
+            Err(e) => {
+                return ToolResult::error(format!("lookup_receipt 查询失败：{e}"), Vec::new());
+            }
+        };
+        if spans.is_empty() {
+            return ToolResult::ok(
+                "本会话没有可召回的工具调用凭证（痕迹表里没有本会话的记录）。".to_string(),
+                Vec::new(),
+            );
         }
-    };
-    if spans.is_empty() {
-        return ToolResult::ok(
-            "本会话没有可召回的工具调用凭证（痕迹表里没有本会话的记录）。".to_string(),
-            Vec::new(),
-        );
-    }
-    let refs: Vec<&SpanRow> = spans.iter().collect();
-    ToolResult::ok(render_list(&refs, session_id), Vec::new())
+        let refs: Vec<&SpanRow> = spans.iter().collect();
+        ToolResult::ok(render_list(&refs, &session_owned), Vec::new())
+    })
+    .await
+    .unwrap_or_else(|e| ToolResult::error(format!("lookup_receipt 读取线程失败：{e}"), Vec::new()))
 }
 
 /// 这条 span 是否属于本会话（trace_id → exec_traces.session_id）。
