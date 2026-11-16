@@ -375,6 +375,10 @@ pub fn bot_set_config(
     //（评审 HIGH：无锁 load → 有锁 write 之间 persist_last_run 等并发写会被
     // 本写覆盖——丢更新窗口）；write_bot_config_file 自带加锁不可重入，走 _locked 变体
     let _g = super::io::lock_config_write();
+    // MCP env/headers 机密迁移先于读取与写盘：skip_serializing 使任何写回都会
+    // 把文件里未迁移的明文剥掉，keyring 无副本即永久丢失——迁移失败中止本次写
+    //（明文原样保留，与 mcp::commands::with_locked_config 同口径）
+    super::io::migrate_mcp_server_secrets_locked(&app).map_err(CommandError::from)?;
     let disk = super::io::load_config(&app);
     preserve_guard_keywords(&mut config, &disk);
     preserve_non_ui_fields(&mut config, &disk);
@@ -467,6 +471,9 @@ pub fn apply_active_model_switch(cfg: &mut BotConfig, model_id: &str) -> Command
 pub fn bot_set_active_model(app: AppHandle, model_id: String) -> CommandResult<BotConfigView> {
     // 读改写全程持 CONFIG_WRITE_LOCK——与 bot_set_config 同锁，消除并发丢更新
     let _g = io::lock_config_write();
+    // MCP env/headers 机密迁移先于读取与写盘：skip_serializing 写回即剥明文，
+    // keyring 无副本即永久丢失——迁移失败中止本次写
+    io::migrate_mcp_server_secrets_locked(&app).map_err(CommandError::from)?;
     let mut cfg = io::load_config(&app);
     schema::migrate_legacy_models(&mut cfg);
     // 切换前的 active 记下来给审计：事后要查得到「active 从哪切到哪」
@@ -525,6 +532,9 @@ pub fn bot_set_perm_mode(app: AppHandle, mode: String) -> CommandResult<BotConfi
     // 读改写全程持 CONFIG_WRITE_LOCK——与 bot_set_config / bot_set_active_model
     // 同锁，消除并发丢更新
     let _g = io::lock_config_write();
+    // MCP env/headers 机密迁移先于读取与写盘：skip_serializing 写回即剥明文，
+    // keyring 无副本即永久丢失——迁移失败中止本次写
+    io::migrate_mcp_server_secrets_locked(&app).map_err(CommandError::from)?;
     let mut cfg = io::load_config(&app);
     let applied = apply_perm_mode(&mut cfg, &mode);
     io::write_bot_config_file_locked(&crate::db::data_dir(&app), cfg)?;

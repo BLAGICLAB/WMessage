@@ -279,6 +279,15 @@ pub fn materialize_at_startup(app: &tauri::AppHandle) {
     let pkg_dir = resolve_package_dir(app);
     let name = PLAYWRIGHT_NAME;
     let _g = crate::bot::config::io::lock_config_write();
+    // MCP env/headers 机密迁移先于读取与写盘：skip_serializing 写回即剥明文。
+    // 迁移失败只审计不写盘——内置条目缺席可容忍，明文丢失不可容忍
+    if let Err(e) = crate::bot::config::io::migrate_mcp_server_secrets_locked(app) {
+        crate::bot::audit_log(
+            app,
+            &format!("mcp.builtin_materialize_skipped | 机密迁移失败，中止本次写盘：{e}"),
+        );
+        return;
+    }
     let mut cfg = crate::bot::config::io::load_config(app);
     let written = ensure_builtin_servers(&mut cfg, &pkg_dir);
     if !written {

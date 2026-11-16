@@ -236,6 +236,15 @@ function SaveConfirmDialog({
   );
 }
 
+/** OAuth 过期角标文案：无到期时间（未知）只说已授权；到期按天取整。 */
+function oauthExpiryText(expiresAtMs: number | null | undefined): string {
+  if (!expiresAtMs) return "已授权";
+  const days = Math.floor((expiresAtMs - Date.now()) / 86_400_000);
+  if (days <= 0) return "授权已过期";
+  if (days === 1) return "已授权 · 明天过期";
+  return `已授权 · ${days} 天后过期`;
+}
+
 /** MCP 服务器管理面板：列表（状态点/启停/工具）+ 表单（确认弹窗后保存）
  *
  *  active：本分类是否正在显示。设置页分类是「惰性挂载 + hidden 隐藏」——
@@ -244,6 +253,29 @@ function SaveConfirmDialog({
 export function McpPanel({ active = true }: { active?: boolean }) {
   const confirm = useConfirm();
   const [servers, setServers] = useState<McpServerStatus[]>([]);
+  // OAuth 授权状态角标：每台 http 服务器一份 {authorized, expiresAtMs}。
+  // 没有它用户只能靠调用报错反推是否已授权、何时过期；登出后立即重拉。
+  const [oauthStatuses, setOauthStatuses] = useState<
+    Record<string, { authorized: boolean; expiresAtMs: number | null }>
+  >({});
+  const refreshOauthStatuses = useCallback(async (list: McpServerStatus[]) => {
+    const entries = await Promise.all(
+      list
+        .filter((s) => s.transport === "http")
+        .map(async (s) => {
+          try {
+            const st = await invoke<{
+              authorized: boolean;
+              expiresAtMs: number | null;
+            }>("mcp_oauth_status", { serverId: s.id });
+            return [s.id, st] as const;
+          } catch {
+            return [s.id, { authorized: false, expiresAtMs: null }] as const;
+          }
+        }),
+    );
+    setOauthStatuses(Object.fromEntries(entries));
+  }, []);
   const [form, setForm] = useState<FormState | null>(null); // null = 表单收起
   const [pending, setPending] = useState<McpServerConfig | null>(null); // 确认弹窗
   const [busy, setBusy] = useState(false);
@@ -261,12 +293,14 @@ export function McpPanel({ active = true }: { active?: boolean }) {
   const refresh = useCallback(async () => {
     try {
       // ?? [] 防御：mock invoke / 后端异常时保持数组形态
-      setServers((await invoke<McpServerStatus[]>("mcp_status")) ?? []);
+      const list = (await invoke<McpServerStatus[]>("mcp_status")) ?? [];
+      setServers(list);
+      void refreshOauthStatuses(list);
     } catch (e) {
       handleCommandError(e, "mcp_status", { silent: true });
       setError(formatCommandError(e));
     }
-  }, []);
+  }, [refreshOauthStatuses]);
 
   /** 800ms 延迟刷新（重连异步收敛）：单句柄防抖（ 评审：数组累积无上界），卸载清理 */
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -476,10 +510,34 @@ export function McpPanel({ active = true }: { active?: boolean }) {
     try {
       const msg = await invoke<string>("mcp_oauth_login", { serverId: s.id });
       flashNotice(msg || "授权成功");
+      void refreshOauthStatuses(servers);
     } catch (e) {
       handleCommandError(e, "mcp_oauth_login");
     } finally {
       setOauthBusyId(null);
+    }
+  };
+  const oauthLogout = async (s: McpServerStatus) => {
+    if (busy) return;
+    if (
+      !(await confirm(
+        `撤销「${s.name}」的 OAuth 授权？该服务器需要授权的工具将立即失效，再次使用需重新登录。`,
+      ))
+    )
+      return;
+    setBusy(true);
+    setError("");
+    try {
+      await invoke("mcp_oauth_logout", { serverId: s.id });
+      flashNotice("已撤销授权");
+      setOauthStatuses((prev) => ({
+        ...prev,
+        [s.id]: { authorized: false, expiresAtMs: null },
+      }));
+    } catch (e) {
+      handleCommandError(e, "mcp_oauth_logout");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -625,18 +683,34 @@ export function McpPanel({ active = true }: { active?: boolean }) {
                 >
                   <Pencil size={13} aria-hidden />
                 </IconButton>
-                {/* OAuth 登录（D-6）：仅 HTTP 服务器——授权码 + PKCE 走系统浏览器，
-                    令牌存系统钥匙串。登录会打开浏览器并等待回调（至多 5 分钟）。 */}
-                {s.transport === "http" && (
-                  <button
-                    className="shrink-0 text-xs text-[var(--t5)] hover:text-[var(--t2)] disabled:opacity-50"
-                    disabled={busy || oauthBusyId !== null}
-                    title="OAuth 授权登录：打开浏览器完成授权，令牌存系统钥匙串（未配置 OAuth 的服务器不需要点这个）"
-                    onClick={() => void oauthLogin(s)}
-                  >
-                    {oauthBusyId === s.id ? "等待授权…" : "OAuth 登录"}
-                  </button>
-                )}
+                {/* OAuth（D-6）：仅 HTTP 服务器——授权码 + PKCE 走系统浏览器，
+                    令牌存系统钥匙串。登录会打开浏览器并等待回调（至多 5 分钟）。
+                    已授权显示过期角标并给登出入口（撤销令牌，下次使用须重新登录）。 */}
+                {s.transport === "http" &&
+                  (oauthStatuses[s.id]?.authorized ? (
+                    <>
+                      <span className="shrink-0 text-xs text-[var(--t5)]">
+                        {oauthExpiryText(oauthStatuses[s.id]?.expiresAtMs)}
+                      </span>
+                      <button
+                        className="shrink-0 text-xs text-[var(--t5)] hover:text-[var(--danger)] disabled:opacity-50"
+                        disabled={busy}
+                        title="撤销授权：删除钥匙串中的令牌，该服务器需要授权的工具将立即失效"
+                        onClick={() => void oauthLogout(s)}
+                      >
+                        OAuth 登出
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      className="shrink-0 text-xs text-[var(--t5)] hover:text-[var(--t2)] disabled:opacity-50"
+                      disabled={busy || oauthBusyId !== null}
+                      title="OAuth 授权登录：打开浏览器完成授权，令牌存系统钥匙串（未配置 OAuth 的服务器不需要点这个）"
+                      onClick={() => void oauthLogin(s)}
+                    >
+                      {oauthBusyId === s.id ? "等待授权…" : "OAuth 登录"}
+                    </button>
+                  ))}
                 {/* 内置条目不给删除：启动时缺失会补写回来，删了等于没删 */}
                 {!s.builtin && (
                   <IconButton
