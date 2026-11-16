@@ -349,9 +349,10 @@
   3. 【可核对】应答值不出现在 bot.log / 审计事件（只回 `[MCP 应答，值不落日志]` 占位）。
   4. 【可核对】字段类型映射：boolean 走「允许/不允许」按钮、enum 走选项按钮、number/integer 严格解析失败 → Decline。
   5. 【可核对】**能力声明**：开关开时 initialize 的 `capabilities.elicitation.form` 在案（服务器据此才发起反问）；开关关时能力集为空。
-- **证据**：cargo 输出 + AskCard 截图（实机，2026-11-16：卡弹出 → 应答 → 工具收到 `{"agree":true}`；开关关时服务器拒发「Client does not support form elicitation.」）
-- **失败处置**：先查在途登记（execute_mcp_direct 的 ActiveCallGuard 是否泄漏——panic 路径由 RAII 兜底）；再查 rmcp SEP-2260 关联校验（协议 ≥2026-07-28 时无在途关联的请求 rmcp 内部直接 invalid_params，属预期）；再查 initialize 原始请求体的能力集（缺 `elicitation.form` → 服务器不发起反问，别误判成传输层问题）。
-- **缺口补验**：实机端到端已验（2026-11-16）；stdio 服务器 elicitation 未接（范围外）；URL 模式未接（范围外）；60s expired 面未单独构造。
+  6. 【可核对】**应答回声脱敏**：服务器原样回显刚提交的应答时，审计与日志面（tool.return preview / tool 审计行）出 `[MCP 应答，值不落日志]` 占位符，不出应答值明文；模型可见面保留原值。
+- **证据**：cargo 输出 + AskCard 截图（实机，2026-11-16：卡弹出 → 应答 → 工具收到 `{"agree":true}`；开关关时服务器拒发「Client does not support form elicitation.」；60s 不答 → 卡收起 + 工具失败）
+- **失败处置**：先查在途登记（execute_mcp_direct 的 ActiveCallGuard 是否泄漏——panic 路径由 RAII 兜底）；再查 rmcp SEP-2260 关联校验（协议 ≥2026-07-28 时无在途关联的请求 rmcp 内部直接 invalid_params，属预期）；再查 initialize 原始请求体的能力集（缺 `elicitation.form` → 服务器不发起反问，别误判成传输层问题）；再查 sink 面脱敏登记表（回声串没登记上 → 审计行仍出明文）。
+- **缺口补验**：实机端到端已验（2026-11-16，判据 1/2/3/4/5/6 达成）；stdio 服务器 elicitation 未接（范围外）；URL 模式未接（范围外）；**观察项**：客户端 60s 拒答与服务器侧请求超时（官方 SDK 默认也是 60s）同刻竞态——本轮工具错误文案来自服务器侧「Request timed out」，卡片按时收起、工具按时失败，用户面无悬挂；服务器超时更长时客户端拒答文案才会出现。
 
 ### ACC-P-20 · ask 档分类器兜底
 

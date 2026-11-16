@@ -559,8 +559,11 @@ pub fn skill_on_step_post<R: tauri::Runtime>(
     // 锁内只做状态迁移 + 拼审计载荷；audit_log_hook（写盘 IO）移到锁外发，
     // 理由同 start_skill：持锁跨外部调用会串行化全部写者且钩子重入即死锁
     let log_line = if is_fail {
-        let preview: String = result.chars().take(120).collect();
-        // preview 是工具结果原文，换行/管道符会撕裂日志行，必须转义
+        // MCP elicitation 的应答回声先脱敏（应答值可能含凭据）——与
+        // dispatch 的 sink_result_text 同一口径；preview 是工具结果原文，
+        // 换行/管道符会撕裂日志行，必须转义
+        let redacted = crate::bot::mcp::elicit::redact_answer_echoes(result);
+        let preview: String = redacted.chars().take(120).collect();
         let preview = crate::bot::truncate_for_log(&preview, 120);
         // 失败语义按运行模式分岔（见 SkillRun.mode 的说明）：
         // - auto（DSL 调度器）：步骤失败必须立刻终止该步并跑回滚——调度器正是

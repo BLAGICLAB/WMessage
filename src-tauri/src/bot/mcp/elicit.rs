@@ -269,7 +269,91 @@ pub async fn handle_elicitation(
         "bot-ask-resolved",
         serde_json::json!({ "questionId": qid, "action": "answer", "answer": "[MCP 应答，值不落日志]" }),
     );
+    note_answer_echo(server_id, &content);
     Ok(ElicitResult::new(ElicitationAction::Accept).with_content(content))
+}
+
+// 应答回声脱敏：服务器常把刚收到的应答原样回显（`content={"agree":true}`），
+// 该回显经工具结果面进审计与日志——应答值可能含凭据（SPEC 6-124：应答值不进
+// 审计/日志），故按「刚提交过的应答串」在 sink 面脱敏。模型与 UI 面保留原值
+// （同 http_request 的 final_url 口径：sink 脱敏、模型可见面不脱敏）。
+
+/// 单条应答的回声指纹：整份 content 的紧凑 JSON + 字符串型字段值。
+/// 数值/布尔不单独登记——它们不是凭据，单独登记会误伤正常文本。
+#[derive(Clone, Debug, PartialEq)]
+struct AnswerEcho {
+    /// 整份 content 的紧凑 JSON（如 `{"agree":true}`）
+    content_json: String,
+    /// 字符串型字段值（长度达 MIN_ECHO_LEN 才登记）
+    string_values: Vec<String>,
+}
+
+/// 单个字符串值短于此长度不单独登记：太短的串在日志里到处都是，登记即误伤。
+const MIN_ECHO_LEN: usize = 4;
+/// 每 server 保留的回声条数上限（超了丢最旧的）。
+const MAX_ECHOES_PER_SERVER: usize = 8;
+/// 回声保留时长（秒）：覆盖「应答→服务器处理→工具返回」这一段即可。
+const ECHO_TTL_SECS: u64 = 300;
+
+/// 应答回声登记：server_id → 回声列表（带时间戳）。
+fn answer_echoes() -> &'static Mutex<HashMap<String, Vec<(std::time::Instant, AnswerEcho)>>> {
+    static MAP: OnceLock<Mutex<HashMap<String, Vec<(std::time::Instant, AnswerEcho)>>>> =
+        OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 登记一次已提交的应答（供 sink 面回声脱敏）。
+fn note_answer_echo(server_id: &str, content: &Value) {
+    let content_json = content.to_string();
+    let string_values = content
+        .as_object()
+        .map(|obj| {
+            obj.values()
+                .filter_map(|v| v.as_str())
+                .filter(|s| s.chars().count() >= MIN_ECHO_LEN)
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let echo = AnswerEcho {
+        content_json,
+        string_values,
+    };
+    let mut map = answer_echoes().lock().unwrap_or_else(|p| p.into_inner());
+    let now = std::time::Instant::now();
+    // 全表清扫：过期且不再被触达的 server 整条摘掉（登记表不得无限长）
+    map.retain(|_, echoes| {
+        echoes.retain(|(ts, _)| now.duration_since(*ts).as_secs() < ECHO_TTL_SECS);
+        !echoes.is_empty()
+    });
+    let entry = map.entry(server_id.to_string()).or_default();
+    entry.push((now, echo));
+    while entry.len() > MAX_ECHOES_PER_SERVER {
+        entry.remove(0);
+    }
+}
+
+/// sink 面脱敏：把文本里命中已提交应答的回声串换成占位符。
+/// 登记表为空时原样返回（绝大多数调用走这条快路径）。
+pub(crate) fn redact_answer_echoes(text: &str) -> String {
+    let map = answer_echoes().lock().unwrap_or_else(|p| p.into_inner());
+    if map.is_empty() {
+        return text.to_string();
+    }
+    let mut out = text.to_string();
+    for echoes in map.values() {
+        for (_, echo) in echoes {
+            if !echo.content_json.is_empty() && out.contains(&echo.content_json) {
+                out = out.replace(&echo.content_json, "[MCP 应答，值不落日志]");
+            }
+            for value in &echo.string_values {
+                if out.contains(value.as_str()) {
+                    out = out.replace(value.as_str(), "[MCP 应答，值不落日志]");
+                }
+            }
+        }
+    }
+    out
 }
 
 fn decline(reason: &str) -> McpError {
@@ -434,5 +518,55 @@ mod tests {
             default_info.capabilities.elicitation.is_none(),
             "默认 handler 不得声明 elicitation（开关关必须零变化）"
         );
+    }
+
+    /// 服务器回显刚提交的应答时，sink 面（审计/日志）必须脱敏——应答值可能含凭据。
+    /// 模型可见面不脱敏（模型需要看到服务器回了什么）。
+    #[test]
+    fn answer_echo_redacted_in_sink_text() {
+        answer_echoes()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        let content = serde_json::json!({ "agree": true, "token": "sk-secret-value" });
+        note_answer_echo("srv-echo", &content);
+        let echo =
+            "elicit 应答 action=accept content={\"agree\":true,\"token\":\"sk-secret-value\"}";
+        let redacted = redact_answer_echoes(echo);
+        assert!(
+            !redacted.contains("sk-secret-value"),
+            "字符串型应答值必须脱敏：{redacted}"
+        );
+        assert!(
+            !redacted.contains("\"agree\":true"),
+            "整份 content 回声必须脱敏：{redacted}"
+        );
+        assert!(
+            redacted.contains("[MCP 应答，值不落日志]"),
+            "脱敏后留占位符：{redacted}"
+        );
+        // 未登记的文本不受影响
+        let other = redact_answer_echoes("无关文本");
+        assert_eq!(other, "无关文本");
+        answer_echoes()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+    }
+
+    /// 布尔/数值型应答值不单独登记：它们不是凭据，单独登记会误伤正常文本。
+    #[test]
+    fn non_string_answer_values_are_not_registered_standalone() {
+        answer_echoes()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        note_answer_echo("srv-bool", &serde_json::json!({ "agree": true }));
+        let redacted = redact_answer_echoes("结果里有个 true 字样");
+        assert_eq!(redacted, "结果里有个 true 字样");
+        answer_echoes()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
     }
 }

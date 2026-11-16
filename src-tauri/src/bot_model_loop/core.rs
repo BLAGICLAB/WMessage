@@ -1074,6 +1074,10 @@ where
                 "ok": !failed,
             }),
         );
+        // 结果先过应答回声脱敏（MCP elicitation 的应答值可能含凭据，服务器
+        // 回显会把它带回这条审计行）再截断——与 dispatch 的 sink_result_text
+        // 同一口径；模型可见面（上面的 bot-tool-done 事件）不脱敏。
+        let result_for_log = crate::bot::mcp::elicit::redact_answer_echoes(result);
         audit(
             crate::audit::AuditLevel::Info,
             "tool",
@@ -1081,7 +1085,7 @@ where
                 // 工具名是模型给的字符串：truncate_for_log = escape_for_log 别名（\n\r| 已转义），不可伪造日志行
                 ("tool", crate::bot::truncate_for_log(name, 60)),
                 ("args", crate::bot::truncate_for_log(args, 500)),
-                ("result", crate::bot::truncate_for_log(result, 300)),
+                ("result", crate::bot::truncate_for_log(&result_for_log, 300)),
             ],
         );
         collected_refs.extend(refs.iter().cloned());

@@ -27,14 +27,17 @@ fn sink_args_preview(name: &str, args: &str) -> String {
 }
 
 /// sink 面共用的结果文本：http_request 的「来源：」行去掉查询串与 fragment
-/// （final_url 是模型塞的请求 URL 的最终落点）。模型可见的 tool result 不经
-/// 此函数——模型需要知道重定向后的最终 URL。
+/// （final_url 是模型塞的请求 URL 的最终落点）。MCP elicitation 的应答回声
+/// （服务器常原样回显刚收到的应答）换成占位符——应答值可能含凭据。
+/// 模型可见的 tool result 不经此函数——模型需要知道重定向后的最终 URL，
+/// 也需要看到服务器回显的应答内容。
 fn sink_result_text(name: &str, text: &str) -> String {
-    if name == "http_request" {
+    let base = if name == "http_request" {
         crate::bot::tools::redact_http_result_text(text)
     } else {
         text.to_string()
-    }
+    };
+    crate::bot::mcp::elicit::redact_answer_echoes(&base)
 }
 
 /// 子 agent 动作流（右侧栏实时可见性）：dispatch 在 call / return 两个相位
