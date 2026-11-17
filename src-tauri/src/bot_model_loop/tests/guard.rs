@@ -52,6 +52,26 @@ mod hallucination_guard_tests {
         );
     }
 
+    /// 系统注入提示不是出处：守卫判「无出处」时注入的返工提示带着被判的
+    /// 那个数，模型照着复述就把自己洗白了——第二道防线（返工后仍编造必挂
+    /// 更正）对它静默失效。
+    #[test]
+    fn context_sources_excludes_system_notices() {
+        let msgs = vec![
+            serde_json::json!({"role": "user", "content": "算 5050"}),
+            serde_json::json!({"role": "user", "content": "【系统提示】你刚报的结果 7777 在本次提问的工具返回与对话内容里都找不到出处——这个数不是执行出来的。"}),
+        ];
+        let sources = context_sources(&msgs);
+        assert!(
+            sources.iter().any(|s| s.contains("5050")),
+            "用户消息仍是出处：{sources:?}"
+        );
+        assert!(
+            !sources.iter().any(|s| s.contains("7777")),
+            "系统提示不能给自己作证：{sources:?}"
+        );
+    }
+
     #[test]
     fn claimed_doc_paths_extracts_claimed_doc_paths() {
         // 实锤事故原话（trace 30）：窄词表漏检、路径是编造的。

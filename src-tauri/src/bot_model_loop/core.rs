@@ -9,7 +9,7 @@ use super::{
     side_selfcheck_verdict, stamp_last_assistant_reasoning, stream_round, user_intent_of,
     with_thinking, wrap_up_exhausted_message, wrap_up_rounds_exhausted, CallGate, FinalizeOutcome,
     LlmHttp, ModelLoopDeps, RepeatGateState, RequestOutcome, RoundCtx, ToolEvidence, TurnStatus,
-    EVIDENCE_OUTPUT_CHARS, LLM_RETRY_DELAY, MAX_STREAM_RETRIES,
+    LLM_RETRY_DELAY, MAX_STREAM_RETRIES,
 };
 use crate::bot_chat::merge_task_refs_dedup;
 use crate::bot_chat::TaskRef;
@@ -1053,7 +1053,9 @@ where
         evidence.push(ToolEvidence {
             ok: !failed,
             args: args.clone(),
-            output: result.chars().take(EVIDENCE_OUTPUT_CHARS).collect(),
+            // 头尾对齐漏斗：模型看得见的尾部也得算得出处，否则引用尾半段
+            // 的数会被判「无出处」（真话误伤），返工指令还会诱导重跑工具
+            output: crate::bot_model_loop::evidence_output(result),
         });
         // 只有成功返回的工具才算数：被门禁拦下 / 用户拒绝 / 执行失败的调用没产出
         // 任何可转述的东西，模型若照着它编结果，凭证表还得拦得住。
