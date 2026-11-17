@@ -917,7 +917,49 @@ pub(crate) struct TreeStop {
 /// `Err` = **本平台没有可用的停止手段**（不是「停不掉这个进程」）。
 /// 调用方必须区分这两者：前者是能力缺失，后者由等待回调的口径判定。
 #[cfg(unix)]
-pub(crate) fn stop_tree<F>(root_pid: u32, pgid: i32, mut wait_exit: F) -> Result<TreeStop, String>
+pub(crate) fn stop_tree<F>(root_pid: u32, pgid: i32, wait_exit: F) -> Result<TreeStop, String>
+where
+    F: FnMut(Duration) -> bool,
+{
+    stop_tree_with_snapshot(root_pid, pgid, None, wait_exit)
+}
+
+/// 待补杀名单：已知后代里，此刻仍在进程表**且启动标识未变**（仍是当时那个
+/// 进程）的那些。启动标识变了 = pid 被复用 → 不杀（宁可漏杀不误杀）。
+///
+/// 纯计算，便于单测。
+#[cfg(unix)]
+fn killable_now(
+    known: &HashMap<u32, String>,
+    final_map: &HashMap<u32, &str>,
+) -> (Vec<u32>, Vec<(u32, String, String)>) {
+    let mut to_kill: Vec<u32> = Vec::new();
+    let mut gone_or_reused: Vec<(u32, String, String)> = Vec::new();
+    for (p, st) in known {
+        match final_map.get(p) {
+            Some(cur_st) if *cur_st == st => to_kill.push(*p),
+            _ => gone_or_reused.push((*p, st.clone(), "gone_or_reused".to_string())),
+        }
+    }
+    (to_kill, gone_or_reused)
+}
+
+/// 停止一棵进程树，但**第一轮用调用方事先拍好的快照**。
+///
+/// 事先拍快照是补救的唯一机会：组长一旦被回收，它就从进程表消失——
+/// 整组杀的护栏（核启动标识）判不出「还是我们那个」，整组杀不发；而
+/// 它的孙进程（npx → node 这类包装器拉起的真实服务器）此时已被 reparent
+/// 到 pid 1，按 ppid 链也再也收集不到。事先采集的名单跨过这一步继续
+/// 生效，逐个补杀才落得到孙进程身上。
+///
+/// 快照由调用方拍（它知道「此刻组长还在」的那个时机），本函数只消费。
+#[cfg(unix)]
+pub(crate) fn stop_tree_with_snapshot<F>(
+    root_pid: u32,
+    pgid: i32,
+    pre_snapshot: Option<Vec<ProcSnapshot>>,
+    mut wait_exit: F,
+) -> Result<TreeStop, String>
 where
     F: FnMut(Duration) -> bool,
 {
@@ -946,9 +988,14 @@ where
     let mut leader_starttime: Option<String> = None;
 
     // 阶梯：每一级发信号前拍一张快照，增量收集，最后统一杀。
+    // 第一轮可用调用方预置的快照（组长还活着时拍的那张）。
+    let mut pre_snapshot = pre_snapshot;
     for step in 0..3u32 {
         // 收集（只收集，不杀）
-        let snap = take_snapshot();
+        let snap = match pre_snapshot.take() {
+            Some(s) => s,
+            None => take_snapshot(),
+        };
         if leader_starttime.is_none() {
             leader_starttime = snap
                 .iter()
@@ -993,16 +1040,9 @@ where
         .iter()
         .map(|p| (p.pid, p.starttime.as_str()))
         .collect();
-    let mut to_kill: Vec<u32> = Vec::new();
-    for (p, st) in &known {
-        match final_map.get(p) {
-            Some(cur_st) if *cur_st == st => to_kill.push(*p),
-            _ => {
-                // 已退出，或 pid 已被复用 → 不杀
-                reused_skipped.push((*p, st.clone(), "gone_or_reused".to_string()));
-            }
-        }
-    }
+    let (to_kill, gone_or_reused) = killable_now(&known, &final_map);
+    // 已退出，或 pid 已被复用 → 不杀
+    reused_skipped.extend(gone_or_reused);
 
     // 整组强杀 + 逐个补杀
     //
@@ -1058,7 +1098,25 @@ where
 /// （没有可关的管道）；MCP stdio 的 stdin 管道要到连接层释放传输时才关，
 /// 而那发生在本阶梯**之后**。第一级窗口只是留给「已经自己退出的进程」。
 #[cfg(windows)]
-pub(crate) fn stop_tree<F>(root_pid: u32, _pgid: i32, mut wait_exit: F) -> Result<TreeStop, String>
+pub(crate) fn stop_tree<F>(root_pid: u32, pgid: i32, wait_exit: F) -> Result<TreeStop, String>
+where
+    F: FnMut(Duration) -> bool,
+{
+    stop_tree_with_snapshot(root_pid, pgid, None, wait_exit)
+}
+
+/// Windows 的停止阶梯（预置快照入口，语义见 unix 同名函数）。
+///
+/// Windows 侧靠 `taskkill /T` 连子孙一起杀，不走 ppid 链——但同样要求
+/// 组长此刻还在：`taskkill /PID <已死pid> /T` 找不到目标就一个都不杀。
+/// 预置快照让调用方能在「组长还活着」的时机先拍一张。
+#[cfg(windows)]
+pub(crate) fn stop_tree_with_snapshot<F>(
+    root_pid: u32,
+    _pgid: i32,
+    _pre_snapshot: Option<Vec<ProcSnapshot>>,
+    mut wait_exit: F,
+) -> Result<TreeStop, String>
 where
     F: FnMut(Duration) -> bool,
 {
@@ -1108,6 +1166,20 @@ where
 /// 不许把「一个信号都没发出去」当成「已经停掉」。
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn stop_tree<F>(_root_pid: u32, _pgid: i32, _wait_exit: F) -> Result<TreeStop, String>
+where
+    F: FnMut(Duration) -> bool,
+{
+    Err("本平台没有可用的停止手段".to_string())
+}
+
+/// 本平台没有可用的停止手段（预置快照入口，语义见 unix 同名函数）。
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn stop_tree_with_snapshot<F>(
+    _root_pid: u32,
+    _pgid: i32,
+    _pre_snapshot: Option<Vec<ProcSnapshot>>,
+    _wait_exit: F,
+) -> Result<TreeStop, String>
 where
     F: FnMut(Duration) -> bool,
 {

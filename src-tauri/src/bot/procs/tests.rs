@@ -122,6 +122,36 @@ fn stop_tree_with_pid_zero_kills_nothing() {
 
 // 增量比对与整组杀护栏是 unix 信号阶梯的一部分——Windows 上没有这两套函数。
 #[cfg(unix)]
+/// 事先采集的后代在组长消失后仍要补杀：组长被回收 → 它从进程表消失，
+/// 整组杀的护栏（核启动标识）判不出「还是我们那个」，整组杀不发；而孙进程
+/// （npx 拉起的 node）此时已 reparent 到 pid 1，按 ppid 链再也收集不到——
+/// 事先采集的名单是唯一的补救依据。
+#[cfg(unix)]
+#[test]
+fn precollected_descendants_stay_killable_after_leader_is_gone() {
+    let mut known: HashMap<u32, String> = HashMap::new();
+    known.insert(200u32, "T-node".to_string());
+    // 最终快照：组长（100）已被回收消失，孙进程还在
+    let mut final_map: HashMap<u32, &str> = HashMap::new();
+    final_map.insert(200u32, "T-node");
+    let (to_kill, gone) = killable_now(&known, &final_map);
+    assert_eq!(to_kill, vec![200], "事先采集的孙进程必须仍在补杀名单里");
+    assert!(gone.is_empty(), "孙进程还在，不该被判 gone：{gone:?}");
+}
+
+/// pid 被复用（启动标识变了）→ 不杀：宁可漏杀也不误杀用户别的进程
+#[cfg(unix)]
+#[test]
+fn reused_pid_is_never_killed() {
+    let mut known: HashMap<u32, String> = HashMap::new();
+    known.insert(200u32, "T-old".to_string());
+    let mut final_map: HashMap<u32, &str> = HashMap::new();
+    final_map.insert(200u32, "T-new");
+    let (to_kill, gone) = killable_now(&known, &final_map);
+    assert!(to_kill.is_empty(), "pid 复用后不得补杀：{to_kill:?}");
+    assert_eq!(gone.len(), 1);
+}
+
 #[test]
 fn diff_reports_newly_appeared_descendants() {
     let prev: HashMap<u32, String> = HashMap::new();

@@ -215,20 +215,41 @@ impl Transport<RoleClient> for CappedChildProcess {
     }
 
     async fn close(&mut self) -> Result<(), Self::Error> {
+        // 拍快照要在关 stdin **之前**：组长一旦退出会从进程表消失（被回收后），
+        // 整组杀的护栏（核启动标识）判不出「还是我们那个」，整组杀不发；
+        // 而它的孙进程（npx → node 这类包装器拉起的真实服务器）此时已被
+        // reparent 到 pid 1，按 ppid 链再也收集不到——事先采集的名单是
+        // 唯一的补救依据。
+        let snapshot = self.child.as_ref().and_then(|c| {
+            let pid = c.id()?;
+            (pid > 1).then(crate::bot::procs::take_snapshot)
+        });
         // 先关 stdin：MCP 服务器看见 EOF 会自己退（rmcp 原实现同口径）
         self.inner.close().await?;
         if let Some(mut child) = self.child.take() {
             let pid = child.id();
-            match tokio::time::timeout(Duration::from_secs(GRACEFUL_SHUTDOWN_SECS), child.wait())
-                .await
-            {
-                Ok(_) => {}
-                Err(_) => {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
+            // 优雅窗：关 stdin 后等它自己退
+            let exited = matches!(
+                tokio::time::timeout(Duration::from_secs(GRACEFUL_SHUTDOWN_SECS), child.wait())
+                    .await,
+                Ok(Ok(_))
+            );
+            if !exited {
+                // 没自己退：树杀（用事先拍到的快照逐个补杀孙进程）
+                if let Some(pid) = pid {
+                    let _ = tokio::task::spawn_blocking(move || {
+                        crate::bot::procs::stop_tree_with_snapshot(
+                            pid,
+                            pid as i32,
+                            snapshot,
+                            |grace| crate::bot::procs::wait_pid_exit(pid, grace),
+                        )
+                    })
+                    .await;
                 }
+                let _ = child.start_kill();
+                let _ = child.wait().await;
             }
-            kill_descendants_async(pid);
         }
         Ok(())
     }
@@ -237,6 +258,10 @@ impl Transport<RoleClient> for CappedChildProcess {
 /// 树杀兜底（异步收尾）：直接子进程死后，它拉起的真实服务器进程（npx → node）
 /// 会被 reparent 继续跑、占端口——按组补杀孙进程。fire-and-forget 挪 blocking
 /// 线程，与 manager 的正常回收路径 stop_stdio_tree 同一底层。
+///
+/// 快照在调用线程同步拍：拍与杀必须分开两拍——拍在组长还活着时（那时
+/// 它和它的孙进程都还在进程表里），杀在后台做。放进同一个后台任务就
+/// 等于把两拍又并回一起，组长可能先死，拍到的快照里已经没有它。
 fn kill_descendants_async(pid: Option<u32>) {
     let Some(pid) = pid else {
         return;
@@ -244,10 +269,12 @@ fn kill_descendants_async(pid: Option<u32>) {
     if pid <= 1 {
         return;
     }
+    let snapshot = crate::bot::procs::take_snapshot();
     let handle = tauri::async_runtime::spawn_blocking(move || {
-        let _ = crate::bot::procs::stop_tree(pid, pid as i32, |grace| {
-            crate::bot::procs::wait_pid_exit(pid, grace)
-        });
+        let _ =
+            crate::bot::procs::stop_tree_with_snapshot(pid, pid as i32, Some(snapshot), |grace| {
+                crate::bot::procs::wait_pid_exit(pid, grace)
+            });
     });
     drop(handle); // fire-and-forget：收尾自管，JoinHandle 显式丢弃（不阻塞 Drop 上下文）
 }
@@ -259,11 +286,16 @@ impl Drop for CappedChildProcess {
         // 后者在没有运行时的 Drop 里会 panic。
         if let Some(mut child) = self.child.take() {
             let pid = child.id();
-            let _ = child.start_kill();
+            // 顺序：先拍快照（组长此刻还在），再杀组长，最后异步树杀。
+            // 反过来就漏：组长被 SIGKILL 后随即被回收，它就从进程表消失，
+            // 组杀护栏判不出「还是我们那个」，整组杀不发；孙进程此时已
+            // reparent，按 ppid 链也收集不到——npx 死了 node 活着占端口
+            // 的孤儿就是这么漏过去的。
             // 错误路径（握手超时 / 传输 drop）此前只杀直接子进程——包装器
             // 拉起的服务器进程成孤儿占端口；与 close 同款树杀兜底。
             // spawn_blocking 在运行时存活期（AppHandle 常驻）内总是可用。
             kill_descendants_async(pid);
+            let _ = child.start_kill();
         }
     }
 }
