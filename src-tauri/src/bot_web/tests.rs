@@ -815,6 +815,30 @@ async fn http_client_does_not_follow_redirects() {
     );
 }
 
+/// 回归：IPv6 转换前缀整组按保留拒绝——它们把 IPv4 嵌进地址、经公网中继
+/// 可达内网（如 [2002:0a00:0001::1] = 10.0.0.1、[64:ff9b::c0a8:0101] =
+/// 192.168.1.1）。公网闸与 MCP HTTP 闸共用这一份判据。
+#[test]
+fn ipv6_transition_prefixes_are_private() {
+    for addr in [
+        "2002:0a00:0001::1",  // 6to4 → 10.0.0.1
+        "2001:0:1234::1",     // Teredo（嵌混淆 IPv4）
+        "64:ff9b::c0a8:0101", // NAT64 → 192.168.1.1
+        "::c0a8:0101",        // IPv4-compatible ::/96 → 192.168.1.1
+        "2001:db8::1",        // 文档段
+        "ff02::1",            // 组播
+    ] {
+        assert!(
+            ipv6_is_private(addr.parse().unwrap()),
+            "{addr} 必须判内网/保留段"
+        );
+    }
+    assert!(
+        !ipv6_is_private("2606:4700:4700::1111".parse().unwrap()),
+        "公网 v6 仍放行"
+    );
+}
+
 /// 回归：IPv4-mapped IPv6（::ffff:127.0.0.1）与 CGNAT（100.64.0.0/10）判内网
 #[test]
 fn private_detection_covers_mapped_v6_and_cgnat() {

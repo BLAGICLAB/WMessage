@@ -510,16 +510,35 @@ pub(super) fn ipv4_is_private(v4: std::net::Ipv4Addr) -> bool {
         || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
 }
 
-/// IPv6 是否为内网/本机段（含 IPv4-mapped——
-/// AAAA 应答 `::ffff:127.0.0.1` 时 hyper 连接会映射回 IPv4 打内网，须一并判定）
-pub(super) fn ipv6_is_private(v6: std::net::Ipv6Addr) -> bool {
+/// IPv6 是否为内网/本机/保留段。
+///
+/// 含 IPv4-mapped（AAAA 应答 `::ffff:127.0.0.1` 时 hyper 连接会映射回
+/// IPv4 打内网，须一并判定）。
+///
+/// 转换前缀整组按保留拒绝：6to4 2002::/16、Teredo 2001::/32、
+/// NAT64 64:ff9b::/96 都把 IPv4 嵌进地址、经公网中继可达内网
+/// （如 `[2002:0a00:0001::1]` = 10.0.0.1）；另有 IPv4-compatible（::/96
+/// 已弃用段）、组播 ff00::/8、文档段 2001:db8::/32。
+///
+/// 这份判据是**公网闸的单源**（SPEC 的口径：判据单源在
+/// `bot_web::check_public_url`）——MCP HTTP 闸也复用它，两闸对同一威胁
+/// 不会一个拒一个放。
+pub(crate) fn ipv6_is_private(v6: std::net::Ipv6Addr) -> bool {
     if let Some(v4) = v6.to_ipv4_mapped() {
         return ipv4_is_private(v4);
     }
-    v6.is_loopback()
+    let s = v6.segments();
+    let ipv4_compatible = s[..6].iter().all(|&seg| seg == 0);
+    ipv4_compatible
+        || v6.is_loopback()
         || v6.is_unspecified()
         || v6.is_unique_local()
-        || (v6.segments()[0] & 0xffc0) == 0xfe80
+        || (s[0] & 0xffc0) == 0xfe80
+        || (s[0] & 0xff00) == 0xff00 // 组播 ff00::/8
+        || s[0] == 0x2002 // 6to4（嵌 IPv4，中继可达内网）
+        || (s[0] == 0x2001 && s[1] == 0x0000) // Teredo（嵌混淆 IPv4）
+        || (s[0] == 0x0064 && s[1] == 0xff9b) // NAT64 well-known /96（嵌 IPv4）
+        || (s[0] == 0x2001 && s[1] == 0x0db8) // 文档段 2001:db8::/32
 }
 
 /// 带方括号的 IPv6 字面量识别（url 序列化 IPv6 host 一律带括号，如 `[::1]`；

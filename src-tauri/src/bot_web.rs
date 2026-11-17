@@ -162,6 +162,7 @@ pub(crate) use destination::invalidate_grants;
 pub(crate) use fetch::check_public_url;
 pub(crate) use fetch::deepseek_fetch_mode;
 pub(crate) use fetch::ensure_public_http_url;
+pub(crate) use fetch::ipv6_is_private;
 pub(crate) use http::{execute as execute_http, GateCtx, HttpError, RequestSpec};
 #[allow(unused_imports)]
 pub use search::web_search;
