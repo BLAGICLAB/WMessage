@@ -26,7 +26,8 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
   objective 写"基于 {recon 报告路径} 实现 X，产物落 Y"；用 coder profile。
 - **verifier 段（验收）**：只读 + 对照 acceptanceCriteria 逐条勾；
   objective 写"对照 {executor 产物路径} 逐条核实 acceptanceCriteria，输出 verified.json"；
-  用 research profile（只读工具足够，无需写）。
+  只传 stage=verifier，**不要传 profile**——验收档自带的工具面（含只读复核
+  脚本）才是它的能力面，显式档位会把它盖掉。
 单步任务任选一段即可；多步任务必须三段闭环——缺 verifier = 节点验收缺失。
 具体步骤：
 1. 可先建主卡：subtasks = 派发清单（一项一个子 agent）；note 写总体验收。
@@ -100,7 +101,8 @@ spawn_subagent 的 stage 参数决定子 agent 的角色语义，运行时会把
 contextSummary（重复、费 token、还会和系统装配的版本漂移）：
 - recon 段 → stage=recon（白名单档自动派生 research：只读 + 联网调研，产报告）
 - executor 段 → stage=executor（默认派生 coder：写文件/跑脚本/生成文档）
-- verifier 段 → stage=verifier（默认派生 research：只读 + 对照验收标准逐条勾）
+- verifier 段 → stage=verifier（验收档：可跑只读复核脚本 + 对照验收标准逐条勾；
+  不要显式传 profile，显式档位会盖掉验收档自带的工具面）
 不接受"我自己看看就行"——复杂任务 verifier 段是节点验收闭环的强制环节。
 "#;
 
@@ -489,6 +491,29 @@ mod subagent_prompt_tests {
         assert!(PROFILE_VERIFIER.contains("verified.json"));
         // evidence 字段要求——禁止模糊词
         assert!(PROFILE_VERIFIER.contains("evidence"));
+    }
+
+    /// 验收段的档位口径必须与运行时一致：内置 validator onion 的 profile 是
+    /// coder（覆盖 stage 派生的 research）。父 agent 若照旧口径显式传
+    /// research，实际工具面会被收窄到没有 run_python / ast_inspect——模型
+    /// 试调必撞白名单闸，验收的「跑校验脚本复核」也落空。
+    #[test]
+    fn addendum_verifier_stage_does_not_teach_a_narrower_profile() {
+        // 只看验收段那一段：recon 段用 research 是对的（探测档自带只读+联网）
+        let start = MAIN_AGENT_ADDENDUM
+            .find("verifier 段（验收）")
+            .expect("验收段");
+        let section = &MAIN_AGENT_ADDENDUM[start..];
+        let end = section.find("\n- ").unwrap_or(section.len());
+        let seg = &section[..end];
+        assert!(
+            !seg.contains("research"),
+            "验收段不得教 research 档（会盖掉验收档自带的工具面）：{seg}"
+        );
+        assert!(
+            seg.contains("不要传 profile"),
+            "验收段必须说明不传 profile，让验收档自带工具面生效：{seg}"
+        );
     }
 
     #[test]

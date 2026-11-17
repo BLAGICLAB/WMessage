@@ -166,9 +166,9 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 |---|---|---|---|
 | 风控常量 | `src-tauri/src/bot/constants.rs` | 264 | 单一真相源；所有限额 |
 | 参数注册表 | `src-tauri/src/bot/params.rs` | 181 | 已缩表到三行；**不再**是风控来源 |
-| 工具调度 + 闸序 | `src-tauri/src/bot/dispatch.rs` | 984 | 8 级闸序、8 处早退、审计事件 |
+| 工具调度 + 闸序 | `src-tauri/src/bot/dispatch.rs` | 984 | 9 级闸序、9 条早退路径（8 个构造处）、审计事件 |
 | 闸序测试 | `src-tauri/src/bot/dispatch/pre_tool_hook_tests.rs` | — | 早退点计数断言、hook fail-open 断言 |
-| 工具表 + schema | `src-tauri/src/bot/registry/schemas.rs` | 1226+ | 67 个工具（含 activate_tools）、profile 白名单、claims_patterns |
+| 工具表 + schema | `src-tauri/src/bot/registry/schemas.rs` | 1226+ | 69 个工具（含 activate_tools）、profile 白名单、claims_patterns |
 | 声称判定 | `src-tauri/src/bot/registry/claims.rs` | — | `claims_mutation` / `claimed_executed_tools` / `mentioned_tool_names` / `claimed_doc_paths` |
 | Hook 分层 | `src-tauri/src/bot/hooks.rs` | 1058 | L4/L5/L6；层序不可配；L4 只读 |
 | per-onion 配置 | `src-tauri/src/bot_onions.rs` | 1021 | `effective_tools` 交集收窄；配置档落盘 |
@@ -178,7 +178,7 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 | 证据层 | `src-tauri/src/bot_model_loop/evidence.rs` | 95 | `number_sourced` 数值溯源 |
 | 熔断 | `src-tauri/src/bot_model_loop/fuse.rs` | 163 | 收尾窗判定、轮数熔断 |
 | 回灌漏斗 | `src-tauri/src/bot_model_loop/output.rs` | 170 | per-tool 预算 × 全局 cap 取小；转存指针 |
-| 上下文装配 | `src-tauri/src/bot_model_loop/context.rs` | 255 | 压缩阶梯接线、滑动窗 |
+| 上下文装配 | `src-tauri/src/bot_model_loop/context.rs` | 255 | 超限判定、历史裁剪、轮内工具结果滑动窗（压缩阶梯接线在 `bot_model_loop/request.rs`） |
 | 历史压缩 | `src-tauri/src/bot/compaction.rs` | 486 | 软压 70% / 硬压 85% 两档 |
 | 溢出转存 | `src-tauri/src/overflow.rs` | — | 转存、指针文案、保留期清扫 |
 | 子 agent 派发 | `src-tauri/src/bot/subagent_spawn.rs` | 425 | profile 解析顺序、并发闸、去重 |
@@ -277,7 +277,7 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 
 真值：`src-tauri/src/bot/constants.rs`（§2.1 那张表就是它）。
 
-- [ ] 上面 55 个常量在 `constants.rs` 里**逐字**存在、值一致？（这是基线自检，不是发现项）
+- [ ] 上面 64 个常量在 `constants.rs` 里**逐字**存在、值一致？（这是基线自检，不是发现项）
 - [ ] **有没有第二份字面量**：`MAX_ROUNDS` / `MAX_FUNCTION_CALLS` / `TOOL_OUTPUT_BYTES` /
       `READ_MAX_BYTES` / `GREP_MAX_HITS` 这些数，在**其他生产文件**里有没有被重新写一遍？
       （`tests-audit/audit_constants_single_source.py` 已守这条——**审计它有没有漏网**，
@@ -303,23 +303,27 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 | 0 | `tool.call` 记账 | `dispatch.rs:538` | — |
 | 0.5 | L4 `pre_tool` 钩子层 | `dispatch.rs:542` `run_pre_tool_layer` | 钩子返 Err/panic → **fail-open 放行**；只有 `Interrupt` 才拒 |
 | 0.55 | 活动技能 `allowed-tools` | `dispatch.rs:570` | 硬拒 |
+| 0.57 | 休眠组兜底闸 | `dispatch.rs:586` `groups::deferred_gate` | 硬拒（构造在 `bot/registry/groups.rs`，dispatch 侧只 `return denied`） |
 | 0.6 | per-tool 规则表 | `dispatch.rs:580` `tool_rule_gate` | `deny` 硬拒；`ask` 弹确认，被拒则拒 |
 | 2 | Skill 步骤钩子 | `dispatch.rs:587` `skill_on_step` | 熔断 = **Denied**（不是 Warn） |
 | 1.6 | 子 agent 会话白名单 | `dispatch.rs:636` | 硬拒 |
 | 3 | 入参 JSON 闸 | `dispatch.rs:681` `invalid_args_message` | 硬拒 |
 
-- [ ] 上表 8 级闸在**当前代码**里顺序是否一致？有没有某级被挪位或被跳过？
-- [ ] **早退点恰好 8 处**（`ToolResult::denied(` 在生产段出现 8 次）——
+- [ ] 上表 9 级闸在**当前代码**里顺序是否一致？有没有某级被挪位或被跳过？
+- [ ] **早退点恰好 8 处**——注意口径：`dispatch.rs` 生产段
+      `ToolResult::denied(` 出现 8 次 = **8 个构造处**，而**早退路径是 9 条**
+      （0.57 那条的 `denied` 在 `bot/registry/groups.rs` 构造，dispatch 只
+      `return denied`）。审计时两数都要点：构造处 8 + 跨文件构造 1 = 早退 9。
       逐处确认每处对应上表哪一级；多一处少一处都是发现。
-- [ ] 8 处早退**全部是 `Denied` 不是 `Warn`**。`Warn` 会被 trace 记成「成功」——
+- [ ] 9 条早退**全部是 `Denied` 不是 `Warn`**。`Warn` 会被 trace 记成「成功」——
       这条正是 `pre_tool_hook_tests.rs` 里 `no_gate_early_return_uses_warn_status` 守的。
       确认那条断言还活着、还在跑（clippy 缺失会让「测试从未被收集」悄无声息）。
 - [ ] 每处早退都**配平了 `tool.return`** 吗？漏配 → 统计面板出现悬挂调用。
 - [ ] L4 钩子 fail-open 是**有意设计**（`hooks.rs` 模块头纪律 3：钩子不得中断主链路）。
       审计重点不是「它 fail-open」，而是：**钩子 panic 时会不会 panic 到 Agent 主循环**？
       `run_pre_tool_layer` 里有没有 `catch_unwind`？panic payload 有没有进审计？
-- [ ] `use_skill` 在 0.55 / 0.6 / 2 三处都豁免——三处豁免是否**一致**？
-      漏一处 = 技能切换能绕过技能自己的 allowed-tools。
+- [ ] `use_skill` 在 0.55 / 0.57 / 0.6 / 2（以及 post 步骤钩子）都豁免——
+      各处豁免是否**一致**？漏一处 = 技能切换能绕过技能自己的 allowed-tools。
 
 ---
 
