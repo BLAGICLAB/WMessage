@@ -190,12 +190,12 @@ async fn oauth_http_client(url: &str) -> Result<reqwest::Client, String> {
     super::manager::build_pinned_client(&host, &addrs, &std::collections::BTreeMap::new())
 }
 
-/// 发现：保护资源元数据 → 授权服务器元数据；两跳都走 URL 安全闸
-async fn discover_auth_server(
-    client: &reqwest::Client,
-    server_url: &str,
-) -> Result<AuthServerMeta, String> {
+/// 发现：保护资源元数据 → 授权服务器元数据。两跳各自过闸建钉定 client——
+/// 第二跳的 root 来自响应体（authorization_servers 由服务器控制），复用
+/// 钉原 host 的 client 直发等于把内网探测的执行器交给响应体
+async fn discover_auth_server(server_url: &str) -> Result<AuthServerMeta, String> {
     let origin = server_origin(server_url)?;
+    let client = oauth_http_client(&origin).await?;
     // 第一跳：RFC 9728 保护资源元数据（拿 authorization_servers 根）
     let root = match client
         .get(format!("{origin}/.well-known/oauth-protected-resource"))
@@ -218,8 +218,9 @@ async fn discover_auth_server(
         }
         _ => origin.clone(),
     };
-    // 第二跳：RFC 8414 授权服务器元数据
-    let resp = client
+    // 第二跳：RFC 8414 授权服务器元数据（root 逐 URL 过闸 + 钉派生 host）
+    let root_client = oauth_http_client(&root).await?;
+    let resp = root_client
         .get(format!("{root}/.well-known/oauth-authorization-server"))
         .send()
         .await
@@ -247,14 +248,13 @@ fn server_origin(url: &str) -> Result<String, String> {
     Ok(format!("{}://{host}{port}", parsed.scheme()))
 }
 
-/// DCR（RFC 7591）：拿 client_id；服务器不支持 → Err（提示手动档）
-async fn register_client(
-    client: &reqwest::Client,
-    meta: &AuthServerMeta,
-) -> Result<String, String> {
+/// DCR（RFC 7591）：拿 client_id；服务器不支持 → Err（提示手动档）。
+/// registration_endpoint 来自响应体——逐 URL 过闸建钉定 client
+async fn register_client(meta: &AuthServerMeta) -> Result<String, String> {
     let reg = meta.registration_endpoint.as_deref().ok_or_else(|| {
         "授权服务器未提供动态注册端点；请在服务器配置里手动填 oauthClientId".to_string()
     })?;
+    let client = oauth_http_client(reg).await?;
     let resp = client
         .post(reg)
         .json(&serde_json::json!({
@@ -296,11 +296,10 @@ async fn login_impl(app: &tauri::AppHandle, server_id: &str) -> Result<String, S
         .ok_or_else(|| "该服务器未配置 URL".to_string())?
         .trim()
         .to_string();
-    let client = oauth_http_client(&url).await?;
-    let meta = discover_auth_server(&client, &url).await?;
+    let meta = discover_auth_server(&url).await?;
     let client_id = match cfg.oauth_client_id.as_deref().map(str::trim) {
         Some(id) if !id.is_empty() => id.to_string(),
-        _ => register_client(&client, &meta).await?,
+        _ => register_client(&meta).await?,
     };
     // PKCE + state + loopback 回调服务器
     let (verifier, challenge) = pkce_pair();
@@ -314,6 +313,9 @@ async fn login_impl(app: &tauri::AppHandle, server_id: &str) -> Result<String, S
         .ok_or_else(|| "回调端口解析失败".to_string())?;
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
     let origin = server_origin(&url)?;
+    // authorization_endpoint 来自响应体且交给系统浏览器打开：宿主不发请求，
+    // 但 scheme 白名单与字面量级私网仍要拦（file:///javascript: 不能进浏览器）
+    ensure_authorize_endpoint_safe(&meta.authorization_endpoint)?;
     let authorize_url = format!(
         "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&resource={}",
         meta.authorization_endpoint,
@@ -352,7 +354,6 @@ async fn login_impl(app: &tauri::AppHandle, server_id: &str) -> Result<String, S
         }
     };
     let (access, refresh, expires_in) = token_request(
-        &client,
         &meta.token_endpoint,
         &[
             ("grant_type", "authorization_code"),
@@ -425,6 +426,15 @@ fn callback_verdict(
     }
 }
 
+/// authorization_endpoint 是响应体可控的完整 URL（RFC 8414 允许与 root 不同
+/// origin）。本函数只做字面量级闸（scheme 白名单 + 私网 IP 字面量），不触网：
+/// 宿主进程不代发这个请求，DNS 级校验交给浏览器的用户信任域
+fn ensure_authorize_endpoint_safe(endpoint: &str) -> Result<(), String> {
+    super::config::http_url_is_public(endpoint)
+        .map(|_| ())
+        .map_err(|reason| format!("授权端点安全闸：{reason}"))
+}
+
 fn urlencode(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
@@ -469,12 +479,13 @@ fn urldecode(s: &str) -> String {
 }
 
 /// token 请求（换码 / 刷新共用）：form 表单 POST（手拼 urlencode——reqwest
-/// 的 form feature 未开），2KB 上限防巨响应
+/// 的 form feature 未开），2KB 上限防巨响应。endpoint 来自响应体（meta 的
+/// token_endpoint / 重新发现的刷新端点）——逐 URL 过闸建钉定 client
 async fn token_request(
-    client: &reqwest::Client,
     endpoint: &str,
     form: &[(&str, &str)],
 ) -> Result<(String, Option<String>, Option<i64>), String> {
+    let client = oauth_http_client(endpoint).await?;
     let body = form
         .iter()
         .map(|(k, v)| format!("{}={}", urlencode(k), urlencode(v)))
@@ -518,15 +529,13 @@ pub(crate) async fn refresh_token(
     cfg: &McpServerConfig,
     bundle: &TokenBundle,
 ) -> Result<TokenBundle, String> {
-    let client = oauth_http_client(cfg.url.as_deref().unwrap_or_default()).await?;
     let Some(rt) = bundle.refresh_token.as_deref() else {
         // 无 refresh_token：清掉令牌要求重登（fail-closed）
         oauth_purge(app, &cfg.id);
         return Err("该授权无可刷新令牌，请重新登录".to_string());
     };
     let (access, new_refresh, expires_in) = token_request(
-        &client,
-        &refresh_endpoint(cfg, &client).await?,
+        &refresh_endpoint(cfg).await?,
         &[
             ("grant_type", "refresh_token"),
             ("refresh_token", rt),
@@ -546,16 +555,14 @@ pub(crate) async fn refresh_token(
 }
 
 /// refresh 的 token endpoint：从缓存 token 的授权流程里拿不到（bundle 未存
-/// endpoint）——重新发现一次（一次 GET，量小；频次=每次刷新）
-async fn refresh_endpoint(
-    cfg: &McpServerConfig,
-    client: &reqwest::Client,
-) -> Result<String, String> {
+/// endpoint）——重新发现一次（一次 GET，量小；频次=每次刷新）。
+/// 服务器的 URL 闸在 discover_auth_server 第一跳内做
+async fn refresh_endpoint(cfg: &McpServerConfig) -> Result<String, String> {
     let url = cfg
         .url
         .as_deref()
         .ok_or_else(|| "该服务器未配置 URL".to_string())?;
-    let meta = discover_auth_server(client, url).await?;
+    let meta = discover_auth_server(url).await?;
     Ok(meta.token_endpoint)
 }
 
@@ -733,6 +740,53 @@ mod tests {
         assert_eq!(
             authorization_server_root(&without, "https://api.example.com").as_deref(),
             Some("https://api.example.com")
+        );
+    }
+
+    /// oauth_http_client 的闸真拒非公网目标（字面量级判定，不触网）：
+    /// 派生端点指内网时必须在此死掉——闸一旦被拆本测试即红
+    #[tokio::test]
+    async fn oauth_http_client_rejects_non_public_url() {
+        for url in [
+            "http://127.0.0.1:8080/mcp",
+            "http://169.254.169.254/latest/meta-data",
+            "http://10.0.0.1/mcp",
+            "file:///etc/passwd",
+            "not a url",
+        ] {
+            let err = oauth_http_client(url).await.unwrap_err();
+            assert!(err.contains("URL 安全闸"), "{url} → {err}");
+        }
+    }
+
+    /// oauth 请求函数不得接收外部 client：发现第二跳的 root、DCR 与 token
+    /// endpoint 都来自服务器响应体，复用钉原 host 的 client 直发这些派生
+    /// URL 等于把内网探测的执行器交给响应体——每个请求点必须各自过闸
+    /// 建钉定 client（签名收口：参数里出现 &reqwest::Client 即回归）
+    #[test]
+    fn oauth_request_fns_do_not_take_external_client() {
+        // 模式用 concat 拼接：include_str! 会把本测试源码也扫进去，
+        // 断言字面量若含完整模式会自指误红
+        let needle = concat!("client", ": &reqwest", "::Client");
+        let src = include_str!("oauth.rs");
+        assert!(
+            !src.contains(needle),
+            "oauth.rs 出现接收外部 client 的请求函数——派生端点（root/DCR/token endpoint）必须逐 URL 过闸建钉定 client，禁止复用钉原 host 的 client 直发"
+        );
+    }
+
+    /// authorization_endpoint 过闸（纯函数直测）：scheme 白名单 + 字面量级
+    /// 私网必须拦；公网 https 放行
+    #[test]
+    fn authorize_endpoint_gate_rejects_non_public() {
+        assert!(ensure_authorize_endpoint_safe("file:///etc/passwd").is_err());
+        assert!(ensure_authorize_endpoint_safe("javascript:alert(1)").is_err());
+        assert!(ensure_authorize_endpoint_safe("http://127.0.0.1/authorize").is_err());
+        assert!(ensure_authorize_endpoint_safe("http://169.254.169.254/").is_err());
+        assert!(ensure_authorize_endpoint_safe("not a url").is_err());
+        assert_eq!(
+            ensure_authorize_endpoint_safe("https://auth.example.com/authorize"),
+            Ok(())
         );
     }
 
