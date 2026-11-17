@@ -142,7 +142,7 @@ fn belongs_to_session(conn: &rusqlite::Connection, span: &SpanRow, session_id: &
 fn not_found(which: &str) -> ToolResult {
     ToolResult::ok(
         format!(
-            "查不到 {which} 对应的工具调用凭证（不在本会话的执行痕迹里，或已被 30 天保留期清理）。\
+            "查不到 {which} 对应的工具调用凭证（不在本会话的执行痕迹里，或已被 30 天保留期清理，或超出本会话最近 500 条的查询窗口）。\
              不要凭记忆复述这次调用的结果——如实说拿不到即可。"
         ),
         Vec::new(),

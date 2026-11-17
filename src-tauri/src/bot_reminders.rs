@@ -219,6 +219,9 @@ pub async fn tool_schedule_reminder(app: &AppHandle, args: &str) -> ToolResult {
                     crate::bot::truncate_for_log(&r.text, 60)
                 ),
             );
+            // 写路径广播：模型经聊天建的提醒也要让定时页刷新（否则页面
+            // 停在旧快照，用户以为没建上）
+            crate::db::reminders::emit_reminders_changed(app);
             ToolResult::ok(
                 format!(
                     "已设提醒：{} 「{}」（{}）。到点会以系统通知提醒用户，提醒 id: {}",
@@ -307,6 +310,7 @@ pub async fn tool_cancel_reminder(app: &AppHandle, args: &str) -> ToolResult {
                     crate::bot::truncate_for_log(&row.text, 60)
                 ),
             );
+            crate::db::reminders::emit_reminders_changed(app);
             ToolResult::ok(
                 format!("已取消提醒：「{}」（id: {}）", row.text, row.id),
                 Vec::new(),

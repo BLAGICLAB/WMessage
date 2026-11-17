@@ -885,7 +885,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         name: "manage_file",
         schema: SCHEMA_MANAGE_FILE,
         mutating: true,
-        claims_patterns: &["已复制", "已拷贝", "已移动", "已移到"],
+        claims_patterns: &["已复制", "已拷贝", "已移动", "已移到", "已重命名"],
         max_output_bytes: 8192,
         call: call_manage_file,
     },
@@ -1008,7 +1008,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         // mutating:false 时模型如实复述「已更新计划」会撞 edit_task 词表里的
         // 「已更新」而 mutation_done 恒 false，守卫推回纯规划回合
         mutating: true,
-        claims_patterns: &["已更新"],
+        claims_patterns: &["已更新", "已排好", "已制定计划", "已排完"],
         max_output_bytes: 8192,
         call: call_update_plan,
     },
@@ -1039,7 +1039,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         name: "resume_subagent",
         schema: SCHEMA_RESUME_SUBAGENT,
         mutating: true,
-        claims_patterns: &["已续跑"],
+        claims_patterns: &["已续跑", "已恢复执行"],
         max_output_bytes: 8192,
         call: call_resume_subagent,
     },

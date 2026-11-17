@@ -219,9 +219,9 @@ src-tauri/src/
 │   ├── bot/registry/mentioned_tool_names_tests.rs (77)  工具点名整词匹配单测
 │   ├── bot/registry/claimed_executed_tools_tests.rs (63) 执行声称单测
 │   ├── bot/registry/result_claim_tests.rs (98)  结果值抽取与回声判定单测
-│   └── bot/registry/registry_tests.rs (1250)  工具表基线守卫（表长 / 条目顺序 / schema 字面量 /
+│   └── bot/registry/registry_tests.rs (1267)  工具表基线守卫（表长 / 条目顺序 / schema 字面量 /
 │                        profile 白名单 / tools JSON 形状）+ TOOLS_TABLE 无 cfg-gated 条目守卫
-├── bot/dispatch.rs (1013)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
+├── bot/dispatch.rs (1015)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计；
 │                        工具调用预算的阶梯不在这里（单点在模型循环层 fuse::gate_call），
 │                        dispatch 只留执行计数仪表，不设预算闸、不设墙钟
@@ -377,11 +377,11 @@ src-tauri/src/
 │   └── audit.rs         audit_log
 ├── bot/tools.rs (101)      工具实现门面：23 个 tool_* 逐项转出（crate::bot::tools::X 旧路径 1:1 保持）
 │   ├── bot/tools/task.rs (1110)   任务面：查询族（view/过滤/渲染/query）+ 管理族（增删改/子任务/绑文件）
-│   ├── bot/tools/doc.rs (884)     文档面：提取文档 / Word·Excel·PPT·PDF 生成 / 联网搜索 / 抓页 / 自由 Python
+│   ├── bot/tools/doc.rs (889)     文档面：提取文档 / Word·Excel·PPT·PDF 生成 / 联网搜索 / 抓页 / 自由 Python
 │   ├── bot/tools/service.rs (277) 受管服务面：start/stop/list 长驻进程 + 集成测试钩子
 │   ├── bot/tools/common.rs (153)  公共杂项面：时间工具 / files 参数解析与安全校验 / 审计补充 kv / 改库广播
 │   ├── bot/tools/trace.rs (245)    凭证召回面：按 tool_call_id/span_id/trace_id 调回历史工具结果（只读、零新表）
-│   ├── bot/tools/http.rs (566)     专用 HTTP 工具面：http_request（方法/请求体/自定义头/下载落产物目录；
+│   ├── bot/tools/http.rs (669)     专用 HTTP 工具面：http_request（方法/请求体/自定义头/下载落产物目录；
 │   │                                目的地闸每跳都判、凭据引用真值不过模型、args_preview 裁 method+host）
 │   ├── bot/tools/plan.rs (155)      计划面：update_plan 整表替换写会话内计划状态 + 广播 bot-plan 事件
 │   ├── bot/tools/task_files_arg_tests.rs (180)     files 参数解析与安全校验单测
@@ -422,7 +422,7 @@ src-tauri/src/
 ├── bot_scheduler/sched_guard_tests.rs   SchedGuard 防重入单测
 ├── bot_scheduler/plan_window_tests.rs   计划窗口单测
 ├── bot_scheduler/preview_gate_tests.rs  预演档闸单测（闸只拦到点触发，手动「立即执行」不拦）
-├── bot_reminders.rs (612) 机器人提醒 schedule_reminder/list_reminders/cancel_reminder：
+├── bot_reminders.rs (616) 机器人提醒 schedule_reminder/list_reminders/cancel_reminder：
 │                        到点发系统通知（只说话，不建卡不执行内容）；when 支持绝对时间 /
 │                        今天 HH:MM / 相对 +30m；repeat none/daily/weekly/monthly；
 │                        定时串与触发点计算复用 bot_scheduler（occurrence_after），

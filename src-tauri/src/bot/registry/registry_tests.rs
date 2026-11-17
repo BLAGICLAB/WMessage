@@ -481,6 +481,23 @@ fn every_mutating_tool_has_claim_patterns() {
     }
 }
 
+/// 常见变更话术必须落在某个工具的 claims_patterns 里——漏一条就意味着
+/// 模型用那种话术声称「已经做完」时守卫完全看不见。
+#[test]
+fn common_change_phrases_are_claimed() {
+    for phrase in ["已重命名", "已排好", "已恢复执行"] {
+        let hit = TOOLS_TABLE.iter().any(|t| {
+            t.claims_patterns
+                .iter()
+                .any(|p| p.contains(phrase) || phrase.contains(p))
+        });
+        assert!(
+            hit,
+            "话术「{phrase}」不在任何工具的 claims_patterns 里——守卫看不见这类变更声称"
+        );
+    }
+}
+
 /// 非 mutating 工具的 claims_patterns 必须为 &[]（错填会带入伪变更检测）。
 #[test]
 fn non_mutating_tools_have_empty_patterns() {

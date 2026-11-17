@@ -205,13 +205,21 @@ pub fn set_reminder_enabled(
     Ok(n > 0)
 }
 
-/// 触发后推进：写最近触发时间 + 下次触发时间（remind_at = None 的行交给调用方删除）
+/// 触发后推进：写最近触发时间 + 下次触发时间。
+///
+/// 算不出下次触发点（schedule 串损坏 / 每月 31 日撞上连续小月）时**删行**：
+/// 留一个 remind_at 为 NULL 的行，它既不会被 `remind_at IS NOT NULL` 的到期
+/// 查询命中，也没有任何清扫路径——就是一条永挂的僵尸提醒。
 pub fn advance_reminder(
     conn: &rusqlite::Connection,
     id: &str,
     fired_at: i64,
     next_at: Option<i64>,
 ) -> Result<(), String> {
+    let Some(next_at) = next_at else {
+        delete_reminder(conn, id)?;
+        return Ok(());
+    };
     conn.execute(
         "UPDATE reminders SET fired_at = ?1, fired_count = COALESCE(fired_count, 0) + 1, \
            remind_at = ?2, updated_at = ?3 WHERE id = ?4",
@@ -249,7 +257,12 @@ pub fn validate_reminder_text(text: &str) -> Result<String, String> {
 /// 写路径广播：前端「定时」页据此刷新。tick 消费侧只在「有行因触发而变化」时
 /// 广播；模型经聊天建/改/删/停的提醒不属于触发变化——不广播的话页面停在旧
 /// 快照（文档口径「提醒写路径广播」即此四命令）。
-fn emit_reminders_changed(app: &AppHandle) {
+/// 提醒集合变了 → 广播（前端「定时」页据此刷新）。
+///
+/// 写路径都要调：设置页四条命令之外，模型经聊天建/改/删/停的提醒也走
+/// 这里——模型实际调的是工具函数（直调 upsert/delete），不广播的话定时页
+/// 停在旧快照，直到下一次触发带来的变化才刷新。
+pub(crate) fn emit_reminders_changed(app: &AppHandle) {
     let _ = app.emit("reminders-changed", serde_json::json!({}));
 }
 
@@ -489,6 +502,20 @@ mod tests {
         let due = load_due_reminders(&conn, 1_000).unwrap();
         assert_eq!(due.len(), 1, "只有到点且启用的行");
         assert_eq!(due[0].id, "due");
+    }
+
+    /// 算不出下次触发点 → 删行：留一个 remind_at 为 NULL 的行，它既不会被
+    /// 到期查询命中，也没有任何清扫路径——永挂的僵尸提醒。
+    #[test]
+    fn advance_without_next_fire_retires_the_row() {
+        let conn = mem_conn();
+        let _g = crate::db::lock_db_write();
+        upsert_reminder(&conn, &sample("r1", Some(500))).unwrap();
+        advance_reminder(&conn, "r1", 600, None).unwrap();
+        assert!(
+            load_reminder(&conn, "r1").unwrap().is_none(),
+            "没有下次触发点的行必须退休，不得永挂"
+        );
     }
 
     #[test]

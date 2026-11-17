@@ -1124,6 +1124,18 @@ pub async fn scheduled_job_fire(app: AppHandle, id: String) -> CommandResult<()>
     {
         return Ok(());
     }
+    // 已派发待执行（到点触发排着队等槽）→ 同样跳过：手动插队跑一遍，排队
+    // 的那次随后再跑一遍，同一次 occurrence 就算了两回（两张卡、两份 token）
+    let already_dispatched =
+        crate::db::lock::lock_or_recover(&DISPATCHED_JOBS, "bot_scheduler::dispatched_jobs")
+            .contains(&id);
+    if already_dispatched {
+        crate::bot::audit_log(
+            &app,
+            &format!("sched_job_manual_skipped | id: {id} | 已到点排队中，跳过手动触发"),
+        );
+        return Ok(());
+    }
     // 手动触发与到点触发同一并发闸：信号量不 close，acquire 不会 Err
     let Ok(_slot) = JOB_RUN_SLOTS.acquire().await else {
         return Err(CommandError::Internal(

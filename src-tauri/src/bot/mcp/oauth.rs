@@ -154,8 +154,11 @@ fn oauth_write(app: &tauri::AppHandle, id: &str, t: &TokenBundle) -> Result<(), 
     super::secrets::raw_write(app, &format!("mcp-oauth:{id}"), &t.to_blob()?)
 }
 
-fn oauth_purge(app: &tauri::AppHandle, id: &str) {
-    let _ = super::secrets::raw_delete(app, &format!("mcp-oauth:{id}"));
+/// 清掉某台服务器的令牌。失败上抛——静默吞掉会让「已登出」成为假象：
+/// keyring 后端瞬时故障（锁屏 / macOS ACL 拒绝）时令牌仍在，用户以为登出
+/// 了，下次登录又撞上同一份旧令牌。
+fn oauth_purge(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    super::secrets::raw_delete(app, &format!("mcp-oauth:{id}"))
 }
 
 pub(crate) fn load_token(
@@ -531,7 +534,9 @@ pub(crate) async fn refresh_token(
 ) -> Result<TokenBundle, String> {
     let Some(rt) = bundle.refresh_token.as_deref() else {
         // 无 refresh_token：清掉令牌要求重登（fail-closed）
-        oauth_purge(app, &cfg.id);
+        // 无 refresh_token：清掉令牌要求重登（fail-closed）。清理失败不掩盖
+        // 真正的原因——令牌还在这件事本身要看得见
+        let _ = oauth_purge(app, &cfg.id);
         return Err("该授权无可刷新令牌，请重新登录".to_string());
     };
     let (access, new_refresh, expires_in) = token_request(
@@ -601,7 +606,7 @@ pub(crate) async fn maybe_refresh_on_auth_error(
     match refresh_token(app, cfg, &t).await {
         Ok(_) => true,
         Err(_) => {
-            oauth_purge(app, &cfg.id);
+            let _ = oauth_purge(app, &cfg.id);
             false
         }
     }
@@ -622,7 +627,8 @@ pub fn mcp_oauth_logout(
     app: tauri::AppHandle,
     server_id: String,
 ) -> crate::error::CommandResult<()> {
-    oauth_purge(&app, &server_id);
+    // 清令牌失败 = 登出没成：如实报错，不记成功审计
+    oauth_purge(&app, &server_id).map_err(crate::error::CommandError::Internal)?;
     crate::audit_event!(
         &app,
         crate::audit::AuditLevel::Info,
