@@ -284,7 +284,7 @@ src-tauri/src/
 │   └── bot/mcp/builtin.rs       内置条目（Playwright 浏览器）：playwright-mcp/ 包目录解析
 │                                （env → exe 同目录 → 资源目录 → 仓库根）+ Chromium 内核定位
 │                                + 启动时缺失才补写配置（默认停用）
-├── bot/procs.rs (1202)      进程树公共模块（受管服务层与 MCP stdio 共用）：
+├── bot/procs.rs (1274)      进程树公共模块（受管服务层与 MCP stdio 共用）：
 │                        纯进程操作，不碰任何上层登记表——只依赖 pid 空间与系统进程表：
 │                        进程快照（pid/ppid/启动标识/RSS/CPU 时间，Linux 读 /proc、
 │                        macOS 调 ps）+ ppid 树子孙收集 + 增量比对（PID 复用识别）
@@ -296,7 +296,7 @@ src-tauri/src/
 │                        **Windows 没有**——现有进程快照层在 Windows 上本就退化）
 │                        + 平台能力声明 listening_supported（Windows 为 false——
 │                        判定层据此返回 Unsupported 而非 Ok）
-│   └── bot/procs/tests.rs (599)  进程树纯函数单测：快照解析 / 树收集 / PID 复用 /
+│   └── bot/procs/tests.rs (629)  进程树纯函数单测：快照解析 / 树收集 / PID 复用 /
 │                        整组杀护栏 / 资源采样 / socket 解析（/proc/net 与 lsof 两套格式）
 │                        + 真子进程监听端口集成测试（验平台路径真能读到）
 │                        + 控制台程序静默标志守卫（扫 src/ 全树的生产切片）
