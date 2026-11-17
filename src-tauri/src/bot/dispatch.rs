@@ -19,10 +19,12 @@ use crate::bot::tools::{broadcast_after_mutation, files_audit_kv};
 /// 数据/凭据），与该工具「不记完整 URL」的口径冲突——裁成方法 + host + 路径。
 /// 新增 sink 消费入参预览时必须走这里，不许再写裸的 chars().take(80)。
 fn sink_args_preview(name: &str, args: &str) -> String {
-    if name == "http_request" {
-        crate::bot::tools::preview_http_request_args(args)
-    } else {
-        args.chars().take(80).collect::<String>()
+    match name {
+        "http_request" => crate::bot::tools::preview_http_request_args(args),
+        // fetch_url 的入参只有一个 url：查询串是模型塞进去的数据（可带
+        // token），与 http_request 同一口径——裁成 host+path
+        "fetch_url" => crate::bot::tools::preview_fetch_url_args(args),
+        _ => args.chars().take(80).collect::<String>(),
     }
 }
 
@@ -32,10 +34,10 @@ fn sink_args_preview(name: &str, args: &str) -> String {
 /// 模型可见的 tool result 不经此函数——模型需要知道重定向后的最终 URL，
 /// 也需要看到服务器回显的应答内容。
 fn sink_result_text(name: &str, text: &str) -> String {
-    let base = if name == "http_request" {
-        crate::bot::tools::redact_http_result_text(text)
-    } else {
-        text.to_string()
+    let base = match name {
+        "http_request" => crate::bot::tools::redact_http_result_text(text),
+        "fetch_url" => crate::bot::tools::redact_fetch_result_text(text),
+        _ => text.to_string(),
     };
     crate::bot::mcp::elicit::redact_answer_echoes(&base)
 }

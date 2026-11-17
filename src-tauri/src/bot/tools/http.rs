@@ -414,26 +414,129 @@ pub fn redact_result_text(text: &str) -> String {
     out
 }
 
+/// URL 脱敏：userinfo（`user:pass@`）与查询串/fragment 都裁掉，只留
+/// scheme://host/path。
+///
+/// userinfo 是完整 URL 里的凭据段——入参侧的 preview_args 已用
+/// `host_str()` 把它裁掉，返回侧不裁就是同一口径自相矛盾；重定向 Location
+/// 里的 userinfo 更是服务端可控的（不是模型自己写的）。
+pub fn strip_url_secrets(url: &str) -> String {
+    let Some(pos) = url.find("://") else {
+        return url.to_string();
+    };
+    let (prefix, rest) = url.split_at(pos + 3);
+    // authority = host[:port]（userinfo 在 @ 之前），到第一个 '/'、'?' 或 '#' 为止
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_end);
+    let authority = match authority.rfind('@') {
+        Some(at) => format!("***{}", &authority[at..]),
+        None => authority.to_string(),
+    };
+    match tail.find(['?', '#']) {
+        Some(cut) => format!("{prefix}{authority}{}…", &tail[..cut]),
+        None => format!("{prefix}{authority}{tail}"),
+    }
+}
+
 /// 「来源：{url}」行的 URL 裁剪：保 scheme://host/path，自 `?` 或 `#` 起整段
-/// 去掉并留「…」标记；无 URL 或无查询串原样返回。
+/// 去掉并留「…」标记；无 URL 原样返回。
 fn strip_url_query(line: &str) -> String {
     let Some(pos) = line.find("://") else {
         return line.to_string();
     };
-    let (prefix, rest) = line.split_at(pos + 3);
-    let Some(cut) = rest.find(['?', '#']) else {
-        return line.to_string();
-    };
-    let mut out = String::with_capacity(line.len() + 4);
-    out.push_str(prefix);
-    out.push_str(&rest[..cut]);
-    out.push('…');
+    // URL 起点：scheme 之前是空白或行首（「来源：https://…」里前缀含全角冒号）
+    let start = line[..pos]
+        .rfind(char::is_whitespace)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    format!("{}{}", &line[..start], strip_url_secrets(&line[start..]))
+}
+
+/// fetch_url 入参进任何审计 sink 前的裁剪：url 字段裁成 host+path。
+///
+/// 查询串是模型塞进去的数据（可带 token），与 http_request 的入参裁剪
+/// 同一口径；解析失败回落通用 80 字符截断（保守：宁可少裁不可崩）。
+pub fn preview_fetch_url_args(args: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<Value>(args) {
+        if let Some(u) = v["url"]
+            .as_str()
+            .and_then(|s| url::Url::parse(s.trim()).ok())
+        {
+            let host = u.host_str().unwrap_or("?");
+            return format!("{host}{}", u.path());
+        }
+    }
+    args.chars().take(80).collect()
+}
+
+/// fetch_url 结果文本进 sink 前的脱敏：失败文案里的最终 URL 去掉 userinfo
+/// 与查询串（模型塞进 URL 的数据，可带 token）。
+///
+/// 只认「（URL）」这一形态——那是 fetch_url 失败文案里 URL 的固定位置；
+/// 正文里的第三方链接是页面内容，不在此列（与 http_request 的「来源：」行
+/// 同一口径：只裁模型自己来源的那个 URL）。
+pub fn redact_fetch_result_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let open = line.find('（');
+        let close = line.rfind('）');
+        match (open, close) {
+            (Some(a), Some(b)) if b > a => {
+                let inner = &line[a + '（'.len_utf8()..b];
+                if inner.starts_with("http://") || inner.starts_with("https://") {
+                    out.push_str(&line[..a + '（'.len_utf8()]);
+                    out.push_str(&strip_url_secrets(inner));
+                    out.push_str(&line[b..]);
+                } else {
+                    out.push_str(line);
+                }
+            }
+            _ => out.push_str(line),
+        }
+    }
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 锚点：URL 里的 userinfo（user:pass@）也是凭据段——入参侧已用
+    /// host_str() 裁掉，返回侧不裁就是同一口径自相矛盾；重定向 Location
+    /// 里的 userinfo 更是服务端可控的。
+    #[test]
+    fn url_userinfo_is_stripped() {
+        let out = strip_url_secrets("https://user:pass@api.example.com/v1/data?token=secret");
+        assert!(!out.contains("pass"), "userinfo 不得出现在输出里：{out}");
+        assert!(out.starts_with("https://"), "{out}");
+        assert!(out.contains("api.example.com"), "{out}");
+        assert!(!out.contains("secret"), "{out}");
+    }
+
+    /// 锚点：fetch_url 的入参预览只留 host+path（查询串可带 token）
+    #[test]
+    fn fetch_url_args_preview_drops_query() {
+        let out = preview_fetch_url_args(r#"{"url":"https://api.example.com/v1?q=secret"}"#);
+        assert_eq!(out, "api.example.com/v1");
+        assert!(!out.contains("secret"), "{out}");
+    }
+
+    /// 锚点：fetch_url 失败文案里的 URL 裁查询串与 userinfo；
+    /// 正文里的第三方链接是页面内容，不在此列。
+    #[test]
+    fn fetch_result_text_drops_url_secrets_but_keeps_body_links() {
+        let t = "网页返回 HTTP 404（https://user:pass@api.example.com/v1?q=secret）";
+        let out = redact_fetch_result_text(t);
+        assert!(!out.contains("secret"), "{out}");
+        assert!(!out.contains("pass"), "{out}");
+        assert!(out.contains("api.example.com"), "{out}");
+        // 正文里的链接不在裁剪范围
+        let body = "正文里的链接 https://cdn.example.com/x.js?ver=1 是页面内容";
+        assert_eq!(redact_fetch_result_text(body), body);
+    }
 
     /// 锚点：来源行的查询串/fragment 不得进任何审计 sink。
     #[test]

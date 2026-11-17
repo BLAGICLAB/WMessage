@@ -43,8 +43,8 @@ pub(crate) use doc::{
     tool_web_search,
 };
 pub(crate) use http::{
-    preview_args as preview_http_request_args, redact_result_text as redact_http_result_text,
-    tool_http_request,
+    preview_args as preview_http_request_args, preview_fetch_url_args, redact_fetch_result_text,
+    redact_result_text as redact_http_result_text, strip_url_secrets, tool_http_request,
 };
 pub(crate) use plan::tool_update_plan;
 #[cfg(debug_assertions)]

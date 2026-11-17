@@ -687,9 +687,14 @@ pub(crate) async fn tool_fetch_url(
         return ToolResult::denied(e);
     }
     let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+    // URL 裁到 host+path：查询串是模型塞进去的数据（可带 token），
+    // escape_for_log 只防日志注入不脱敏
     audit_log(
         app,
-        &format!("fetch_url | url: {}", escape_for_log(&u, 100)),
+        &format!(
+            "fetch_url | url: {}",
+            escape_for_log(&crate::bot::tools::strip_url_secrets(&u), 100)
+        ),
     );
     let cfg = load_config(app);
     let deepseek_key = match cfg.deepseek_fetch_enabled {
