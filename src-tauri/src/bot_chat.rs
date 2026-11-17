@@ -240,6 +240,12 @@ async fn bot_chat_entry(
         refs_json.as_deref(),
     )
     .await?;
+    // 本轮落库事实先清场：聚合器（turn_record）的清场点在线索循环内部，
+    // 配置/密钥读取失败等早退会在那之前返回——此时收尾取走的将是上一轮
+    // （如汇报轮）的残留，失败行会拼上别人的正文。清在命令层，取走前必空
+    if let Some(sid) = session_id.as_deref() {
+        crate::bot::turn_record::begin(sid);
+    }
     let out = match bot_chat_guarded(
         app.clone(),
         messages,

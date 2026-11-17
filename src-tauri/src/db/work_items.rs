@@ -188,6 +188,9 @@ pub fn set_stage(
 }
 
 /// 轮收尾：成功 → idle（等待新指令），失败/停止 → failed；result/eerror 随写
+///
+/// 成功终态清掉残留 error：换终态就该换错误面——行已经是 idle 还挂着上轮
+/// 的失败原因，任何新消费方（导出/详情页）都会把旧失败读成当前状态
 pub fn finish(
     conn: &rusqlite::Connection,
     session_id: &str,
@@ -198,9 +201,9 @@ pub fn finish(
     let stage = if ok { STAGE_IDLE } else { STAGE_FAILED };
     conn.execute(
         "UPDATE work_items SET stage = ?2, result = COALESCE(?3, result), \
-           error = COALESCE(?4, error), updated_at = ?5 \
+           error = CASE WHEN ?6 THEN NULL ELSE COALESCE(?4, error) END, updated_at = ?5 \
          WHERE session_id = ?1",
-        rusqlite::params![session_id, stage, result, error, super::now_ms()],
+        rusqlite::params![session_id, stage, result, error, super::now_ms(), ok],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -498,6 +501,23 @@ mod tests {
             row(&conn, "s1").error.as_deref(),
             Some("boom"),
             "失败原因保留"
+        );
+    }
+
+    #[test]
+    fn successful_finish_clears_stale_error() {
+        let conn = mem_conn();
+        let _g = crate::db::lock_db_write();
+        upsert_for_session(&conn, "s1", "chat", Some("目标"), None).unwrap();
+        finish(&conn, "s1", false, None, Some("boom")).unwrap();
+        assert_eq!(row(&conn, "s1").error.as_deref(), Some("boom"));
+        // 下一轮成功：终态换idle，失败原因不得留在行上
+        finish(&conn, "s1", true, Some("done"), None).unwrap();
+        let r = row(&conn, "s1");
+        assert_eq!(r.stage, STAGE_IDLE);
+        assert_eq!(
+            r.error, None,
+            "成功终态必须清掉上一轮的失败原因（行已 idle 还挂着旧错会被读成当前状态）"
         );
     }
 

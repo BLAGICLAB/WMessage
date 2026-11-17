@@ -144,6 +144,24 @@ fn final_row_lands_after_the_main_chain_in_chat_entry() {
     );
 }
 
+/// 锚点：命令层必须先清场再进主链——聚合器（turn_record）的清场点在
+/// 模型循环内部，配置/密钥早退会在那之前返回，收尾取走的将是上一轮
+/// （如汇报轮）的残留，失败行会拼上别人的正文
+#[test]
+fn turn_record_is_cleared_before_the_main_chain_in_chat_entry() {
+    let src = include_str!("../bot_chat.rs");
+    let start = src.find("async fn bot_chat_entry(").expect("入口函数起点");
+    let body = &src[start..];
+    let end = body.find("\n}\n").map(|i| i + 3).unwrap_or(body.len());
+    let entry = &body[..end];
+    let clear = entry.find("turn_record::begin(sid)").expect("命令层清场");
+    let chain = entry.find("bot_chat_guarded(").expect("主链调用");
+    assert!(
+        clear < chain,
+        "清场必须早于主链：clear={clear} chain={chain}"
+    );
+}
+
 /// 终稿行组装（纯函数）：聚合事实逐字段落行；终态缺失兜底 completed
 /// （循环唯一出口必发终态，None 只在异常路径，与前端旧口径一致）
 #[test]

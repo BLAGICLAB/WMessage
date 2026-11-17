@@ -201,6 +201,26 @@ mod tests {
         assert!(!msg.contains("内部错误"), "不得标成内部故障：{msg}");
         assert!(msg.contains("[skill]"), "应走 skill 域规则分类：{msg}");
     }
+
+    /// 工作项只跟用户轮：汇报轮不得动用户轮的行。
+    #[test]
+    fn work_items_track_user_turns_only() {
+        assert!(work_item_tracks_turn(TurnOrigin::User));
+        assert!(
+            !work_item_tracks_turn(TurnOrigin::Report),
+            "汇报轮动用户轮的行会把失败信号唤醒又抹掉"
+        );
+    }
+
+    /// 接线守卫：开票与收尾两处都必须过用户轮闸（漏一处 = 汇报轮仍在动
+    /// 用户轮的行，失败信号照样被抹）。模式用 concat 拼：include_str! 会把
+    /// 本测试源码也扫进去，字面量完整出现会自指误计。
+    #[test]
+    fn both_work_item_sites_go_through_the_user_turn_gate() {
+        let needle = concat!("work_item_tracks_turn", "(origin)");
+        let hits = include_str!("flow.rs").matches(needle).count();
+        assert_eq!(hits, 2, "开票与收尾两处都要过用户轮闸");
+    }
 }
 
 /// 会话锁被占时的拒答结果。抽成纯函数便于单测（构造点内联在 Tauri 命令里，
@@ -226,6 +246,15 @@ pub(crate) enum TurnOrigin {
     User,
     /// 后端发起的汇报轮
     Report,
+}
+
+/// 工作项（work_items）的开票与收尾只归用户轮。
+///
+/// 汇报轮是子任务回报：它去动用户轮的行，开票会把用户轮的 failed 行唤醒成
+/// working、收尾又收成 idle——用户轮的失败信号当场被抹掉，聚合面的报警
+/// 形同虚设。两处（开票 / 收尾）都必须过这道闸。
+fn work_item_tracks_turn(origin: TurnOrigin) -> bool {
+    matches!(origin, TurnOrigin::User)
 }
 
 /// `bot_chat_inner` 的产出：模型答复 + 本轮待记「已吸收」的子 agent id。
@@ -686,35 +715,35 @@ pub(super) async fn bot_chat_guarded(
         // 工作单元开票（机械动作，每会话一行）：objective 取本轮用户输入
         // 摘要（汇报轮不覆盖既有目标），stage=working；失败不阻断聊天主链。
         // 计划声明的验收标准（若有）随开票同库写入
-        let acc_wi = std::mem::take(&mut plan_acceptance);
-        {
+        // 汇报轮不开票：子任务回报不该动用户轮的行——upsert 会把用户轮的
+        // failed 行唤醒成 working 再由收尾收成 idle，失败信号当场消失
+        if work_item_tracks_turn(origin) {
+            let acc_wi = std::mem::take(&mut plan_acceptance);
             let app_wi = trace_app.clone();
             let sid_wi = sid.clone();
-            let obj_wi = match origin {
-                TurnOrigin::User => user_input
-                    .as_ref()
-                    .map(|m| crate::bot::truncate_for_log(m.content.trim(), 40)),
-                TurnOrigin::Report => None,
-            };
-            tauri::async_runtime::spawn(async move {
-                let _ = crate::db::lock::with_write_conn(&app_wi, move |conn| {
-                    crate::db::work_items::upsert_for_session(
-                        conn,
-                        &sid_wi,
-                        "chat",
-                        obj_wi.as_deref(),
-                        None,
-                    )?;
-                    // 计划声明的验收标准随开票落行（机器判据管线轮收尾消费）
-                    if !acc_wi.is_empty() {
-                        if let Ok(acc_json) = serde_json::to_string(&acc_wi) {
-                            crate::db::work_items::set_acceptance(conn, &sid_wi, &acc_json)?;
-                        }
+            let obj_wi = user_input
+                .as_ref()
+                .map(|m| crate::bot::truncate_for_log(m.content.trim(), 40));
+            // 开票写完才进模型循环：开票是 INSERT 行、收尾是 UPDATE 行，
+            // 两者都放在后台任务里时次序不定——收尾先落地就是静默 no-op，
+            // 行停在 working 直到超时清扫，凭空多出一条失败
+            let _ = crate::db::lock::with_write_conn(&app_wi, move |conn| {
+                crate::db::work_items::upsert_for_session(
+                    conn,
+                    &sid_wi,
+                    "chat",
+                    obj_wi.as_deref(),
+                    None,
+                )?;
+                // 计划声明的验收标准随开票落行（机器判据管线轮收尾消费）
+                if !acc_wi.is_empty() {
+                    if let Ok(acc_json) = serde_json::to_string(&acc_wi) {
+                        crate::db::work_items::set_acceptance(conn, &sid_wi, &acc_json)?;
                     }
-                    Ok(())
-                })
-                .await;
-            });
+                }
+                Ok(())
+            })
+            .await;
         }
         if let Ok(mut c) = trace_capture.lock() {
             c.trace_id = trace_id;
@@ -793,8 +822,12 @@ pub(super) async fn bot_chat_guarded(
     )
     .await;
     // 工作单元收尾：成功（含用户停止的自然结束）→ idle，失败 → failed。
-    // result/机器判据归批 6 的验收管线，这里只落阶段
-    if chat_trace_id.is_some() {
+    // result/机器判据归批 6 的验收管线，这里只落阶段。
+    // 只在用户轮收尾：汇报轮是子任务回报，不该动用户轮的行。
+    // 闸不挂在 trace 开档成败上：trace 开档失败会降级成 None，那是观测面
+    // 的降级，不该连坐工作项收尾——否则成功回合停在 working 直到超时
+    // 清扫，凭空多出一条失败
+    if work_item_tracks_turn(origin) {
         if let Some(sid) = session_id.as_ref() {
             let app_wi = trace_app.clone();
             let sid_wi = sid.clone();
