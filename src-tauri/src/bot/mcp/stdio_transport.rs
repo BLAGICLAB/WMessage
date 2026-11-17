@@ -46,6 +46,10 @@ const GRACEFUL_SHUTDOWN_SECS: u64 = 3;
 ///
 /// 丢弃而不是报错，是为了保住会话：服务器刷一条超长行后**仍能正常应答**，
 /// 只是那条行本身被跳过。整条连接因此不会因为外部服务器的一次坏输出而断。
+///
+/// 例外：被截断的行若是 JSON-RPC 消息（响应/通知），跳过它等于对应请求
+/// 永远等不到应答——调用方只能干等到超时。这种情况改为读侧响亮失败，
+/// 让错误立刻暴露。噪声行（进度条/日志）维持跳过语义，会话不断。
 pub struct LineCappedReader<R> {
     inner: R,
     cap: usize,
@@ -57,9 +61,16 @@ pub struct LineCappedReader<R> {
     pending: Vec<u8>,
     /// 是否已报过「超长行」提示（每连接只报一次，免得被刷屏）
     reported: bool,
+    /// 当前行的前缀字节（判定「这行是不是 JSON-RPC 消息」用）
+    prefix: Vec<u8>,
+    /// 当前行被截断且它是 JSON-RPC 消息 → 读侧失败（等不到应答）
+    truncated_message: bool,
 }
 
 impl<R> LineCappedReader<R> {
+    /// 截断判定用的行前缀字节数：够装下 JSON-RPC 消息的 tag 字段
+    const PREFIX_PROBE: usize = 64;
+
     pub fn new(inner: R, cap: usize) -> Self {
         Self {
             inner,
@@ -68,6 +79,8 @@ impl<R> LineCappedReader<R> {
             dropping: false,
             pending: Vec::new(),
             reported: false,
+            prefix: Vec::new(),
+            truncated_message: false,
         }
     }
 
@@ -78,10 +91,14 @@ impl<R> LineCappedReader<R> {
                 self.pending.push(b);
                 self.line_used = 0;
                 self.dropping = false;
+                self.prefix.clear();
                 continue;
             }
             if self.dropping {
                 continue;
+            }
+            if self.prefix.len() < Self::PREFIX_PROBE {
+                self.prefix.push(b);
             }
             if self.line_used < self.cap {
                 self.pending.push(b);
@@ -90,14 +107,35 @@ impl<R> LineCappedReader<R> {
                 self.dropping = true;
                 if !self.reported {
                     self.reported = true;
+                    // 截断的是 JSON-RPC 消息 → 对应请求永远等不到应答，
+                    // 只能等超时；改走失败路径让错误立刻暴露。噪声行维持
+                    // 跳过语义（会话不断）。
+                    if looks_like_jsonrpc(&self.prefix) {
+                        self.truncated_message = true;
+                        self.pending.clear();
+                    }
                     eprintln!(
-                        "[mcp] 服务器输出超长行（>{} 字节）已截断——该行被跳过，后续消息照常处理",
-                        self.cap
+                        "[mcp] 服务器输出超长行（>{} 字节）已截断——{}",
+                        self.cap,
+                        if self.truncated_message {
+                            "该行是待应答消息，读侧按失败处理（请缩小返回体）"
+                        } else {
+                            "该行被跳过，后续消息照常处理"
+                        }
                     );
                 }
             }
         }
     }
+}
+
+/// 行首是否为 JSON-RPC 消息（内部标签序列化后形如 `{"jsonrpc":"2.0",…`）。
+/// 只看前缀：消息体多大与判定无关。
+fn looks_like_jsonrpc(prefix: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(prefix);
+    let trimmed = text.trim_start();
+    trimmed.starts_with("{\"jsonrpc\"")
+        || (trimmed.starts_with('{') && trimmed.contains("\"jsonrpc\""))
 }
 
 impl<R: AsyncRead + Unpin> AsyncRead for LineCappedReader<R> {
@@ -116,6 +154,13 @@ impl<R: AsyncRead + Unpin> AsyncRead for LineCappedReader<R> {
                 buf.put_slice(&me.pending[..n]);
                 me.pending.drain(..n);
                 return Poll::Ready(Ok(()));
+            }
+            // 待应答的消息被行长闸截了：请求永远等不到应答，响亮失败
+            if me.truncated_message {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "MCP 服务器响应超过单行上限已被截断——请让该工具返回更小的结果",
+                )));
             }
             let mut chunk = [0u8; 8192];
             let mut rb = ReadBuf::new(&mut chunk);
@@ -352,5 +397,42 @@ mod tests {
         assert_eq!(ring.len(), 3);
         assert_eq!(ring.front().unwrap(), "line2");
         assert_eq!(ring.back().unwrap(), "line4");
+    }
+
+    /// 被截断的是 JSON-RPC 消息行（响应/通知）→ 读侧响亮失败。
+    /// 跳过它等于对应请求永远等不到应答，调用方只能干等到超时。
+    #[tokio::test]
+    async fn truncated_jsonrpc_message_fails_fast() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":\"");
+        data.extend(vec![b'x'; 5000]);
+        data.push(b'\n');
+        let mut reader = LineCappedReader::new(&data[..], 1024);
+        let mut out = Vec::new();
+        let err = reader.read_to_end(&mut out).await.unwrap_err();
+        assert!(
+            err.to_string().contains("超过单行上限"),
+            "截断响应行必须报出可读原因：{err}"
+        );
+    }
+
+    /// 截断的是噪声行（服务器刷的进度/日志）→ 仍按原设计跳过，
+    /// 会话不断、后续消息照常送达。
+    #[tokio::test]
+    async fn truncated_noise_line_is_still_skipped() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"{\"id\":1}\n");
+        data.extend(vec![b'x'; 5000]);
+        data.push(b'\n');
+        data.extend_from_slice(b"{\"id\":2}\n");
+        let mut reader = LineCappedReader::new(&data[..], 1024);
+        let mut out = Vec::new();
+        reader.read_to_end(&mut out).await.unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "{\"id\":1}");
+        assert_eq!(lines[1].len(), 1024, "超长噪声行截到 cap 字节");
+        assert_eq!(lines[2], "{\"id\":2}");
     }
 }

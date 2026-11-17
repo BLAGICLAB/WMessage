@@ -371,10 +371,17 @@ fn raw_write_at(
             }
         }
         KeyBackend::PlaintextFile => {
-            let mut map: std::collections::HashMap<String, String> = std::fs::read_to_string(file)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
+            // 读失败不静默吞：瞬时不可读若当「空 map」会整体覆盖丢掉其余
+            // 服务器的 token（永久丢失）；NotFound 才算空，其余 I/O 错误上抛。
+            // 文件损坏同样 fail-closed——按空 map 写会把整表覆盖掉。
+            let mut map: std::collections::HashMap<String, String> =
+                match std::fs::read_to_string(file) {
+                    Ok(raw) if raw.trim().is_empty() => Default::default(),
+                    Ok(raw) => serde_json::from_str(&raw)
+                        .map_err(|e| format!("降级凭据文件解析失败：{e}"))?,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
+                    Err(e) => return Err(format!("读取降级凭据文件失败：{e}")),
+                };
             map.insert(user.to_string(), blob.to_string());
             let body = serde_json::to_string(&map).map_err(|e| e.to_string())?;
             let tmp = file.with_extension("tmp");
@@ -765,5 +772,25 @@ mod tests {
             Some("blob-2".into())
         );
         raw_delete_at(backend, &file, "mcp-oauth:s1").unwrap();
+    }
+
+    #[test]
+    fn oauth_plaintext_store_refuses_to_overwrite_unreadable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("bot-mcp-oauth.json");
+        let backend = KeyBackend::PlaintextFile;
+        // 已有两台服务器的 token
+        raw_write_at(backend, &file, "mcp-oauth:s1", "blob-1").unwrap();
+        raw_write_at(backend, &file, "mcp-oauth:s2", "blob-2").unwrap();
+        // 文件被外部写坏：写第三台时必须响亮失败，而不是按空 map 覆盖整表
+        std::fs::write(&file, "{ broken").unwrap();
+        let err = raw_write_at(backend, &file, "mcp-oauth:s3", "blob-3").unwrap_err();
+        assert!(err.contains("解析失败"), "{err}");
+        // 损坏文件原样保留（没有半截内容、没有静默清表）
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "{ broken",
+            "写失败不得改动已有文件"
+        );
     }
 }

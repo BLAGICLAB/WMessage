@@ -425,6 +425,17 @@ impl McpManager {
             .clone()
     }
 
+    /// 该服务器是否仍在启用快照里。发现期间用户可能禁用或删除它——此时
+    /// 插回去的槽位是幽灵条目：清单里每轮都出现（直到下一次 MCP 配置写
+    /// 才消失），而调用会被磁盘配置的 enabled 闸拒绝。
+    fn server_still_enabled(&self, id: &str) -> bool {
+        self.enabled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|s| s.id == id)
+    }
+
     /// 工具清单是否已知（已知 = 不用再发现一次）。
     pub fn tools_known(&self, id: &str) -> bool {
         match self.slots().get(id) {
@@ -539,6 +550,22 @@ impl McpManager {
                     );
                 }
                 let tool_count = tools.len();
+                // 发现期间用户可能禁用/删掉了这台服务器：配置变更已把槽位
+                // 摘掉，这里再插 Idle 就是把它复活成幽灵条目（每轮清单都
+                // 出现，调用却被磁盘配置的 enabled 闸拒）。插之前核对快照。
+                if !self.server_still_enabled(&cfg.id) {
+                    crate::audit::write_event(
+                        app,
+                        crate::audit::AuditLevel::Info,
+                        "mcp.tools_discovered_but_disabled",
+                        &[
+                            ("id", cfg.id.clone()),
+                            ("name", cfg.name.clone()),
+                            ("tools", tool_count.to_string()),
+                        ],
+                    );
+                    return;
+                }
                 self.slots().insert(
                     cfg.id.clone(),
                     Slot::Idle {
