@@ -309,16 +309,26 @@ fn raw_entry(user: &str) -> Result<::keyring::Entry, String> {
 
 /// 读 raw blob（Ok(None) = 无值；后端故障 → Err 不吞）
 pub(crate) fn raw_read(app: &tauri::AppHandle, user: &str) -> Result<Option<String>, String> {
-    match crate::bot::config::keyring::key_backend() {
+    let backend = crate::bot::config::keyring::key_backend();
+    let file = oauth_fallback_file(app);
+    let _g = (backend == KeyBackend::PlaintextFile).then_some(fallback_lock_guard());
+    raw_read_at(backend, &file, user)
+}
+
+/// 后端注入内核（评审/测试：PlaintextFile + 临时文件直打，不碰真实钥匙串）
+fn raw_read_at(
+    backend: KeyBackend,
+    file: &std::path::Path,
+    user: &str,
+) -> Result<Option<String>, String> {
+    match backend {
         KeyBackend::System => match raw_entry(user)?.get_password() {
             Ok(s) => Ok(Some(s)),
             Err(::keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(format!("读取凭据失败：{e}")),
         },
         KeyBackend::PlaintextFile => {
-            let file = oauth_fallback_file(app);
-            let _g = fallback_lock_guard();
-            let raw = match std::fs::read_to_string(&file) {
+            let raw = match std::fs::read_to_string(file) {
                 Ok(s) => s,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
                 Err(e) => return Err(format!("读取降级凭据文件失败：{e}")),
@@ -332,7 +342,22 @@ pub(crate) fn raw_read(app: &tauri::AppHandle, user: &str) -> Result<Option<Stri
 
 /// 写 raw blob（写后读回比对——与 secrets 写路径同一安全不变式）
 pub(crate) fn raw_write(app: &tauri::AppHandle, user: &str, blob: &str) -> Result<(), String> {
-    match crate::bot::config::keyring::key_backend() {
+    let backend = crate::bot::config::keyring::key_backend();
+    let file = oauth_fallback_file(app);
+    let _g = (backend == KeyBackend::PlaintextFile).then_some(fallback_lock_guard());
+    raw_write_at(backend, &file, user, blob)
+}
+
+/// 后端注入内核。PlaintextFile 落盘走 write_tmp_0600 + rename——与
+/// write_backend_at 同款：rename 换 inode，0644 的中间文件会让目标
+/// 退化成全局可读，token 明文文件不吃这个亏
+fn raw_write_at(
+    backend: KeyBackend,
+    file: &std::path::Path,
+    user: &str,
+    blob: &str,
+) -> Result<(), String> {
+    match backend {
         KeyBackend::System => {
             let entry = raw_entry(user)?;
             entry
@@ -346,22 +371,30 @@ pub(crate) fn raw_write(app: &tauri::AppHandle, user: &str, blob: &str) -> Resul
             }
         }
         KeyBackend::PlaintextFile => {
-            let file = oauth_fallback_file(app);
-            let _g = fallback_lock_guard();
-            let mut map: std::collections::HashMap<String, String> = std::fs::read_to_string(&file)
+            let mut map: std::collections::HashMap<String, String> = std::fs::read_to_string(file)
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_default();
             map.insert(user.to_string(), blob.to_string());
             let body = serde_json::to_string(&map).map_err(|e| e.to_string())?;
-            crate::db::atomic_write(&file, &body).map_err(|e| format!("写入降级凭据文件失败：{e}"))
+            let tmp = file.with_extension("tmp");
+            write_tmp_0600(&tmp, body.as_bytes())?;
+            std::fs::rename(&tmp, file).map_err(|e| format!("写入降级凭据文件失败：{e}"))
         }
     }
 }
 
 /// 删 raw blob（幂等：条目不存在 = Ok）
 pub(crate) fn raw_delete(app: &tauri::AppHandle, user: &str) -> Result<(), String> {
-    match crate::bot::config::keyring::key_backend() {
+    let backend = crate::bot::config::keyring::key_backend();
+    let file = oauth_fallback_file(app);
+    let _g = (backend == KeyBackend::PlaintextFile).then_some(fallback_lock_guard());
+    raw_delete_at(backend, &file, user)
+}
+
+/// 后端注入内核（幂等：条目不存在 = Ok）
+fn raw_delete_at(backend: KeyBackend, file: &std::path::Path, user: &str) -> Result<(), String> {
+    match backend {
         KeyBackend::System => match raw_entry(user) {
             Ok(entry) => match entry.delete_credential() {
                 Ok(()) | Err(::keyring::Error::NoEntry) => Ok(()),
@@ -370,10 +403,8 @@ pub(crate) fn raw_delete(app: &tauri::AppHandle, user: &str) -> Result<(), Strin
             Err(e) => Err(e),
         },
         KeyBackend::PlaintextFile => {
-            let file = oauth_fallback_file(app);
-            let _g = fallback_lock_guard();
             let mut map: std::collections::HashMap<String, String> =
-                match std::fs::read_to_string(&file) {
+                match std::fs::read_to_string(file) {
                     Ok(s) => serde_json::from_str(&s)
                         .map_err(|e| format!("降级凭据文件解析失败：{e}"))?,
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -383,7 +414,9 @@ pub(crate) fn raw_delete(app: &tauri::AppHandle, user: &str) -> Result<(), Strin
                 return Ok(());
             }
             let body = serde_json::to_string(&map).map_err(|e| e.to_string())?;
-            crate::db::atomic_write(&file, &body).map_err(|e| format!("写入降级凭据文件失败：{e}"))
+            let tmp = file.with_extension("tmp");
+            write_tmp_0600(&tmp, body.as_bytes())?;
+            std::fs::rename(&tmp, file).map_err(|e| format!("写入降级凭据文件失败：{e}"))
         }
     }
 }
@@ -694,5 +727,43 @@ mod tests {
         let file = dir.path().join("bot-mcp-secrets.json");
         std::fs::write(&file, "{ broken").unwrap();
         assert!(read_backend_at(KeyBackend::PlaintextFile, &file, "s1").is_err());
+    }
+
+    // ── OAuth raw 存取的降级内核（token 明文文件同款 0600 不变式）──
+
+    #[test]
+    fn oauth_plaintext_store_write_read_delete_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("bot-mcp-oauth.json");
+        let backend = KeyBackend::PlaintextFile;
+        // 读缺失文件 = None
+        assert_eq!(raw_read_at(backend, &file, "mcp-oauth:s1").unwrap(), None);
+        // 写 → 读回
+        raw_write_at(backend, &file, "mcp-oauth:s1", "blob-1").unwrap();
+        assert_eq!(
+            raw_read_at(backend, &file, "mcp-oauth:s1").unwrap(),
+            Some("blob-1".into())
+        );
+        // 多条目 RMW 不互踩（第二台服务器登录不得抹掉第一台的 token）
+        raw_write_at(backend, &file, "mcp-oauth:s2", "blob-2").unwrap();
+        assert_eq!(
+            raw_read_at(backend, &file, "mcp-oauth:s1").unwrap(),
+            Some("blob-1".into())
+        );
+        // 0600（unix）
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "OAuth 降级凭据文件必须 0600");
+        }
+        // 删除：目标条目消失、其余保留；再删幂等
+        raw_delete_at(backend, &file, "mcp-oauth:s1").unwrap();
+        assert_eq!(raw_read_at(backend, &file, "mcp-oauth:s1").unwrap(), None);
+        assert_eq!(
+            raw_read_at(backend, &file, "mcp-oauth:s2").unwrap(),
+            Some("blob-2".into())
+        );
+        raw_delete_at(backend, &file, "mcp-oauth:s1").unwrap();
     }
 }
