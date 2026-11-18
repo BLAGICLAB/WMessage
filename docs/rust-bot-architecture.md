@@ -176,7 +176,7 @@ src-tauri/src/
 │   ├── bot_model_loop/types.rs (352)    共享类型：ModelLoopDeps / 请求状态机 / 流结构 / 数据类
 │   ├── bot_model_loop/output.rs (170)   工具结果回灌体积漏斗：per-tool 预算与全局 cap 取小、
 │   │                                    超限转存溢出文件 + 只回灌节选与指针
-│   ├── bot_model_loop/context.rs (255)  上下文瘦身层：超限判定 / 历史裁剪 / 索引重排修正 /
+│   ├── bot_model_loop/context.rs (260)  上下文瘦身层：超限判定 / 历史裁剪 / 索引重排修正 /
 │   │                                    轮内工具结果滑动窗 / 用户意图抽取
 │   ├── bot_model_loop/evidence.rs (163)  证据来源层：从消息抽文本·来源，数字是否可溯源
 │   ├── bot_model_loop/tests.rs (76)     单元测试六桶的入口 + prod_src() 生产代码全景扫描源
@@ -438,7 +438,7 @@ src-tauri/src/
 ├── bot/subagent_repair.rs (954) 收尾 JSON 的本地修复与结果判定：结构化输出三段修复的第二段（尾逗号 / 截断闭合，
 │                        零 token 零延迟）+ parse_final_json + classify_outcome + 熔断出口恢复链
 │                        recover_fused_exit（剥标记 → 盘上 verdict → 强制交卷轮 → 原会话续跑一次）
-├── bot/subagent_runner.rs (1436) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
+├── bot/subagent_runner.rs (1443) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
 │                        + panic 隔离 + 任务包装渲染
 ├── bot/subagent_spawn.rs (434) 子 agent 派发：入参校验 / 建行 / 并发闸 SubagentGate（per-session 2 /
 │                        global 3，闸满排队）

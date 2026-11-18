@@ -415,6 +415,8 @@ pub(crate) async fn run_subagent(
             Some(cfg) => crate::bot_onions::effective_tools(row.profile, &cfg.allowed),
             None => crate::bot::registry::profile_whitelist(row.profile).to_vec(),
         };
+    // 提示词里的工具行要用同一份交集（守卫白名单与提示词清单同源）
+    let prompt_tools = subagent_tools.join("、");
 
     // 工具守卫注册（白名单闸 + spawn 递归身份校验 + read_own_card/write_artifact 定位）。
     // RAII 守卫：Drop 反注册——runner 中途 panic 也不泄漏条目（ 采纳）
@@ -577,13 +579,18 @@ pub(crate) async fn run_subagent(
     // 1) 仅给 stage（profile 自动按 default_profile 派生）；或
     // 2) 同时给 stage + profile（白名单与角色互不干扰，如 verifier=research 的只读够用）。
     let profile_prompt = match stage {
-        Some(SubagentStage::Recon) => crate::prompts::PROFILE_RECON,
-        Some(SubagentStage::Executor) => crate::prompts::PROFILE_EXECUTOR,
-        Some(SubagentStage::Verifier) => crate::prompts::PROFILE_VERIFIER,
+        Some(SubagentStage::Recon) => crate::prompts::PROFILE_RECON.to_string(),
+        Some(SubagentStage::Executor) => {
+            // 工具行按实际生效集（profile ∩ 配置档 allowed）——subagent_tools
+            // 就是那个交集：写死某一档的话，显式给了别的配置档时清单与白名单
+            // 脱节，模型照着调用必撞 dispatch 白名单闸
+            crate::prompts::profile_executor(&prompt_tools)
+        }
+        Some(SubagentStage::Verifier) => crate::prompts::PROFILE_VERIFIER.to_string(),
         None => match row.profile {
-            SubagentProfile::Research => crate::prompts::PROFILE_RESEARCH,
-            SubagentProfile::Coder => crate::prompts::PROFILE_CODER,
-            SubagentProfile::General => crate::prompts::PROFILE_GENERAL,
+            SubagentProfile::Research => crate::prompts::PROFILE_RESEARCH.to_string(),
+            SubagentProfile::Coder => crate::prompts::PROFILE_CODER.to_string(),
+            SubagentProfile::General => crate::prompts::PROFILE_GENERAL.to_string(),
         },
     };
     // wrapper 已由 setup 渲染返回（同一文本：LLM 输入 = 历史落库 = 收尾覆盖源）

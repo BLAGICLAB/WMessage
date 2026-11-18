@@ -189,14 +189,21 @@ pub(crate) const PROFILE_RECON: &str = r#"你是 recon（侦察）子 agent，�
 - 收尾输出报告路径 + 摘要 + 来源列表；交卷用 submit_result。"#;
 
 /// executor 角色：基于 recon 报告动手实现，写文件/跑脚本/生成文档。
-/// 工具行 = writereditor onion 的实际白名单（现状唯一 executor 场景）。
-pub(crate) const PROFILE_EXECUTOR: &str = r#"你是 executor（执行）子 agent，基于上游侦察报告动手实现。
-可用工具：read_text_file、list_files、grep_files、edit_file、write_file、run_python、write_artifact_file、read_own_card。
+///
+/// 工具行由调用方按**实际生效集**填入（profile 白名单 ∩ 配置档 allowed）：
+/// 写死某一档的话，调用方显式给了别的配置档时这份清单与白名单脱节，模型
+/// 照着调用必撞 dispatch 白名单闸（每次白烧一轮预算）。
+pub(crate) fn profile_executor(tools: &str) -> String {
+    format!(
+        r#"你是 executor（执行）子 agent，基于上游侦察报告动手实现。
+可用工具：{tools}。
 - 优先读 recon 报告路径（contextSummary 给的）作为输入，不重新调研。
 - 改文件用 edit_file（oldString 唯一精确匹配；批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）；新建用 write_file（覆盖已有文件在后台执行会被拒）。
 - run_python 不联网（它直连外网没有任何保护）；需要查资料由上游 recon 阶段负责，或用 fetch_url / web_search。
 - 先读后改，小步验证；能跑测试就跑测试。
-- 收尾输出改动清单 + 产物路径 + 自评（哪些 acceptanceCriteria 已达成、哪些等 verifier 验收）；交卷用 submit_result。"#;
+- 收尾输出改动清单 + 产物路径 + 自评（哪些 acceptanceCriteria 已达成、哪些等 verifier 验收）；交卷用 submit_result。"#
+    )
+}
 
 /// verifier 角色：对照 acceptanceCriteria 逐条勾；不修改任何东西。
 /// 工具行 = coder 档 ∩ validator.allowed 的实际生效集（validator 的
@@ -297,9 +304,10 @@ mod subagent_prompt_tests {
     /// coder/executor/general 握着 run_python 就握着直连暗道。
     #[test]
     fn subagent_profiles_state_run_python_has_no_network() {
+        use crate::bot::registry::CODER_TOOLS;
         for (name, p) in [
             ("coder", PROFILE_CODER),
-            ("executor", PROFILE_EXECUTOR),
+            ("executor", &profile_executor(&CODER_TOOLS.join("、"))),
             ("general", PROFILE_GENERAL),
         ] {
             assert!(
@@ -435,18 +443,30 @@ mod subagent_prompt_tests {
 
     #[test]
     fn profile_executor_anchors_on_recon_report() {
+        use crate::bot::registry::CODER_TOOLS;
+        // 工具行由调用方按实际生效集填入——这里用 coder 档渲染
+        let p = profile_executor(&CODER_TOOLS.join("、"));
         // executor 必须明确依赖 recon 报告输入
-        assert!(
-            PROFILE_EXECUTOR.contains("recon"),
-            "executor profile 缺 recon 引用"
-        );
+        assert!(p.contains("recon"), "executor profile 缺 recon 引用");
         // 必须有写类工具
         for required in ["edit_file", "write_file"] {
-            assert!(
-                PROFILE_EXECUTOR.contains(required),
-                "executor profile 缺 {required}"
-            );
+            assert!(p.contains(required), "executor profile 缺 {required}");
         }
+    }
+
+    /// executor 的工具行必须随实际生效集走：配置档把写类工具收掉时，
+    /// 提示词不得再宣称可用（模型照着调必撞 dispatch 白名单闸）
+    #[test]
+    fn profile_executor_tools_line_follows_the_effective_set() {
+        let narrowed = ["read_text_file", "list_files"];
+        let p = profile_executor(&narrowed.join("、"));
+        let usable = p
+            .split("可用工具：")
+            .nth(1)
+            .and_then(|s| s.split('。').next())
+            .unwrap_or("");
+        assert_eq!(usable, "read_text_file、list_files");
+        assert!(!usable.contains("write_file"), "{usable}");
     }
 
     #[test]

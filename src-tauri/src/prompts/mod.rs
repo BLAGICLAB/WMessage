@@ -35,7 +35,7 @@ pub(crate) use selfcheck::{
     SELFCHECK_PROMPT, SIDE_SELFCHECK_PROMPT,
 };
 pub(crate) use subagent::{
-    MAIN_AGENT_ADDENDUM, PROFILE_CODER, PROFILE_EXECUTOR, PROFILE_GENERAL, PROFILE_RECON,
+    profile_executor, MAIN_AGENT_ADDENDUM, PROFILE_CODER, PROFILE_GENERAL, PROFILE_RECON,
     PROFILE_RESEARCH, PROFILE_VERIFIER, RESULT_SCHEMA_HINT, SUBAGENT_BASE,
 };
 pub(crate) use summary::{COMPACT_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT};
@@ -45,36 +45,46 @@ pub(crate) use system::SYSTEM_PROMPT;
 mod tests {
     use super::*;
 
-    /// 全部 prompt 的单一清单：新增常量必须登记（否则漏出下面的通用断言）
-    const ALL: &[(&str, &str)] = &[
-        ("SYSTEM_PROMPT", SYSTEM_PROMPT),
-        ("SUMMARY_SYSTEM_PROMPT", SUMMARY_SYSTEM_PROMPT),
-        ("COMPACT_SYSTEM_PROMPT", COMPACT_SYSTEM_PROMPT),
-        ("SELFCHECK_PROMPT", SELFCHECK_PROMPT),
-        ("SIDE_SELFCHECK_PROMPT", SIDE_SELFCHECK_PROMPT),
-        ("FINAL_SELFCHECK_PROMPT", FINAL_SELFCHECK_PROMPT),
-        ("EXECUTE_SYSTEM_PROMPT", EXECUTE_SYSTEM_PROMPT),
-        ("STEPWISE_ADDENDUM", STEPWISE_ADDENDUM),
-        ("PLANNER_PROMPT", PLANNER_PROMPT),
-        ("REPLANNER_PROMPT", REPLANNER_PROMPT),
-        ("CONSOLIDATE_PROMPT", CONSOLIDATE_PROMPT),
-        ("EXTRACT_PROMPT", EXTRACT_PROMPT),
-        ("ADJUDICATE_PROMPT", ADJUDICATE_PROMPT),
-        ("MAIN_AGENT_ADDENDUM", MAIN_AGENT_ADDENDUM),
-        ("SUBAGENT_BASE", SUBAGENT_BASE),
-        ("PROFILE_RESEARCH", PROFILE_RESEARCH),
-        ("PROFILE_CODER", PROFILE_CODER),
-        ("PROFILE_GENERAL", PROFILE_GENERAL),
-        ("PROFILE_RECON", PROFILE_RECON),
-        ("PROFILE_EXECUTOR", PROFILE_EXECUTOR),
-        ("PROFILE_VERIFIER", PROFILE_VERIFIER),
-        ("RESULT_SCHEMA_HINT", RESULT_SCHEMA_HINT),
-    ];
+    /// 全部 prompt 的单一清单：新增常量必须登记（否则漏出下面的通用断言）。
+    /// 运行时构建：executor 段是按实际生效集渲染的函数，不是常量。
+    fn all() -> Vec<(&'static str, String)> {
+        vec![
+            ("SYSTEM_PROMPT", SYSTEM_PROMPT),
+            ("SUMMARY_SYSTEM_PROMPT", SUMMARY_SYSTEM_PROMPT),
+            ("COMPACT_SYSTEM_PROMPT", COMPACT_SYSTEM_PROMPT),
+            ("SELFCHECK_PROMPT", SELFCHECK_PROMPT),
+            ("SIDE_SELFCHECK_PROMPT", SIDE_SELFCHECK_PROMPT),
+            ("FINAL_SELFCHECK_PROMPT", FINAL_SELFCHECK_PROMPT),
+            ("EXECUTE_SYSTEM_PROMPT", EXECUTE_SYSTEM_PROMPT),
+            ("STEPWISE_ADDENDUM", STEPWISE_ADDENDUM),
+            ("PLANNER_PROMPT", PLANNER_PROMPT),
+            ("REPLANNER_PROMPT", REPLANNER_PROMPT),
+            ("CONSOLIDATE_PROMPT", CONSOLIDATE_PROMPT),
+            ("EXTRACT_PROMPT", EXTRACT_PROMPT),
+            ("ADJUDICATE_PROMPT", ADJUDICATE_PROMPT),
+            ("MAIN_AGENT_ADDENDUM", MAIN_AGENT_ADDENDUM),
+            ("SUBAGENT_BASE", SUBAGENT_BASE),
+            ("PROFILE_RESEARCH", PROFILE_RESEARCH),
+            ("PROFILE_CODER", PROFILE_CODER),
+            ("PROFILE_GENERAL", PROFILE_GENERAL),
+            ("PROFILE_RECON", PROFILE_RECON),
+            ("PROFILE_VERIFIER", PROFILE_VERIFIER),
+            ("RESULT_SCHEMA_HINT", RESULT_SCHEMA_HINT),
+        ]
+        .into_iter()
+        .map(|(n, p)| (n, p.to_string()))
+        .chain([(
+            "PROFILE_EXECUTOR",
+            profile_executor(&crate::bot::registry::CODER_TOOLS.join("、")),
+        )])
+        .collect()
+    }
 
     #[test]
     fn all_prompts_are_registered_and_non_empty() {
-        assert_eq!(ALL.len(), 22, "prompt 清单与实际常量数不一致（新增请登记）");
-        for (name, p) in ALL {
+        let all = all();
+        assert_eq!(all.len(), 22, "prompt 清单与实际常量数不一致（新增请登记）");
+        for (name, p) in &all {
             assert!(
                 p.chars().count() >= 30,
                 "{name} 过短（疑似抽取时被截断）: {p}"
@@ -261,7 +271,7 @@ mod tests {
                     continue;
                 }
                 let snake = to_snake(prop);
-                for (name, prompt) in ALL {
+                for (name, prompt) in all() {
                     // 整词匹配，且只判 ASCII：中文紧贴标识符是正常写法
                     //（「写 contextSummary 时…」），按 Unicode 的 alphanumeric 判会
                     // 把这类整段当成「不在词内」而漏报——锁必须比 bug 更严。

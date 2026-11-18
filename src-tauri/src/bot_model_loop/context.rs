@@ -78,9 +78,14 @@ pub(crate) fn apply_tool_window(msgs: &mut [serde_json::Value], keep_recent: usi
         // 名字从上面那条 assistant(tool_calls) 消息里找——它不裁（护栏②），
         // 桩子带上名字模型才知道自己省掉的是什么。
         let name = tool_name_of(msgs, idx, &call_id).unwrap_or_else(|| "未知工具".to_string());
+        // 文案要如实披露钳制：痕迹表单条 result 钳在 SPAN_TEXT_MAX，召回面
+        // 再截一道——说「完整结果已存档」会让模型以为能调回全文，实际拿回
+        // 的是被截过的那份（与 lookup_receipt 自己的披露同一口径）
         let stub = format!(
-            "{TOOL_WINDOW_STUB_MARK}。工具 {name} 的完整结果已存档（调用 id={call_id}），\
-             需要时调用 lookup_receipt(tool_call_id=\"{call_id}\") 调取原文。"
+            "{TOOL_WINDOW_STUB_MARK}。工具 {name} 的结果已存档（调用 id={call_id}），\
+             需要时调用 lookup_receipt(tool_call_id=\"{call_id}\") 调取原文。\
+             存档原文按 {} 字节上限截断，超出部分不在存档里。",
+            crate::db::trace::SPAN_TEXT_MAX
         );
         if let Some(obj) = msgs[idx].as_object_mut() {
             obj.insert("content".to_string(), serde_json::Value::String(stub));
