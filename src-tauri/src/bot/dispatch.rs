@@ -18,7 +18,7 @@ use crate::bot::tools::{broadcast_after_mutation, files_audit_kv};
 /// 入参预览：http_request 的入参前 80 字符必含完整 URL（含查询串，可夹带
 /// 数据/凭据），与该工具「不记完整 URL」的口径冲突——裁成方法 + host + 路径。
 /// 新增 sink 消费入参预览时必须走这里，不许再写裸的 chars().take(80)。
-fn sink_args_preview(name: &str, args: &str) -> String {
+pub(crate) fn sink_args_preview(name: &str, args: &str) -> String {
     match name {
         "http_request" => crate::bot::tools::preview_http_request_args(args),
         // fetch_url 的入参只有一个 url：查询串是模型塞进去的数据（可带
@@ -33,13 +33,23 @@ fn sink_args_preview(name: &str, args: &str) -> String {
 /// （服务器常原样回显刚收到的应答）换成占位符——应答值可能含凭据。
 /// 模型可见的 tool result 不经此函数——模型需要知道重定向后的最终 URL，
 /// 也需要看到服务器回显的应答内容。
-fn sink_result_text(name: &str, text: &str) -> String {
+pub(crate) fn sink_result_text(name: &str, text: &str) -> String {
     let base = match name {
         "http_request" => crate::bot::tools::redact_http_result_text(text),
         "fetch_url" => crate::bot::tools::redact_fetch_result_text(text),
         _ => text.to_string(),
     };
     crate::bot::mcp::elicit::redact_answer_echoes(&base)
+}
+
+/// 主循环审计「tool」事件的入参脱敏：URL 型工具（http_request/fetch_url）
+/// 走 sink_args_preview 的同源裁剪（入参里的 URL 凭据段/查询串不进审计面）；
+/// 其余工具保持 500 字截断原样（审计要看全参数，不能跟着压到 80 字）。
+pub(crate) fn audit_args_for_log(name: &str, args: &str) -> String {
+    match name {
+        "http_request" | "fetch_url" => sink_args_preview(name, args),
+        _ => crate::bot::truncate_for_log(args, 500),
+    }
 }
 
 /// 子 agent 动作流（右侧栏实时可见性）：dispatch 在 call / return 两个相位
@@ -1013,3 +1023,67 @@ mod allowed_tools_tests;
 
 #[cfg(test)]
 mod invalid_args_tests;
+
+#[cfg(test)]
+mod sink_redaction_tests {
+    use super::*;
+
+    /// M209 锚点：主循环审计 args 里 http_request 的 userinfo 必须脱敏
+    /// （实机 2026-11-19 发现 tool 事件带原始 args JSON，凭据段泄漏）。
+    #[test]
+    fn audit_args_for_log_redacts_url_credentials() {
+        let args =
+            r#"{"url":"https://user:SECRET-pass@httpbin.org/post","method":"POST","body":"m209"}"#;
+        let out = audit_args_for_log("http_request", args);
+        assert!(
+            !out.contains("SECRET-pass"),
+            "userinfo 不得进审计 args：{out}"
+        );
+        assert!(out.contains("httpbin.org"), "host 保留：{out}");
+    }
+
+    /// fetch_url 查询串同口径：url 字段裁成 host+path。
+    #[test]
+    fn audit_args_for_log_redacts_fetch_url_query() {
+        let args = r#"{"url":"https://httpbin.org/get?q=SECRET-Q210"}"#;
+        let out = audit_args_for_log("fetch_url", args);
+        assert!(!out.contains("SECRET-Q210"), "查询串不得进审计 args：{out}");
+        assert!(out.contains("httpbin.org/get"), "host+path 保留：{out}");
+    }
+
+    /// 非 URL 工具保持 500 字截断（审计要看全参数，不跟着压到 80）。
+    #[test]
+    fn audit_args_for_log_keeps_non_url_tools_full_args() {
+        let args = r#"{"title":"x","detail":"'pipe'|escaped","more":"payload"}"#;
+        let out = audit_args_for_log("create_task", args);
+        assert!(out.contains("detail"), "全参数保留：{out}");
+        assert!(out.contains("payload"), "尾部不丢：{out}");
+    }
+
+    /// M209 锚点：tool 结果「来源：」行的 userinfo 脱敏（实机发现泄漏）。
+    #[test]
+    fn sink_result_text_redacts_userinfo_in_source_line() {
+        let t =
+            "HTTP 200 · application/json\n来源：https://user:SECRET-pass@httpbin.org/post\n正文";
+        let out = sink_result_text("http_request", t);
+        assert!(
+            !out.contains("SECRET-pass"),
+            "来源行 userinfo 必须脱敏：{out}"
+        );
+        assert!(
+            out.contains("***@httpbin.org/post"),
+            "userinfo → ***@：{out}"
+        );
+    }
+
+    /// 正文节选里的第三方链接不裁（口径分界：裁错方向算 FAIL）。
+    #[test]
+    fn sink_result_text_keeps_body_links() {
+        let t = "来源：https://httpbin.org/get\n正文里的链接 https://example.com/p?q=1 原样保留";
+        let out = sink_result_text("http_request", t);
+        assert!(
+            out.contains("https://example.com/p?q=1"),
+            "正文第三方链接不裁：{out}"
+        );
+    }
+}
