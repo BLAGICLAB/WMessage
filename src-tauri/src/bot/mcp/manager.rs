@@ -820,7 +820,18 @@ impl McpManager {
                 // 就能把宿主内存撑爆（rmcp 原生 read_until 无上限，见
                 // mcp/stdio_transport 模块头）
                 let transport = CappedChildProcess::new(child, stdout, stdin, MAX_STDOUT_LINE);
-                let service = tokio::time::timeout(CONNECT_TIMEOUT, ().into_dyn().serve(transport))
+                // elicitation 桥接（D-7）stdio 分支同 HTTP 分支：开关开才注入
+                // 自定义 handler（弹 ask 卡）；此前 stdio 分支漏注入，官方 SDK
+                // 服务器走 stdio 时「Client does not support form elicitation」
+                let handler = if cfg.allow_elicitation() {
+                    crate::bot::mcp::elicit::ElicitBridge {
+                        server_id: cfg.id.clone(),
+                    }
+                    .into_dyn()
+                } else {
+                    ().into_dyn()
+                };
+                let service = tokio::time::timeout(CONNECT_TIMEOUT, handler.serve(transport))
                     .await
                     .map_err(|_| {
                         self.format_with_stderr_tail(
