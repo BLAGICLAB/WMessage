@@ -6,6 +6,37 @@
 > 「为什么换方向」，一事一段。工单号、拍板记录不再进入源码注释（见 SPEC.md
 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
+## 2026-11-19（周四）v0.4.0 出包记录：Windows 安装版（带更新签名）
+
+**产物三件**（构建机 macOS，基线 commit 6e6a2034）：
+- `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/wmessage_0.4.0_x64-setup.exe`
+  （87MB）SHA256 `2bad89a5cf1458476cd38534c3f7a9c69dabcb711f7f7fad86ce6f089a137271`
+- 同名 `.sig`（minisign 更新签名，私钥 `~/.tauri/wmessage-updater.key`，空口令）
+- `latest.json`（仓库根，gitignore；上传 GitHub Releases 时与安装器一并传）
+
+**7z 清单核验**：210 文件 / 原始 238.8MB → 压缩 91.4MB；wmessage.exe（81.5MB）/
+bge 模型 + tokenizer / pp-ocr 四件 / dotnet 侧车（coreclr + wm-docx-revisions.exe）/
+onnxruntime 双 dll / WebView2 引导全在；无 `_up_`、无 `.DS_Store`。
+全量门禁同批绿（Rust 2635 + 前端 1252 + pytest 58）。
+
+**出包第一个动作就撞上真断点**：ort 预检（`ort_env.rs`）里的 `libloading::Library::new`
+在 libloading 0.8 是 unsafe fn，而这段代码带 `#[cfg(target_os = "windows")]`——
+mac 门禁和 mac 出包都不编译它，于是 11-14 引入预检之后 **Windows 目标一直编译不过**
+（E0133），直到这次出包才暴露。修法是补 unsafe 块 + 一句 SAFETY 说明
+（只加载随包分发的 onnxruntime.dll）。
+
+**为什么记**：门禁编的是宿主平台目标，`cfg(windows)` 代码在 mac 上永远不编译——
+这类「编译期错」只有交叉构建或 Windows 实机看得见，而出包是日常动作里唯一会触发它的。
+教训不是「以后小心」，是 **出包流程要把 Windows 目标的类型检查前置**：
+暂存脚本末尾加一道 `cargo check --bins --target x86_64-pc-windows-gnu`（fail-closed），
+这一关本该拦下，代价是出包时多花一两分钟。
+
+**顺带修的账实漂移**：模块树行数标注有 6 处过期（5 处是这几批审计修复带进来的，
+1 处是本次 unsafe 块）——快门禁不含 `audit_module_map.py`，它们一路漂到全量门禁才红。
+
+**发布待做**：GitHub Releases 新建 `v0.4.0`，上传 `wmessage_x64-setup.exe`
+（由安装器改此名，固定资产）与 `latest.json` 两个文件。
+
 ## 2026-11-16（周一）MCP elicitation 真验：F-7 从「桩局限」翻案为「能力没声明」
 
 11-07 轮把 elicitation 卡不弹记成 F-7「外部桩局限」，并约定下轮用 MCP SDK 官方
