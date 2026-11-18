@@ -71,8 +71,13 @@ pub fn cpu_limit_secs(timeout_secs: u64) -> u64 {
     timeout_secs.saturating_add(10)
 }
 
-/// 进程数上限（RLIMIT_NPROC / Job ACTIVE_PROCESS）：fork 炸弹在运行窗口内
-/// 可打满系统资源，超时杀组只是事后回收。
+/// 进程数上限（**仅 unix**：RLIMIT_NPROC）。fork 炸弹在运行窗口内可打满系统
+/// 资源，超时杀组只是事后回收。
+///
+/// Windows 侧**没有进程数上限**：Job Object 的 LimitFlags 只设了进程内存、
+/// 进程时间与 kill-on-close，没有 ACTIVE_PROCESS 限额——那边 fork 风暴只受
+/// 内存/CPU/超时约束。补这一项要设 ActiveProcessLimit 并在 Windows 实机
+/// 验证（半生效的限额比没有更危险），本轮只把口径写准。
 ///
 /// **RLIMIT_NPROC 的语义是按用户计数**（不是按进程组）：上限必须盖住当前
 /// 用户已有的全部进程再加余量，否则 Python 一启动自己就 EAGAIN（本机实测
@@ -227,6 +232,12 @@ impl RunLimits {
         {
             Self {}
         }
+    }
+
+    /// 限额是否真的生效（Windows：Job Object 创建成功才有内存/CPU 限额）
+    #[cfg(windows)]
+    pub(crate) fn limits_active(&self) -> bool {
+        self.job.is_some()
     }
 
     pub fn assign(&self, _child: &Child) {
@@ -874,6 +885,13 @@ pub fn run_python_at(
     let mem_bytes = mem_limit_bytes(timeout_eff);
     let cpu_secs = cpu_limit_secs(timeout_eff);
     let limits = RunLimits::new(mem_bytes, cpu_secs);
+    // Windows：Job Object 创建失败 → 内存/CPU 限额与 kill-on-close 三条全丢，
+    // 静默降级等于限额不存在（脚本跑飞只剩超时杀树兜底）。必须留痕——
+    // Unix 侧「未生效项必须 audit 留痕」是同一条口径，Windows 侧不能单边缺失
+    #[cfg(windows)]
+    if !limits.limits_active() {
+        audit("windows job object 创建失败：本次无内存/CPU 限额（仅超时杀树兜底）");
+    }
 
     let mut cmd = {
         #[cfg(target_os = "macos")]

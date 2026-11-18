@@ -90,12 +90,33 @@ fn brief_headers(headers: &reqwest::header::HeaderMap) -> Vec<String> {
         .collect()
 }
 
+/// 重定向后的方法与请求体（RFC 9110）：303 一律改 GET 丢体；301/302 的 POST
+/// 也改 GET 丢体（用户代理的历史惯例——不然对端会把创建类操作做两遍，且
+/// 请求体被搬到另一个源）；307/308 保持原方法与体。
+///
+/// 纯函数便于单测（这条口径错了就是重复副作用）。
+pub(crate) fn redirect_method_and_body(
+    status: u16,
+    method: &reqwest::Method,
+    body: Option<&(Vec<u8>, String)>,
+) -> (reqwest::Method, Option<(Vec<u8>, String)>) {
+    if status == 303 || ((status == 301 || status == 302) && *method == reqwest::Method::POST) {
+        (reqwest::Method::GET, None)
+    } else {
+        (method.clone(), body.cloned())
+    }
+}
+
 /// 执行请求：每跳「公网闸 → 目的地闸 → 钉 IP → 发送」，重定向手动跟随。
 pub(crate) async fn execute(spec: &RequestSpec, gate: &GateCtx<'_>) -> Result<Reply, HttpError> {
-    let method = reqwest::Method::from_bytes(spec.method.as_bytes()).map_err(|e| HttpError {
-        dest: None,
-        message: format!("非法 HTTP 方法 {}：{e}", spec.method),
-    })?;
+    let mut method =
+        reqwest::Method::from_bytes(spec.method.as_bytes()).map_err(|e| HttpError {
+            dest: None,
+            message: format!("非法 HTTP 方法 {}：{e}", spec.method),
+        })?;
+    // 请求体提为循环外的可变局部：重定向到 303/301/302 时要按 RFC 9110
+    // 改 GET 丢体（见重定向分支）——body 挂在 spec 上是改不掉的
+    let mut body = spec.body.clone();
     let mut url_cursor = spec.url.clone();
     let mut hops = 0usize;
     // 每轮先过目的地闸（Allowed 必赋值 / Denied 直接返回），循环后读是安全的
@@ -151,7 +172,7 @@ pub(crate) async fn execute(spec: &RequestSpec, gate: &GateCtx<'_>) -> Result<Re
             })?;
             req = req.header(name, value);
         }
-        if let Some((bytes, content_type)) = &spec.body {
+        if let Some((bytes, content_type)) = &body {
             req = req
                 .header(reqwest::header::CONTENT_TYPE, content_type)
                 .body(bytes.clone());
@@ -193,6 +214,11 @@ pub(crate) async fn execute(spec: &RequestSpec, gate: &GateCtx<'_>) -> Result<Re
                     message: format!("拒绝 https→http 降级重定向：{loc}"),
                 });
             }
+            // 方法与请求体按 RFC 9110 调整（303/301/302 的 POST 改 GET 丢体）
+            let (next_method, next_body) =
+                redirect_method_and_body(status.as_u16(), &method, body.as_ref());
+            method = next_method;
+            body = next_body;
             hops += 1;
             continue;
         }

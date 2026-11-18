@@ -6,6 +6,7 @@ use super::html::{
     extract_main_content, first_between, first_open_tag, href_from_tag, parse_baidu, parse_bing,
     remove_tag_blocks, strip_tags,
 };
+use super::http::redirect_method_and_body;
 use super::search::{
     brave_query_and_params, clean_snippet, decode_search_body, deepseek_http_error,
     deepseek_query_and_time, deepseek_query_limit_error, deepseek_time_suffix, domain_of,
@@ -783,6 +784,43 @@ fn network_search_and_fetch() {
     assert!(blocked.is_err(), "本机地址必须被拒绝");
     let bad_scheme = tauri::async_runtime::block_on(fetch_text("file:///etc/hosts", None));
     assert!(bad_scheme.is_err(), "非 http(s) 协议必须被拒绝");
+}
+
+/// 回归：重定向后的方法与请求体（RFC 9110）——303 必改 GET 丢体；301/302
+/// 的 POST 也改（不然创建类操作会被做两遍，请求体还会被搬到另一个源）；
+/// 307/308 保持原方法与体
+#[test]
+fn redirect_adjusts_method_and_body() {
+    let post = reqwest::Method::POST;
+    let body = Some((b"payload".to_vec(), "application/json".to_string()));
+    // 303：一律改 GET 丢体（与原方法无关）
+    for m in [
+        reqwest::Method::GET,
+        reqwest::Method::POST,
+        reqwest::Method::PUT,
+    ] {
+        let (m2, b2) = redirect_method_and_body(303, &m, body.as_ref());
+        assert_eq!(m2, reqwest::Method::GET, "303 必须改 GET");
+        assert!(b2.is_none(), "303 必须丢请求体");
+    }
+    // 301/302 + POST：改 GET 丢体
+    for code in [301u16, 302] {
+        let (m2, b2) = redirect_method_and_body(code, &post, body.as_ref());
+        assert_eq!(m2, reqwest::Method::GET, "{code} 的 POST 必须改 GET");
+        assert!(b2.is_none(), "{code} 的 POST 必须丢请求体");
+    }
+    // 301/302 + GET/PUT：保持
+    for code in [301u16, 302] {
+        let (m2, b2) = redirect_method_and_body(code, &reqwest::Method::GET, None);
+        assert_eq!(m2, reqwest::Method::GET, "{code} 的 GET 保持");
+        assert!(b2.is_none());
+    }
+    // 307/308：方法与体都保持
+    for code in [307u16, 308] {
+        let (m2, b2) = redirect_method_and_body(code, &post, body.as_ref());
+        assert_eq!(m2, post, "{code} 必须保持方法");
+        assert!(b2.is_some(), "{code} 必须保留请求体");
+    }
 }
 
 /// 回归：http_client 禁止自动重定向——
