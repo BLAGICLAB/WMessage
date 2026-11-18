@@ -591,37 +591,28 @@
 
 | 卡 | 结果 | 证据（事件行 / 库证输出） | 备注 |
 |---|---|---|---|
-| M204 | | | |
-| M205 | | | |
-| M206 | | | |
-| M207 | | | |
-| M208 | | | |
-| M209 | | | |
-| M210 | | | |
-| M211 | | | |
-| M212 | | | |
-| M213 | | | |
-| M214 | | | |
-| M215 | | | |
-| M216 | | | |
-| M217 | | | |
-| M218 | | | |
-| M219 | | | |
-| M220 | | | |
-| M221 | | | |
-| M222 | | | |
-| M223 | | | |
-| W28 | 未覆盖 | 本机为 macOS | 环境受限延后 |
-| W29 | 未覆盖 | 本机为 macOS | 环境受限延后 |
-| M224 | | | |
-| M225 | | | |
-| M226 | | | |
-| M227 | | | |
-| M228 | | | |
-| M229 | | | |
-| M230 | | | |
-
-**变异执行台账**（V193–V222 共 30 条待跑）：
+| M204 | 未跑 | 需要真 OAuth MCP 服务器 + 浏览器授权流程（用户在场），随变异轮补跑 | 基础设施已备（env key + 桩 + 探针） |
+| M205 | 未跑 | 需恶意 OAuth 服务器（自建最小 HTTP 服务），随变异轮补跑 | — |
+| M206 | 未跑 | 需钥匙串真实读写面（env 补丁拆除后补跑更真） | — |
+| M207 | 未跑 | 需 official-elicit-demo 服务器重建，随变异轮补跑 | — |
+| M208 | 部分 | 302 全证：POST→/redirect-to→/get echo 200 JSON（301/302/303→GET 丢体）+ /post 405+allow:POST 交叉验证；每跳过闸可见（来源行显最终落点）；127.0.0.1 被公网闸拒（既有口径顺手背书） | 301/303/307/308 纯函数单测全矩阵背书（tests.rs:791-819）——httpbin.org/httpbingo.org/postman-echo 全部 302 化、webhook.site 免费档不给挂 Location，实机登记环境受限 |
+| M209 | FAIL→已修→复验 PASS | 修复前：tool 审计行 args 带原始 JSON（SECRET-pass 原文）+ 来源行带 userinfo（2 处泄漏）；163090ad 修复后复验：SECRET-pass 计数 0、args=POST httpbin.org/post、来源行 ***@ | F-新4（P2）：主循环 tool 审计行与技能步失败日志两处 sink 没接上；锚点测试 5 例 |
+| M210 | PASS | SECRET-Q210/Q210B 全文计数 0（tool.call args_preview、fetch_url 自家审计行、tool.return preview、tool 事件四处全净）；host+path 可见；模型面未裁（/html 成功面，JSON content-type 被 fetch_url 拒是设计口径） | 成功+404 两个方向都跑过 |
+| M211 | PASS | 三条过渡段（64:ff9b::c0a8:0101 / 2002:0a00:0001::1 / ::c0a8:0101）全被公网闸拒「已拒绝访问本机/内网地址」；2606:4700:4700::1111 未被字面量级拦（tcp connect error 65，网络层非闸） | 判据 3（MCP 侧同源）L1 背书（两闸单源 check_public_url） |
+| M212 | PASS | hallucination_guard kind=声称变更但未调工具 ×1 → 【系统提示】注入（第二轮请求体实证）→ 逐字复述 → hallucination_guard.repeat ×1（返工提示未成为出处） | 复述文案必须与首轮同词形（变更类声称模式按子串命中） |
+| M213 | PASS | loop.tool_window.applied chars=28183 trimmed=1 keep_recent=6；桩子全文含「存档原文按 16384 字节上限截断，超出部分不在存档里」（无「完整结果已存档」）；lookup_receipt(call_y1s8a0) 取回凭证+完整返回（16KB 档）；尾部引用（共 100 条事件 + 最后事件 id 27547393152）未被拦 | 大结果走回灌漏斗转存（conv-history 指针+头尾内联）先于滑动窗触发是预期分层 |
+| M214 | PASS | 单回合 spawn+失败构造：wi 行 failed+error 非空 → trace 741 汇报轮跑完 → 行仍 failed 同 error；极短回合（trace 741 ms=13）无 working 残行 | work_items 每会话一行（重设计未实施）——判据用「无合法用户轮插入」的构造才可观察；spawn 缺 profile 被拒=工具闸正证 |
+| M215 | PASS | 失败行 ord=10 content=「⚠️ 大模型 API 错误 500…（上游：stub-fail-215）」只含本轮错误，无上一轮汇报轮正文（ord 6/8 在案对照） | — |
+| M216 | 部分 | 未执行完：/clean 命令选择器自动化 3 次（点击条目/双回车/键盘导航）均未执行，待用户 5 秒手动补跑 | Cmd+N=新建任务面板非多窗→判据 2（第二窗口同步）环境受限登记；自动化对抗中误建 1 个空任务待清理 |
+| M220 | PASS | bot_onions_bound validator 8 工具含 run_python+ast_inspect；run_python 实际执行成功（m220-verifier-ok 156ms）；判据 2 静态面：research 字样只在 recon 段正确语境 | 判据 3（显式 profile=research 被拒）未单独构造，登记行为口径 |
+| M221 | 部分 | 默认档 9 工具全点名无漏列、write_file 过白名单（路径语义错是另一回事）；stage=executor+profile=research 被 stage 默认盖掉（两档都绑 writereditor）——显式 profile 优先级观察项登记 | 判据 2 的 prompt↔生效集一致性达成 |
+| M222 | 部分 | (a) PASS：reminder.set id=545749f0 at:2026-11-19T03:00 + 定时页页签计数/条目/nextRunAt（1 小时后）全渲染；(b) 作业不双跑未构造（需作业到点窗口+手动触发并发，登记顺延） | — |
+| M223 | PASS | (a) 僵尸行（daily:broken-format + 过期 remind_at）reminder.fired 后删行（COUNT=1 仅剩 M222 行）+ 系统通知实弹（截图）；(b) 「已重命名」声称被拦 kind=声称变更但未调工具 + 诚实更正放行 | (a) 的删行无独立审计行（fired 事件即痕迹），登记观察 |
+| M227 | PASS | 20 次 list_files Σ77ms 一次跑完，气泡「调用工具 20/20 · Σ 77ms」渲染流畅、事件成对（观感卡口径：macOS 本机记「未观察到卡顿」） | — |
+| M228 | 未跑 | 需官方 SDK MCP 服务器（1.32.2 按会话复用），随变异轮补跑 | — |
+| M229 | PASS | 清表后死代理冷启动 meta_seed_models_dev providers=235 models=8935（成功分支留痕实证）；库行数 0→235 | V221 修复面实机验证 |
+| M230 | PASS | 判据 1：气泡「请求大模型失败：网络连接中断（连接失败），本轮未完成，可点重试」四段齐、无原始串无内部错误（截图）；判据 2：重试按钮在位且点击重放（同 content user.message 01:12:22）；判据 3：恢复后重试成功气泡翻转 | 杀桩构造（连接拒绝）——deadproxy 被 NO_PROXY 豁免不适用于 LocalStub 场景，已登记 |
+**变异执行台账**（V193–V222 共 30 条待跑；2026-11-19 凌晨完成 M204–M230 行为卡后按用户节奏另开变异轮，基础设施已全部就绪——env 假密钥 + stub-llm 桩 + 剧本路由 + bodies.log 证据面，跑法同前轮「单编辑→重建→复跑→还原」）：
 
 | 锚点 | 跑否 | 结论（KILLED / SURVIVED / 受限） | 证据 |
 |---|---|---|---|
