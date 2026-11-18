@@ -34,8 +34,14 @@ mac 门禁和 mac 出包都不编译它，于是 11-14 引入预检之后 **Wind
 **顺带修的账实漂移**：模块树行数标注有 6 处过期（5 处是这几批审计修复带进来的，
 1 处是本次 unsafe 块）——快门禁不含 `audit_module_map.py`，它们一路漂到全量门禁才红。
 
-**发布待做**：GitHub Releases 新建 `v0.4.0`，上传 `wmessage_x64-setup.exe`
-（由安装器改此名，固定资产）与 `latest.json` 两个文件。
+**发布**：GitHub Releases `v0.4.0`（tag → main@88df2441，非 prerelease），上传
+`wmessage_x64-setup.exe`（由安装器改此名，固定资产）与 `latest.json` 两个文件；
+已发布资产经 API 回下载对拍，SHA256 与本地构建字节一致（`2bad89a5…`）。
+
+**端点复测（老问题复发，记在案）**：匿名 `releases/latest/download/latest.json`
+在本机 3/3 超时——github.com 的下载端点在这条网络被间歇阻断（11-09 发 0.3.0 时记过同款，
+当时 3/3 超时实锤），走 api.github.com 的资产下载则一路通。资产本身无误（回下载对拍过），
+但「检查更新」按钮用的是匿名端点，同网络的用户机上可能拉不到清单——这条只能实机验。
 
 ## 2026-11-16（周一）MCP elicitation 真验：F-7 从「桩局限」翻案为「能力没声明」
 
