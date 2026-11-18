@@ -95,11 +95,11 @@ export function useChatSend(params: ChatSendParams) {
         addHint("当前没有活动对话");
         return true;
       }
-      // 清空当前 session 消息 + 持久化
-      setMessages([]);
-      invoke("bot_history_clear", { sessionId }).catch((e) =>
-        handleCommandError(e, "bot_history_clear", { silent: true }),
-      );
+      // 落库成功再清视图：先清视图再 invoke 的话，失败时界面是空的、库里
+      // 行还在，切走再切回消息又回来了——而且失败提示不能是静默
+      invoke("bot_history_clear", { sessionId })
+        .then(() => setMessages([]))
+        .catch((e) => handleCommandError(e, "bot_history_clear", {}));
       return true;
     }
     if (cmd === "/compact") {

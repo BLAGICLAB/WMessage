@@ -607,11 +607,25 @@ pub fn bot_history_replace_summary_inner(
 /// 清空指定会话的聊天记录（会话保留），并把会话的活跃时间推到当前。
 ///
 /// 两步写在同一事务里：删消息与更新时间要么都成、要么都不成。
+///
+/// 返回被删行的 msg_id 列表：清空也是一次定向操作，命令体要据此广播
+/// `bot-msg-dropped`（真源化的规则是「每个定向操作都广播」——漏了这一条，
+/// 别的窗口仍显示旧消息直到自己 reload）。
 pub fn bot_history_clear_inner(
     conn: &mut rusqlite::Connection,
     session_id: &str,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    // 先取被删行的 id（投影事件要带上它们）
+    let ids: Vec<String> = {
+        let mut stmt = tx
+            .prepare("SELECT msg_id FROM bot_messages WHERE session_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([session_id], |r| r.get::<_, Option<String>>(0))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok().flatten()).collect()
+    };
     tx.execute(
         "DELETE FROM bot_messages WHERE session_id = ?1",
         [session_id],
@@ -625,22 +639,35 @@ pub fn bot_history_clear_inner(
         rusqlite::params![now, session_id],
     )
     .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(ids)
 }
 
 /// 清空指定会话的聊天记录（会话保留）
 #[tauri::command]
 pub async fn bot_history_clear(app: AppHandle, session_id: String) -> CommandResult<()> {
-    async_runtime::spawn_blocking(move || {
+    let app_emit = app.clone();
+    let sid_emit = session_id.clone();
+    let ids = async_runtime::spawn_blocking(move || {
         let _g = crate::db::lock::lock_or_recover(
             &super::DB_WRITE_LOCK,
             "db::bot_history DB_WRITE_LOCK",
         );
         let mut conn = super::open_db(&app)?;
-        bot_history_clear_inner(&mut conn, &session_id).map_err(CommandError::DbError)
+        bot_history_clear_inner(&mut conn, &session_id)
     })
     .await
     .map_err(|e| CommandError::from(format!("历史清空线程 join 失败：{e}")))?
+    .map_err(CommandError::DbError)?;
+    // 投影事件：删除也是定向操作，必须广播（真源化 §5.4 的规则）——
+    // 漏了它，别的窗口仍显示旧消息直到自己 reload
+    crate::bot::stream_log::emit_recorded(
+        &app_emit,
+        Some(&sid_emit),
+        "bot-msg-dropped",
+        serde_json::json!({ "msgIds": ids }),
+    );
+    Ok(())
 }
 
 #[cfg(test)]

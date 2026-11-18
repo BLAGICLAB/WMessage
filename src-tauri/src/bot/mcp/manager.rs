@@ -122,6 +122,36 @@ fn slot_connecting_stale(slot: &Slot) -> bool {
     crate::db::now_ms().saturating_sub(*since_ms) > CONNECTING_STALE_MS
 }
 
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+
+    /// Connecting 停滞判定：超窗（40s）判停滞——那是在途 future 已被 drop
+    /// （模型循环中止），槽位不会自己落定，读侧要按 Down 处理让发现路径重来。
+    /// 窗内不算；非 Connecting 槽位一律不算。
+    ///
+    /// 这个判定目前零测试覆盖：40s 这个魔法数与边界比较一旦被改坏
+    /// （比如写成 `>=` 或改成 4000），没有任何用例会红。
+    #[test]
+    fn connecting_slot_is_stale_only_after_the_window() {
+        let now = crate::db::now_ms();
+        assert!(
+            !slot_connecting_stale(&Slot::Connecting { since_ms: now }),
+            "刚进入 Connecting 不算停滞"
+        );
+        assert!(
+            slot_connecting_stale(&Slot::Connecting {
+                since_ms: now - CONNECTING_STALE_MS - 1,
+            }),
+            "超窗必须判停滞（自愈判据）"
+        );
+        assert!(
+            !slot_connecting_stale(&Slot::Down { error: "x".into() }),
+            "非 Connecting 槽位一律不算停滞"
+        );
+    }
+}
+
 /// 一份进程快照（带采样时刻）。
 #[derive(Clone)]
 struct SampleEntry {
