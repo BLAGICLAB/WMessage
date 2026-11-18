@@ -223,11 +223,14 @@ pub(crate) async fn finalize_selfcheck(
     deps: &ModelLoopDeps<'_>,
     stop: &StopGuard,
     round: usize,
+    verdict_consumed: bool,
 ) -> Result<FinalizeOutcome, CommandError> {
     let emit = deps.emit;
     let audit = deps.audit;
     let skill_finish = deps.skill_finish;
     // 终稿自检节流闸：final_text 不在工具自检态、不在 final 自检态、
+    // 本轮没消费过 verdict（verdict 轮还原的快照就是刚检查过的那份，再查
+    // 一次既浪费又会在小 gap 配置下无限循环）、
     // 字数 ≥ 80、累计函数调用 ≥ 3、距上次 ≥ gap（默认 8 轮；0 = 关闭）→
     // 拍 final_text snapshot + 注入 FINAL_SELFCHECK_PROMPT + 续跑一轮
     // 让模型判 Y/N；本轮不走主出口，模型响应在下一轮迭代末尾解析后还原。
@@ -235,6 +238,7 @@ pub(crate) async fn finalize_selfcheck(
         .final_selfcheck_round_gap
         .unwrap_or(DEFAULT_FINAL_SELFCHECK_ROUND_GAP) as usize;
     if final_selfcheck_gap > 0
+        && !verdict_consumed
         && !*expecting_selfcheck
         && !*expecting_final_selfcheck
         && final_text.chars().count() >= MIN_FINAL_SELFCHECK_CHARS
@@ -344,17 +348,22 @@ pub(crate) async fn finalize_selfcheck(
 /// verdict 从未被消费，下一轮正式答复又被当 verdict 解析后还原旧快照，
 /// 用户永远看不到改口后的答复。先消费 verdict（还原快照）再让守卫判定
 /// 消费后的文本（快照当初已过守卫，必然放行）。
+/// 返回值：本轮是否消费了一条 verdict（expecting 态成立并已按 Y/N/不可解析
+/// 三分支收口）。调用方据此让触发段本轮跳过——verdict 轮还原的快照就是
+/// 刚检查过的那份文本，若不跳过，consume 在触发段之前执行会把 expecting
+/// 先清掉，触发闸 `!expecting_final_selfcheck` 拦不住，快照立刻重新触发
+/// 自检（gap 小的配置下无限循环直到熔断）。
 pub(crate) fn consume_final_selfcheck_verdict(
     expecting_final_selfcheck: &mut bool,
     final_selfcheck_snapshot: &mut Option<String>,
     selfcheck_question_pending: &mut bool,
     final_text: &mut String,
     deps: &ModelLoopDeps<'_>,
-) {
+) -> bool {
     let emit = deps.emit;
     let audit = deps.audit;
     if !*expecting_final_selfcheck {
-        return;
+        return false;
     }
     match crate::prompts::parse_selfcheck_reply_lenient(final_text.trim()) {
         Some(false) => {
@@ -397,4 +406,5 @@ pub(crate) fn consume_final_selfcheck_verdict(
     *expecting_final_selfcheck = false;
     // 问句已被这句 Y/N 回答（或快照已还原）：悬着标志同步收掉
     *selfcheck_question_pending = false;
+    true
 }

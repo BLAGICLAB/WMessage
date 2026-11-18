@@ -191,7 +191,7 @@ pub(crate) async fn finalize_without_tools(
     // verdict 未被消费 → 下一轮正式答复又被当 verdict 解析后还原旧快照，
     // 模型改口后的正确答复就永远到不了用户。先消费（还原快照），守卫随后
     // 判定的是消费后的文本——快照当初已过守卫，必然放行。
-    super::finalize::consume_final_selfcheck_verdict(
+    let verdict_consumed = super::finalize::consume_final_selfcheck_verdict(
         expecting_final_selfcheck,
         final_selfcheck_snapshot,
         selfcheck_question_pending,
@@ -261,6 +261,7 @@ pub(crate) async fn finalize_without_tools(
         deps,
         stop,
         round,
+        verdict_consumed,
     )
     .await?
     {
