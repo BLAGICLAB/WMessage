@@ -42,6 +42,7 @@ DOCS = [
     ROOT / "docs/realmachine-smoke-test-2026-11-04.md",
     ROOT / "docs/realmachine-smoke-test-2026-11-07.md",
     ROOT / "docs/realmachine-smoke-test-2026-11-15.md",
+    ROOT / "docs/realmachine-smoke-test-2026-11-18.md",
     ROOT / "docs/WORK-ITEM-REDESIGN-PLAN-2026-11-04.md",
     ROOT / "docs/ACCEPTANCE-PLAN-2026-10-30.md",
     ROOT / "docs/agent-audit-sop-zcode.md",
