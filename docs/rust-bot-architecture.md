@@ -127,7 +127,7 @@ src-tauri/src/
 │─ Bot 核心（编排 → 决策 → 工具分发）
 ├── bot_chat.rs (836)    入口编排门面：bot_chat / bot_compact / bot_execute_task 命令 + 公共类型
 │                        （ChatMsg/TaskRef/BotChatResult）+ 子模块转出（旧路径 1:1 保持）
-│   ├── bot_chat/flow.rs (872)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
+│   ├── bot_chat/flow.rs (883)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
 │   ├── bot_chat/exec.rs (574)   任务执行面：批量执行 + ExecGuard + run_task_in_chat 全链路
 │   ├── bot_chat/media.rs (152)  多模态图片组装：base64 入模 + 扩展名白名单 + 附件索引
 │   ├── bot_chat/summary.rs (322) 历史摘要面：截断点选择 + 摘要请求 + 压缩
@@ -160,14 +160,14 @@ src-tauri/src/
 │                        （TOOLS schema 已移出，见 bot/registry.rs）
 │   ├── bot_model_loop/stream.rs (436)   SSE 解析层：parse_sse_chunk / feed_think（思考块拆分）/
 │   │                                    tool_call 增量累积 / token usage 归一
-│   ├── bot_model_loop/core.rs (1291)     核心循环：run_model_loop_core（可注入 mock）+
+│   ├── bot_model_loop/core.rs (1293)     核心循环：run_model_loop_core（可注入 mock）+
 │   │                                    dispatch_round（工具分发/回灌）
 │   ├── bot_model_loop/shell.rs (648)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
 │   ├── bot_model_loop/request.rs (769)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
 │   ├── bot_model_loop/sse.rs (892)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
-│   ├── bot_model_loop/guard.rs (719)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
+│   ├── bot_model_loop/guard.rs (720)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
 │   │                                    guard_verdict）+ 自检回复判定 + 工具自检侧调路由
-│   ├── bot_model_loop/finalize.rs (400) 收尾层：无工具收尾 / 自检侧调（decide_selfcheck）/ 出口闸
+│   ├── bot_model_loop/finalize.rs (410) 收尾层：无工具收尾 / 自检侧调（decide_selfcheck）/ 出口闸
 │   ├── bot_model_loop/fuse.rs (163)     熔断层：单轮 Function 调用上限 / 收尾窗阶梯判定（gate_call，
 │   │                                    工具轴 95% + 轮数轴「剩 3 轮」两路进窗）/ 收尾轮数出口 /
 │   │                                    轮数熔断 / 软警告注入
@@ -221,7 +221,7 @@ src-tauri/src/
 │   ├── bot/registry/result_claim_tests.rs (98)  结果值抽取与回声判定单测
 │   └── bot/registry/registry_tests.rs (1267)  工具表基线守卫（表长 / 条目顺序 / schema 字面量 /
 │                        profile 白名单 / tools JSON 形状）+ TOOLS_TABLE 无 cfg-gated 条目守卫
-├── bot/dispatch.rs (1015)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
+├── bot/dispatch.rs (1089)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计；
 │                        工具调用预算的阶梯不在这里（单点在模型循环层 fuse::gate_call），
 │                        dispatch 只留执行计数仪表，不设预算闸、不设墙钟
@@ -572,7 +572,7 @@ src-tauri/src/
 │                        源里 → Windows 走官方文档的 pip 装法。平台知识只此一处
 ├── ocr.rs               ocr_image：macOS Vision / Windows PP-OCRv6 ONNX；纯本地不上网；
 │                        输入有字节与像素上限（解码前只读文件头，解码炸弹面）
-├── ort_env.rs (255)    ort 动态库预检：load-dynamic 的「缺 dll/缺依赖 → panic + 毒化全局
+├── ort_env.rs (259)    ort 动态库预检：load-dynamic 的「缺 dll/缺依赖 → panic + 毒化全局
 │                        Mutex」拦在触碰 ort 之前——真加载一次拿 Win32 错误码分类（126=
 │                        缺 VC++ 运行库）+ 永久降级闸，记忆/OCR 两侧共用；非 Windows
 │                        build 期链接恒过，catch_unwind 兜底两侧引擎加载
