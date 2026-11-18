@@ -151,7 +151,11 @@ fn try_load_dylib() -> Result<(), String> {
         .and_then(|p| p.parent().map(|p| p.to_path_buf()));
     let env_val = std::env::var("ORT_DYLIB_PATH").ok();
     let path = resolve_dylib_path(env_val.as_deref(), exe_dir.as_deref(), "onnxruntime.dll");
-    match libloading::Library::new(&path) {
+    // SAFETY: 只加载随安装包分发的 onnxruntime.dll（路径按 ort 同一套规则解析），
+    // 与 ort 自身加载的是同一份二进制；加载失败走 Err 分支，不触碰 ort 的全局状态
+    // （真加载由 ort 在自己的 OnceLock 里再做一次）。
+    let loaded = unsafe { libloading::Library::new(&path) };
+    match loaded {
         Ok(lib) => {
             drop(lib);
             Ok(())
