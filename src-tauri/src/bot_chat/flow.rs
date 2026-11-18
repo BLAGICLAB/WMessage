@@ -221,6 +221,17 @@ mod tests {
         let hits = include_str!("flow.rs").matches(needle).count();
         assert_eq!(hits, 2, "开票与收尾两处都要过用户轮闸");
     }
+
+    /// 接线守卫：命令层的聚合器清场（turn_record::begin）必须在 bot_chat.rs
+    /// 存在——它跑在配置/密钥读取等早退点**之前**，失败轮取走聚合内容时必空；
+    /// 缺了它，失败行会拼上上一轮（如汇报轮）的残留正文（实机 M215 的变异面）。
+    /// 只扫命令层文件：shell 层还有一份（流式路径的同步清场），两份职责不同。
+    #[test]
+    fn command_layer_clears_turn_record_before_early_exits() {
+        let needle = concat!("turn_record", "::begin(sid)");
+        let hits = include_str!("../bot_chat.rs").matches(needle).count();
+        assert_eq!(hits, 1, "bot_chat.rs 命令层必须有一处聚合器清场");
+    }
 }
 
 /// 会话锁被占时的拒答结果。抽成纯函数便于单测（构造点内联在 Tauri 命令里，
