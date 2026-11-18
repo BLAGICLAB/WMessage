@@ -136,9 +136,9 @@ pub async fn handle_elicitation(
         .unwrap_or(field.as_str())
         .to_string();
 
-    // 类型白名单：string / number / integer / boolean / enum（string+enum 数组）
-    let known = matches!(ftype.as_str(), "string" | "number" | "integer" | "boolean")
-        || (ftype == "string" && !enum_values.is_empty());
+    // 类型白名单：string / number / integer / boolean。枚举是「string + enum
+    // 数组」的形态（选项从 def.enum 读，与 type 无关），不是独立的 type 值。
+    let known = matches!(ftype.as_str(), "string" | "number" | "integer" | "boolean");
     if !known {
         return Err(decline(&format!("不支持的字段类型：{ftype}")));
     }
@@ -246,7 +246,9 @@ pub async fn handle_elicitation(
                     "bot-ask-resolved",
                     serde_json::json!({ "questionId": qid, "action": "dismiss", "answer": null }),
                 );
-                return Err(decline(&format!("输入不是整数：{}", truncate(&text, 40))));
+                // 不回显用户输入：应答值不进审计/日志（可能含凭据），
+                // 这条错误会经工具结果进 tool.return 审计与执行痕迹
+                return Err(decline("输入不是整数，请重新输入"));
             }
         },
         "number" => match text.trim().parse::<f64>() {
@@ -258,7 +260,7 @@ pub async fn handle_elicitation(
                     "bot-ask-resolved",
                     serde_json::json!({ "questionId": qid, "action": "dismiss", "answer": null }),
                 );
-                return Err(decline(&format!("输入不是数字：{}", truncate(&text, 40))));
+                return Err(decline("输入不是数字，请重新输入"));
             }
         },
         _ => serde_json::json!({ field.clone(): text.trim() }),
@@ -311,7 +313,20 @@ fn note_answer_echo(server_id: &str, content: &Value) {
             obj.values()
                 .filter_map(|v| v.as_str())
                 .filter(|s| s.chars().count() >= MIN_ECHO_LEN)
-                .map(|s| s.to_string())
+                .flat_map(|s| {
+                    // 原值 + JSON 转义形态：值里带引号/反斜杠/换行时，服务器
+                    // 回显的是转义后的那一份——只按原值做子串匹配对不上，
+                    // 凭据就这么漏进审计
+                    let mut forms = vec![s.to_string()];
+                    let escaped = serde_json::to_string(s).unwrap_or_default();
+                    if let Some(inner) = escaped.strip_prefix('"').and_then(|x| x.strip_suffix('"'))
+                    {
+                        if inner != s {
+                            forms.push(inner.to_string());
+                        }
+                    }
+                    forms
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -358,10 +373,6 @@ pub(crate) fn redact_answer_echoes(text: &str) -> String {
 
 fn decline(reason: &str) -> McpError {
     McpError::invalid_params(reason.to_string(), None)
-}
-
-fn truncate(s: &str, n: usize) -> String {
-    s.chars().take(n).collect()
 }
 
 /// 用户应答回程（AskCard source=mcp_elicit 时调这个）：按 qid 唤醒等待方。
@@ -441,6 +452,34 @@ mod tests {
             message: "m".into(),
             requested_schema: schema,
         }
+    }
+
+    /// 锚点：应答值含引号/反斜杠时，服务器回显的是 JSON 转义形态——
+    /// 只按原值做子串匹配对不上，凭据就这么漏进审计。转义形态必须一并登记。
+    #[test]
+    fn escaped_answer_echo_is_redacted() {
+        let server = "srv-escape-test";
+        let content = serde_json::json!({ "token": "a\"b-secret" });
+        note_answer_echo(server, &content);
+        // 服务器回显：值已被 JSON 转义
+        let echoed = r#"{"jsonrpc":"2.0","id":1,"result":{"content":{"token":"a\"b-secret"}}}"#;
+        let out = redact_answer_echoes(echoed);
+        assert!(
+            !out.contains("b-secret"),
+            "转义形态的应答值必须被脱敏：{out}"
+        );
+    }
+
+    /// 锚点：解析失败时错误文案不得回显用户输入（应答值不进审计/日志）
+    #[test]
+    fn decline_text_never_echoes_user_input() {
+        let secret = "sk-should-not-appear";
+        let err = decline("输入不是整数，请重新输入");
+        assert!(
+            !err.to_string().contains(secret),
+            "错误文案不得带用户输入：{err}"
+        );
+        assert!(err.to_string().contains("整数"), "{err}");
     }
 
     #[tokio::test]
