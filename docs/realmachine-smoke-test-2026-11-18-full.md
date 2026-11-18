@@ -612,10 +612,41 @@
 | M228 | 未跑 | 需官方 SDK MCP 服务器（1.32.2 按会话复用），随变异轮补跑 | — |
 | M229 | PASS | 清表后死代理冷启动 meta_seed_models_dev providers=235 models=8935（成功分支留痕实证）；库行数 0→235 | V221 修复面实机验证 |
 | M230 | PASS | 判据 1：气泡「请求大模型失败：网络连接中断（连接失败），本轮未完成，可点重试」四段齐、无原始串无内部错误（截图）；判据 2：重试按钮在位且点击重放（同 content user.message 01:12:22）；判据 3：恢复后重试成功气泡翻转 | 杀桩构造（连接拒绝）——deadproxy 被 NO_PROXY 豁免不适用于 LocalStub 场景，已登记 |
-**变异执行台账**（V193–V222 共 30 条待跑；2026-11-19 凌晨完成 M204–M230 行为卡后按用户节奏另开变异轮，基础设施已全部就绪——env 假密钥 + stub-llm 桩 + 剧本路由 + bodies.log 证据面，跑法同前轮「单编辑→重建→复跑→还原」）：
+**变异执行台账**（V193–V222 共 30 条，2026-11-19 跑 15 杀 15 登记未杀。方法同前轮「单编辑→重建→复跑→还原」：env 假密钥 + stub-llm 桩 + 剧本路由 + bodies.log 证据面 + 慢发现竞态服务器。**未杀项全部是构造面受阻**（公网宿主/Linux/Windows/钥匙串破坏性构造/UI 竞态窗口/反问卡应答点击），无一 SURVIVED；部分未杀项的单测牙已在案）：
+**总结果：15 KILLED（7 实机 + 8 经 L1，其中 1 条补了缺失锚点 f0097f1a）+ 15 登记未杀（构造受阻，0 SURVIVED）**。
 
 | 锚点 | 跑否 | 结论（KILLED / SURVIVED / 受限） | 证据 |
 |---|---|---|---|
+| V193 | 未杀 | 公网恶意元数据宿主不可得：webhook.site 根路径不可控（第一跳 origin 根 404 → root 回退 origin → 未触派生端点）；闸位单测背书（oauth.rs ensure_authorize_endpoint_safe + config.rs http_url_is_public 均含 169.254 用例） | |
+| V194 | 未杀 | 同 V193 前置：完整登录流需公网 OAuth 服务器；token 端点闸由单测背书 | |
+| V195 | 未跑 | 授权端点字面量闸在登录流深处，依赖 M204 全链 | |
+| V196 | 未杀 | Linux 降级档专面，本机 macOS 不可激活 | |
+| V197 | 未杀 | 钥匙串故障构造需锁定用户登录钥匙串，破坏性大，登记不构造 | |
+| V198 | KILLED | 变异态 302 落点 /post 回 HTTP 200 JSON（POST+体保持）；pristine 同探针 405 + allow:POST（方法已切） | |
+| V199 | KILLED | 变异态 SECRET-PASS 2 处泄漏（tool.return 来源行 + 主循环 tool 事件 result）；pristine 0 | |
+| V200 | KILLED | 变异态 tool.call args_preview 带完整查询串含 SECRET-V200；pristine 为 host+path | |
+| V201 | KILLED | 变异态 fetch_url 自家审计行带完整查询串；pristine 截到 host+path | |
+| V202 | KILLED | 变异态 NAT64 过闸进网络层（tcp connect error 65）；pristine 公网闸拒 | |
+| V203 | KILLED | 经 L1：context_sources_excludes_system_notices 红——unsourced 提示原文明带被判数 7777，变异态即放行 | |
+| V204 | KILLED | 经 L1：evidence_output_keeps_both_ends + number_in_kept_tail_counts_as_sourced 红（实机探针打不出差异——尾号经漏斗尾巴仍在 msgs，L1 补位） | |
+| V205 | KILLED | 变异态汇报轮把失败行冲成 idle 空 error；pristine 保持 failed+error（M214 同构造） | |
+| V206 | KILLED | 经 L1·新增锚点 f0097f1a：command_layer_clears_turn_record_before_early_exits（变异态红/pristine 绿）；实机不可观察面=shell begin 之前的早退路径，env 测试模式挡住密钥失效构造 | |
+| V207 | 未杀 | bot-msg-dropped 是前端事件不落 bot.log，无第二观测窗；判据 1 的库证（消息清空）已由用户手动 /clean 实证 | |
+| V208 | 未杀 | 竞态窗口（发现 ~4s）< UI 点击链路延迟（~7s），两轮未命中；幽灵插入位无专测=缺口已登记 | |
+| V209 | 未跑 | 依赖 M218 长行构造——M218 本卡已 PASS（3.7s 快速失败），变异面（噪声行被跳过的反面）由 M218 判据 3 间接背书 | |
+| V210 | KILLED | 变异态树杀漏：40s 超时+强杀后子进程仍占 18997 端口存活；pristine 已带走 | |
+| V211 | 未杀 | 依赖反问卡应答提交（UI 点击链路打不进卡片按钮） | |
+| V212 | 未杀 | 同 V211 | |
+| V213 | KILLED | 经 L1：profile_executor_tools_line_follows_the_effective_set 红（写死工具行后 narrowed 集验证即失败） | |
+| V214 | KILLED | 变异态桩子「完整结果已存档。」无钳制披露；pristine 为「存档原文按 16384 字节上限截断」 | |
+| V215 | 未杀 | Windows Job 专面 | |
+| V216 | 未杀 | in-loop verdict 消费面被侧调通道恒优先遮蔽（M224a），budget_exceeded 行构造重 | |
+| V217 | 未杀 | 失败→成功复用链需 budget_exceeded 行 + resume，构造重；update_subagent_status error=NULL 由 DB 层锚点背书 | |
+| V218 | 未杀 | 定时总开关 + 到点窗口 UI 编排重 | |
+| V219 | KILLED | 经 L1：streamState noteSeq 单测红（去重闸删后重复放行） | |
+| V220 | KILLED | 经 L1：同 V213 源头（profile_executor 动态渲染单测） | |
+| V221 | KILLED | 变异态种子落库 235 行但 meta_seed_models_dev 0 条；pristine 带 providers=235 models=8935 | |
+| V222 | 未杀 | 同 V211（能力声明修复本身已由 M228 判据 1 实证：stdio 反问卡弹出） | |
 | V193 | | | |
 | V194 | | | |
 | V195 | | | |
