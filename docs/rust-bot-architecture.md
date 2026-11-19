@@ -442,11 +442,11 @@ src-tauri/src/
 │                        recover_fused_exit（剥标记 → 盘上 verdict → 强制交卷轮 → 原会话续跑一次）
 ├── bot/subagent_runner.rs (1300) + bot/subagent_runner/reporting.rs (319) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
 │                        + panic 隔离 + 任务包装渲染
-├── bot/subagent_spawn.rs (434) 子 agent 派发：入参校验 / 建行 / 并发闸 SubagentGate（per-session 2 /
+├── bot/subagent_spawn.rs (446) 子 agent 派发：入参校验 / 建行 / 并发闸 SubagentGate（per-session 2 /
 │                        global 3，闸满排队）
 ├── bot/subagent_tools.rs (619) 子 agent 的五个 LLM 工具：tool_spawn_subagent / tool_check_subagent /
 │                        tool_cancel_subagent / tool_write_artifact_file / tool_read_own_card
-├── bot_orchestrator.rs (752) 子 Agent 编排器门面（方案 B，SUBA 设计 2026-09-27）：类型与生命周期
+├── bot_orchestrator.rs (753) 子 Agent 编排器门面（方案 B，SUBA 设计 2026-09-27）：类型与生命周期
 │                        核心 + 子模块 re-export；受管子 agent 的
 │                        spawn/check/cancel 生命周期状态机 + 无任务卡（子 agent 不再建卡，行上
 │                        只存 parent_session_id 指向派发会话，遗留可空 task_id 不再写入）+ acceptance
@@ -464,7 +464,7 @@ src-tauri/src/
 │       │                          wait 策略 / 摘要注入位置
 │       ├── orchestrator_tests/outcome.rs (640) 收尾契约与摘要：机器判据 / digest 幂等 / 汇报轮顺序 /
 │       │                          包装渲染
-│       └── orchestrator_tests/spawn.rs (1170) 派发与并发闸：建行 / 幂等 / 队列位次
+│       └── orchestrator_tests/spawn.rs (1236) 派发与并发闸：建行 / 幂等 / 队列位次
 ├── bot_artifacts.rs     产物登记：link_file_to_task → 收尾按 TaskExecOrigin 分流 →
 │                        落「通知中心」artifact_bind 消息（原 artifact-batch-ready 挂件弹窗已下线）→
 │                        通知页勾选 → confirm_artifact_batch 落库 + notif_resolve_artifact 回写

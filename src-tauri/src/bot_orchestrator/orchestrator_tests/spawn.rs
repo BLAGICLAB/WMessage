@@ -119,6 +119,72 @@ fn spawn_from_a_different_parent_session_is_not_deduped() {
     assert!(!second.deduped, "跨会话不命中幂等键");
     assert_ne!(second.subagent_id, first.subagent_id);
 }
+/// stage / 配置档在幂等键内：同目标同配置的重派命中键（防双份预算），
+/// 同目标**不同**配置是不同意图，静默合并等于模型视角丢了一个意图。
+#[test]
+fn spawn_with_same_stage_and_onion_is_deduped() {
+    let mut conn = test_conn();
+    let _g = crate::db::lock_db_write();
+    let mut first_req = req(None);
+    first_req.stage = Some(SubagentStage::Recon);
+    first_req.onion = Some(SpawnOnion {
+        config: "probe".into(),
+        max_turn: Some(30),
+    });
+    let first = spawn_subagent_locked(&mut conn, &first_req, 5_000).unwrap();
+    assert!(!first.deduped);
+    let second = spawn_subagent_locked(&mut conn, &first_req, 6_000).unwrap();
+    assert!(second.deduped, "同目标同 stage 同配置档应命中幂等键");
+    assert_eq!(second.subagent_id, first.subagent_id);
+}
+#[test]
+fn spawn_with_a_different_onion_is_not_deduped() {
+    let mut conn = test_conn();
+    let _g = crate::db::lock_db_write();
+    let mut first_req = req(None);
+    first_req.stage = Some(SubagentStage::Recon);
+    first_req.onion = Some(SpawnOnion {
+        config: "probe".into(),
+        max_turn: Some(30),
+    });
+    let first = spawn_subagent_locked(&mut conn, &first_req, 5_000).unwrap();
+    let mut other = req(None);
+    other.stage = Some(SubagentStage::Recon);
+    other.onion = Some(SpawnOnion {
+        config: "writereditor".into(),
+        max_turn: Some(30),
+    });
+    let second = spawn_subagent_locked(&mut conn, &other, 6_000).unwrap();
+    assert!(
+        !second.deduped,
+        "同目标不同配置档是不同意图，不得静默合并进第一派的配置"
+    );
+    assert_ne!(second.subagent_id, first.subagent_id);
+    // 配置档确实各自落行（去重键的另两个维度可查）
+    let first_row = crate::db::load_subagent(&conn, &first.subagent_id)
+        .unwrap()
+        .unwrap();
+    let second_row = crate::db::load_subagent(&conn, &second.subagent_id)
+        .unwrap()
+        .unwrap();
+    let (s1, o1): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT spawn_stage, spawn_onion FROM subagents WHERE id = ?1",
+            [&first_row.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let (_s2, o2): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT spawn_stage, spawn_onion FROM subagents WHERE id = ?1",
+            [&second_row.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(s1.as_deref(), Some("recon"));
+    assert_eq!(o1.as_deref(), Some("probe"));
+    assert_eq!(o2.as_deref(), Some("writereditor"));
+}
 /// 没有父会话（拿不到会话 id 的调用路径）时不去重：宁可多建一行，
 /// 也不要把别人的活吞掉。
 #[test]

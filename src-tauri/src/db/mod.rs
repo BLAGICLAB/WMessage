@@ -240,6 +240,8 @@ pub fn open_db<R: tauri::Runtime>(
     // token 用量三列（老库 NULL = 未记）。排在 task_id 重建迁移之后——
     // 重建搬运的是显式列清单，本列由这里补
     crate::db::subagents::ensure_usage_columns(&conn).map_err(|e| e.to_string())?;
+    // spawn 幂等键的 stage / 配置档两列（老行 NULL = 未带配置）
+    crate::db::subagents::ensure_spawn_config_columns(&conn).map_err(|e| e.to_string())?;
     // 子 agent 预算整套退役：旧 budget_json 列清扫（幂等）
     crate::db::subagents::drop_legacy_budget_column(&conn).map_err(|e| e.to_string())?;
     // 定时任务表（定时任务模块）：内容型定时作业，到点据此新建任务卡并执行

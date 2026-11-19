@@ -161,7 +161,9 @@ pub(crate) const SUBAGENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS subagents (
            finished_at        INTEGER,
            prompt_tokens     INTEGER,
            completion_tokens INTEGER,
-           cache_read_tokens INTEGER
+           cache_read_tokens INTEGER,
+           spawn_stage       TEXT,
+           spawn_onion       TEXT
          );
          CREATE INDEX IF NOT EXISTS idx_subagents_status ON subagents(status);
          CREATE INDEX IF NOT EXISTS idx_subagents_parent ON subagents(parent_session_id);
@@ -254,8 +256,34 @@ pub fn ensure_usage_columns(conn: &rusqlite::Connection) -> Result<(), String> {
     )
 }
 
-/// usage 记账：模型循环累计的 token 用量写进行。终态落库时随状态更新同一事务
-/// 调用；值来自 LoopTrace 的原子累计，不新增埋点。
+/// 幂等迁移：补派发配置两列（spawn_stage / spawn_onion，NULL = 未带 / 老行）。
+/// 去重键的另两个维度：不落行的话，同目标不同配置档的第二派发会被静默
+/// 合并进第一派的配置，回执还报 deduped——模型视角两个意图只执行了一个。
+pub fn ensure_spawn_config_columns(conn: &rusqlite::Connection) -> Result<(), String> {
+    super::ensure_columns(
+        conn,
+        "subagents",
+        &[("spawn_stage", "TEXT"), ("spawn_onion", "TEXT")],
+    )
+}
+
+/// 派发配置落行（stage / 配置档名指针）：幂等键的另两个维度，建行同事务调用。
+/// 重放不经过本函数（终态行不参与去重），老行保持 NULL 与「未带配置」同义。
+pub fn set_spawn_config(
+    conn: &rusqlite::Connection,
+    id: &str,
+    stage: Option<&str>,
+    onion: Option<&str>,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE subagents SET spawn_stage = ?2, spawn_onion = ?3 WHERE id = ?1",
+        rusqlite::params![id, stage, onion],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// usage 记账：模型循环累计的 token 用量写进行。终态落库时随状态更新同一事务/// 调用；值来自 LoopTrace 的原子累计，不新增埋点。
 pub fn update_subagent_usage(
     conn: &rusqlite::Connection,
     id: &str,
@@ -347,6 +375,7 @@ const SQL_SELECT_LIVE_BY_REQUEST: &str =
      trace_id, acceptance_json, context_summary, result_json, error, \
      created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE parent_session_id = ?1 \
      AND profile = ?2 AND objective = ?3 AND acceptance_json = ?4 AND model IS ?5 \
+     AND spawn_stage IS ?6 AND spawn_onion IS ?7 \
      AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1";
 
 fn row_to_subagent(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubagentRow> {
@@ -493,9 +522,10 @@ pub fn load_subagents_by_parent(
 
 /// 按「同一份派发请求」找还活着的子 agent 行（spawn 幂等去重的查表口）。
 ///
-/// 请求口径 = 父会话 + 档位 + 目标 + 验收标准 + 指定模型：全同即视为同一次
-/// 派发。`acceptance_json` 与 `objective` 都取行里的原样字符串（写行时就是
-/// 这么存的），比较是逐字节的——目标差一个字就不是同一次派发。
+/// 请求口径 = 父会话 + 档位 + 目标 + 验收标准 + 指定模型 + stage + 配置档：
+/// 全同即视为同一次派发。`acceptance_json` 与 `objective` 都取行里的原样
+/// 字符串（写行时就是这么存的），比较是逐字节的——目标差一个字就不是同一
+/// 次派发；stage / 配置档 NULL 安全比较（IS），未带配置的老行不与新配置派发合并。
 ///
 /// 只认活着的行（queued / running）：已终态的允许重派。
 pub fn find_live_subagent_by_request(
@@ -505,6 +535,8 @@ pub fn find_live_subagent_by_request(
     objective: &str,
     acceptance_json: &str,
     model: Option<&str>,
+    stage: Option<&str>,
+    onion: Option<&str>,
 ) -> Result<Option<SubagentRow>, String> {
     conn.query_row(
         SQL_SELECT_LIVE_BY_REQUEST,
@@ -513,7 +545,9 @@ pub fn find_live_subagent_by_request(
             profile,
             objective,
             acceptance_json,
-            model
+            model,
+            stage,
+            onion
         ],
         row_to_subagent,
     )

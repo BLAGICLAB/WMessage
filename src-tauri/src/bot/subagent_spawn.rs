@@ -119,7 +119,8 @@ pub(crate) fn spawn_subagent_locked(
     // 预算，同一份活干两遍。
     //
     // 只在有父会话时去重：跨会话的同目标派发是不同用户意图，不该互相吞掉。
-    // 已终态的不参与去重——「再跑一次」是重试语义。
+    // 已终态的不参与去重——「再跑一次」是重试语义。stage / 配置档在键内：
+    // 同目标不同配置是不同意图，静默合并等于模型视角丢了一个意图。
     if let Some(parent_sid) = req.parent_session_id.as_deref() {
         let live = crate::db::find_live_subagent_by_request(
             conn,
@@ -128,6 +129,8 @@ pub(crate) fn spawn_subagent_locked(
             &objective,
             &acceptance_json,
             req.model_profile.as_deref(),
+            req.stage.as_ref().map(|s| s.as_str()),
+            req.onion.as_ref().map(|o| o.config.as_str()),
         )
         .map_err(CommandError::DbError)?;
         if let Some(existing) = live {
@@ -172,9 +175,18 @@ pub(crate) fn spawn_subagent_locked(
         cache_read_tokens: None,
     };
     crate::db::insert_subagent(&tx, &row).map_err(CommandError::DbError)?;
+    // stage / 配置档落行（幂等键的另两个维度），与建行同事务；重放不经过
+    // 这里，老行保持 NULL。payload 仍带全量（runner 闭包消费）
+    crate::db::set_spawn_config(
+        &tx,
+        &subagent_id,
+        req.stage.as_ref().map(|s| s.as_str()),
+        req.onion.as_ref().map(|o| o.config.as_str()),
+    )
+    .map_err(CommandError::DbError)?;
     // 派发待办与建行**同一事务**：行与待办要么都在、要么都不在——
     // 「有行无待办」的中间态不存在，重启补派与进程内投递共享同一事实。
-    // stage / onion 是内存闭包参数不落 subagents 行，随 payload 带给派发器
+    // stage / onion 随 payload 带给派发器
     let runner_stage = req.stage;
     let runner_onion = req.onion.clone();
     let dispatch_payload = serde_json::json!({

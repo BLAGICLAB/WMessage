@@ -143,9 +143,10 @@ impl SubagentStage {
 
 /// 派发时已解析校验过的 per-onion 配置档。
 ///
-/// **随内存闭包进 runner，不落 subagents 行**：这两项是「这次派发做了什么决定」，
-/// 不是子 agent 的固有属性——重启后不会有第二个派发方重跑同一次 spawn
-/// （行已终态）。真正需要长期留存的是 `bot_sessions` 的两列，runner 建会话时写。
+/// 随内存闭包进 runner；**配置档名同时落 subagents.spawn_onion**（建行同事务，
+/// stage 同落）——spawn 幂等键必须能比到首次派发的配置，否则同目标不同配置
+/// 的第二派发被静默合并。重启重放不经过建行路径（终态行不参与去重），
+/// 行上这份只为去重键服务；长期留存仍在 `bot_sessions` 两列，runner 建会话时写。
 #[derive(Debug, Clone)]
 pub struct SpawnOnion {
     /// 配置档名，同时是 `<数据目录>/onions/<config>.yaml` 的文件名
