@@ -181,7 +181,7 @@ fn registry() -> &'static Mutex<NameRegistry> {
 ///
 /// 名字来自登记簿：**同一台服务器的同一个工具，重连前后拿到同一个名字**
 /// （消歧序号不随在场服务器变化而漂移）。
-pub fn build_mounted_tools(
+pub(crate) fn build_mounted_tools(
     servers: &[(String, String, Vec<Tool>)],
     registry: &mut NameRegistry,
 ) -> Vec<McpMountedTool> {
@@ -213,7 +213,7 @@ pub fn mcp_mounted_tools() -> Vec<McpMountedTool> {
 /// 到它——dispatch 随后走 `ensure_connected` 按需拉起（按需启停：调用这一刻才
 /// 启子进程），而不是把模型按旧 schema 调用的名字报成「未知工具」。服务器显示名
 /// 从实时挂载表取（取不到 = 服务器已删，退回 id 兜底）。
-pub fn find_mounted(func_name: &str) -> Option<McpToolRef> {
+pub(crate) fn find_mounted(func_name: &str) -> Option<McpToolRef> {
     // 登记簿的锁在取到归属后立刻放掉——下面还要调 mcp_mounted_tools()（它自己
     // 会拿这把锁），std Mutex 不可重入，嵌套持有即死锁。
     let (server_id, tool_name) = {
@@ -431,13 +431,13 @@ fn shape_result_text(result: &CallToolResult) -> (String, usize) {
 
 /// 拼进主 agent tools JSON 的动态段：`",\n  {schema}..."` 序列（空表 = 空串）。
 /// registry::tools_json_with_mcp 把它插进静态 JSON 的尾部 `"\n]"` 之前。
-pub fn mcp_tools_json_body() -> String {
+pub(crate) fn mcp_tools_json_body() -> String {
     build_tools_json_body(&shared().mounted())
 }
 
 /// 同上（纯函数内核，单测直打）。名字走登记簿——与 dispatch 反查同一本，
 /// 否则「模型看到的名字」与「路由用的名字」会分家。
-pub fn build_tools_json_body(servers: &[(String, String, Vec<Tool>)]) -> String {
+pub(crate) fn build_tools_json_body(servers: &[(String, String, Vec<Tool>)]) -> String {
     let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
     let entries = build_mounted_tools(servers, &mut reg);
     let mut s = String::new();

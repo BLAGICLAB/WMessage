@@ -121,93 +121,57 @@ pub(crate) mod turn_record;
 // params re-export：参数表命令（设置页「Agent 运行参数」卡的数据源）。
 // 走 facade 口径——外部只认 `crate::bot::bot_effective_params`，不直接摸
 // `crate::bot::params::*`。
-pub use params::{
+pub use params::{ParamDef, ParamView, PARAMS_TABLE};
+// 收窄批（M-9）：子树外零引用的 pub fn 降 pub(crate)，re-export 随同降级
+//——命令注册面（lib.rs generate_handler）在 crate 内，pub(crate) use 足够。
+pub(crate) use params::{
     __cmd__bot_effective_params, __tauri_command_name_bot_effective_params, bot_effective_params,
-    effective_params, ParamDef, ParamView, PARAMS_TABLE,
 };
 
 // config re-export
 pub use config::{
     __cmd__bot_get_config,
-    __cmd__bot_log_read,
-    __cmd__bot_set_active_model,
-    __cmd__bot_set_config,
-    __cmd__bot_set_perm_mode,
-    __cmd__memory_tuning_get,
-    __cmd__memory_tuning_set,
     __tauri_command_name_bot_get_config,
-    __tauri_command_name_bot_log_read,
-    __tauri_command_name_bot_set_active_model,
-    __tauri_command_name_bot_set_config,
-    __tauri_command_name_bot_set_perm_mode,
-    __tauri_command_name_memory_tuning_get,
-    __tauri_command_name_memory_tuning_set,
-    // ── 公开函数（16 个普通 pub）──
+    // ── 公开函数 ──
     active_model_entry,
     archive_after_days,
     audit_log,
     audit_log_hook,
-    // ── 5 个 Tauri command：函数本体 + #[tauri::command] 宏生成物 ──
     bot_get_config,
-    bot_log_read,
-    bot_set_active_model,
-    bot_set_config,
-    bot_set_perm_mode,
-    check_len,
     config_path,
-    effective_inference,
     ensure_vendor_verified,
-    has_api_key,
-    has_search_key,
-    memory_tuning_get,
-    memory_tuning_set,
-    migrate_bot_config_schema,
     migrate_legacy_key,
     migrate_search_keys,
     perm_mode,
-    read_api_key,
     read_bypass_llm_switch,
-    read_llm_key,
     read_memory_control,
     read_memory_tuning,
-    read_search_key,
-    resolve_archive_after_days,
-    resolve_max_tokens,
-    write_search_key,
+};
 
-    // ── 核心类型（5 struct + 3 enum）──
-    ActiveModelId,
-    ApiProvider,
-    BotConfig,
-    BotConfigView,
-    EffectiveInference,
-    KeySlot,
-    MemoryTuning,
-    ModelEntry,
-    ModelsByProvider,
-    PermMode,
+// 收窄批（M-9）：以下命令/函数子树外零引用，连宏工件一并降 pub(crate)——
+// 注册面（lib.rs generate_handler）在 crate 内，pub(crate) use 足够。
+pub(crate) use config::{
+    __cmd__bot_log_read, __cmd__bot_set_active_model, __cmd__bot_set_config,
+    __cmd__bot_set_perm_mode, __cmd__memory_tuning_get, __cmd__memory_tuning_set,
+    __tauri_command_name_bot_log_read, __tauri_command_name_bot_set_active_model,
+    __tauri_command_name_bot_set_config, __tauri_command_name_bot_set_perm_mode,
+    __tauri_command_name_memory_tuning_get, __tauri_command_name_memory_tuning_set, bot_log_read,
+    bot_set_active_model, bot_set_config, bot_set_perm_mode, check_len, effective_inference,
+    memory_tuning_get, memory_tuning_set, migrate_bot_config_schema, read_llm_key, read_search_key,
+    read_vendor_key, EffectiveInference,
+};
 
-    // ── 常量（14 个）──
-    DEFAULT_ARCHIVE_DAYS,
-    DEFAULT_MAX_TOKENS,
-    KEYRING_SERVICE,
-    KEYRING_USER,
-    MAX_ARCHIVE_DAYS,
-    MAX_DUE,
-    MAX_KEYWORD,
-    MAX_MAX_TOKENS,
-    MAX_NOTE,
-    MAX_SUBTASK_TEXT,
-    MAX_TAGS,
-    MAX_TAG_LEN,
-    MAX_TITLE,
-    MIN_MAX_TOKENS,
+// ── config 核心类型与常量：类型/常量可见性未动，保持 pub ──
+pub use config::{
+    ActiveModelId, ApiProvider, BotConfig, BotConfigView, KeySlot, MemoryTuning, ModelEntry,
+    ModelsByProvider, PermMode, DEFAULT_ARCHIVE_DAYS, DEFAULT_MAX_TOKENS, KEYRING_SERVICE,
+    KEYRING_USER, MAX_ARCHIVE_DAYS, MAX_DUE, MAX_KEYWORD, MAX_MAX_TOKENS, MAX_NOTE,
+    MAX_SUBTASK_TEXT, MAX_TAGS, MAX_TAG_LEN, MAX_TITLE, MIN_MAX_TOKENS,
 };
 
 // ── config pub(crate) 项：必须用 pub(crate) use 才能保留原可见性 ──
 // base_url_is_safe 不移出：它只在 config 模块内部（SSRF 校验的 base_url 检查）用，
 // 移出来 crate 内无人引用，编译器报 unused import。
-pub(crate) use config::read_vendor_key;
 pub(crate) use config::{
     add_allowed_dir, escape_for_log, load_config, resolve_model_override, truncate_for_log,
     update_config_file,

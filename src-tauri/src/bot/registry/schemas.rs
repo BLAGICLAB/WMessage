@@ -1268,7 +1268,7 @@ pub(super) fn splice_mcp_body_owned(base: String, body: &str) -> String {
     join_mcp_body(&base, body).unwrap_or(base)
 }
 
-pub fn profile_tools_json(profile: crate::db::SubagentProfile) -> &'static str {
+pub(crate) fn profile_tools_json(profile: crate::db::SubagentProfile) -> &'static str {
     static CACHE: OnceLock<HashMap<&'static str, String>> = OnceLock::new();
     CACHE
         .get_or_init(|| {

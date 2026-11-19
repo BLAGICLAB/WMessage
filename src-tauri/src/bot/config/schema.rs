@@ -200,7 +200,7 @@ pub fn resolve_temperature(v: Option<f64>, provider: ApiProvider) -> Option<f64>
 
 /// 条目 top_p 解析：钳制 0..=1；None = 不写请求体；
 /// 非有限值（NaN/±∞）→ None 不发（同 resolve_temperature）
-pub fn resolve_top_p(v: Option<f64>) -> Option<f64> {
+pub(crate) fn resolve_top_p(v: Option<f64>) -> Option<f64> {
     v.filter(|p| p.is_finite()).map(|p| p.clamp(0.0, MAX_TOP_P))
 }
 
@@ -240,7 +240,7 @@ pub const MIN_MAX_TOKENS: u32 = 256;
 pub const MAX_MAX_TOKENS: u32 = crate::bot::constants::MAX_TOKENS_CAP;
 
 /// max_tokens 配置解析：None = 内置默认；Some 钳制到 256..=硬顶。
-pub fn resolve_max_tokens(v: Option<u32>) -> u32 {
+pub(crate) fn resolve_max_tokens(v: Option<u32>) -> u32 {
     v.unwrap_or(DEFAULT_MAX_TOKENS)
         .clamp(MIN_MAX_TOKENS, MAX_MAX_TOKENS)
 }
@@ -248,8 +248,10 @@ pub fn resolve_max_tokens(v: Option<u32>) -> u32 {
 /// max_tokens 写侧钳制（256..=硬顶）——落盘前用。
 ///
 /// 钳制原本只在读侧 `resolve_max_tokens`：落盘的是用户填的原值，运行时按钳过的
-/// 值走。写侧用同一组边界钳一遍，落盘值 = 生效值。
-pub fn clamp_max_tokens(n: u32) -> u32 {
+/// 值走。写侧用同一组边界钳一遍，落盘值 = 生效值。当前仅测试消费（写侧边界
+/// 由设置页钳）。
+#[cfg(test)]
+pub(crate) fn clamp_max_tokens(n: u32) -> u32 {
     n.clamp(MIN_MAX_TOKENS, MAX_MAX_TOKENS)
 }
 
@@ -403,7 +405,7 @@ pub(crate) fn migrate_bot_config_schema_locked(app: &AppHandle) -> Result<(), St
 
 /// 条目级推理参数：每卡模型覆盖时按覆盖条目计算（原 effective_inference
 /// 只按 active 条目）。global_max_tokens = 全局 max_tokens 兜底。
-pub fn inference_for_entry(
+pub(crate) fn inference_for_entry(
     entry: &ModelEntry,
     provider: ApiProvider,
     global_max_tokens: Option<u32>,

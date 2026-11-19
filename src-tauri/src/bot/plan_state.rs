@@ -72,7 +72,7 @@ fn plans() -> &'static Mutex<HashMap<String, PlanSnapshot>> {
 }
 
 /// 写入本会话的当前计划（整表替换）。
-pub fn set_plan(session_id: &str, snapshot: PlanSnapshot) {
+pub(crate) fn set_plan(session_id: &str, snapshot: PlanSnapshot) {
     let mut m = plans().lock().unwrap_or_else(|e| e.into_inner());
     if m.len() >= MAX_TRACKED_SESSIONS && !m.contains_key(session_id) {
         // 淘汰最旧的一条：计划是临时态，丢了只是面板少一段历史，
@@ -89,13 +89,14 @@ pub fn set_plan(session_id: &str, snapshot: PlanSnapshot) {
 }
 
 /// 取本会话的当前计划（无计划 = None）。
-pub fn get_plan(session_id: &str) -> Option<PlanSnapshot> {
+pub(crate) fn get_plan(session_id: &str) -> Option<PlanSnapshot> {
     let m = plans().lock().unwrap_or_else(|e| e.into_inner());
     m.get(session_id).cloned()
 }
 
-/// 丢弃本会话的计划。
-pub fn clear_plan(session_id: &str) {
+/// 丢弃本会话的计划。当前仅测试消费（生产路径靠 set_plan 覆盖换血，无清空入口）。
+#[cfg(test)]
+pub(crate) fn clear_plan(session_id: &str) {
     let mut m = plans().lock().unwrap_or_else(|e| e.into_inner());
     m.remove(session_id);
 }
@@ -106,7 +107,7 @@ fn turn_started_at(session_id: &str) -> Option<i64> {
 }
 
 /// 组装面板视图：快照 + 本轮起点。
-pub fn plan_view(session_id: &str) -> Option<PlanView> {
+pub(crate) fn plan_view(session_id: &str) -> Option<PlanView> {
     get_plan(session_id).map(|s| PlanView {
         steps: s.steps,
         explanation: s.explanation,
@@ -117,7 +118,7 @@ pub fn plan_view(session_id: &str) -> Option<PlanView> {
 
 /// `bot-plan` 事件载荷。sessionId（信封）由统一出口 `emit_recorded` 盖章，
 /// 调用方不带同名键——自带 sessionId 是信封纪律的破口。
-pub fn plan_payload(view: &PlanView) -> serde_json::Value {
+pub(crate) fn plan_payload(view: &PlanView) -> serde_json::Value {
     serde_json::json!({
         "steps": view.steps,
         "explanation": view.explanation,
@@ -130,7 +131,7 @@ pub fn plan_payload(view: &PlanView) -> serde_json::Value {
 ///
 /// 校验从严：模型写错就当场报错并把可执行的修法说清楚，不猜字段、
 /// 不静默丢条目——猜出来的状态会在面板上冒充真实进度。
-pub fn parse_update_plan(args: &str) -> Result<(Vec<PlanStep>, Option<String>), String> {
+pub(crate) fn parse_update_plan(args: &str) -> Result<(Vec<PlanStep>, Option<String>), String> {
     let v = crate::bot::dispatch::parse_args(args);
     let arr = v["plan"]
         .as_array()
@@ -200,7 +201,7 @@ pub fn parse_update_plan(args: &str) -> Result<(Vec<PlanStep>, Option<String>), 
 /// 事件是变化流：面板晚挂载、或上一轮的事件已经滚出回放缓冲时，
 /// 靠这条命令拿回当前状态。没计划就返回 null，不编一份空清单出来。
 #[tauri::command]
-pub fn bot_plan_state(session_id: String) -> Option<PlanView> {
+pub(crate) fn bot_plan_state(session_id: String) -> Option<PlanView> {
     plan_view(&session_id)
 }
 

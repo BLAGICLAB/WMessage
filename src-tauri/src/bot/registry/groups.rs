@@ -152,7 +152,7 @@ pub fn groups_enabled() -> bool {
     GROUPS_ENABLED.load(Ordering::Relaxed)
 }
 
-pub fn set_groups_enabled(v: bool) {
+pub(crate) fn set_groups_enabled(v: bool) {
     GROUPS_ENABLED.store(v, Ordering::Relaxed);
 }
 
@@ -173,7 +173,7 @@ pub fn deactivate_session_groups(session_id: &str) {
 
 /// activate_tools 的执行体：groups 只接受休眠组名；子 agent 会话拒（白名单
 /// 链路正交，不该走到这）。返回确认文案。
-pub fn activate_groups(session_id: &str, groups: &[String]) -> Result<String, String> {
+pub(crate) fn activate_groups(session_id: &str, groups: &[String]) -> Result<String, String> {
     if groups.is_empty() {
         return Err("groups 不能为空（可用的休眠组：desktop / services / apps）".into());
     }
@@ -215,7 +215,7 @@ fn leak_group_name(g: &str) -> Result<&'static str, String> {
 /// 非休眠工具 → None 放行；休眠且该会话未激活 → Denied（文案含 activate_tools
 /// 指引，模型可自愈）。子 agent 会话永远拒——它没有激活组记录，休眠工具在此
 /// 即拒；其后的 1.6 白名单闸还有一层纵深。
-pub fn deferred_gate(
+pub(crate) fn deferred_gate(
     name: &str,
     session_id: Option<&str>,
 ) -> Option<crate::bot::registry::ToolResult> {
@@ -252,7 +252,7 @@ fn group_contains(group: &str, name: &str) -> bool {
 /// 会话工具清单拼装：默认组（OnceLock 缓存静态串）+ 已激活组现拼。
 /// 无激活 → 借静态串（热路径零分配）；拼装走 registry::assemble 的过滤闭包，
 /// JSON 合法性由消费端 fail-soft + 本文件测试锁。
-pub fn session_tools_json(session_id: Option<&str>) -> std::borrow::Cow<'static, str> {
+pub(crate) fn session_tools_json(session_id: Option<&str>) -> std::borrow::Cow<'static, str> {
     let active: Vec<&'static str> = session_id
         .and_then(|sid| {
             active_groups()
@@ -301,7 +301,7 @@ fn default_tools_json() -> &'static str {
 }
 
 /// activate_tools 工具 handler：写会话激活 store，返回确认文案。
-pub fn tool_activate_tools(
+pub(crate) fn tool_activate_tools(
     session_id: Option<&str>,
     args: &str,
 ) -> crate::bot::registry::ToolResult {

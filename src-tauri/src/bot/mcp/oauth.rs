@@ -623,7 +623,7 @@ pub async fn mcp_oauth_login(
 }
 
 #[tauri::command]
-pub fn mcp_oauth_logout(
+pub(crate) fn mcp_oauth_logout(
     app: tauri::AppHandle,
     server_id: String,
 ) -> crate::error::CommandResult<()> {
@@ -639,7 +639,7 @@ pub fn mcp_oauth_logout(
 }
 
 #[tauri::command]
-pub fn mcp_oauth_status(
+pub(crate) fn mcp_oauth_status(
     app: tauri::AppHandle,
     server_id: String,
 ) -> crate::error::CommandResult<serde_json::Value> {

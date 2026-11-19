@@ -87,7 +87,7 @@ pub struct McpSecretsMasked {
 pub const MASK: &str = "••••••";
 
 /// 脱敏视图：值全替换成掩码（键名照常下发）。
-pub fn masked(secrets: &McpSecrets) -> McpSecrets {
+pub(crate) fn masked(secrets: &McpSecrets) -> McpSecrets {
     let mask_map = |m: &BTreeMap<String, String>| -> BTreeMap<String, String> {
         m.keys().map(|k| (k.clone(), MASK.to_string())).collect()
     };
@@ -102,7 +102,7 @@ pub fn masked(secrets: &McpSecrets) -> McpSecrets {
 /// 规则：值 == 掩码 → 保留已存的同名项（已存没有这一项 = 该项已被别处删除，
 /// 按「用户没改这一项」处理 = 不写回）；值 != 掩码 → 用新值。
 /// **不在传入表里的键 = 用户删掉了这一项**（不再保留）。
-pub fn resolve_masked(
+pub(crate) fn resolve_masked(
     incoming: &BTreeMap<String, String>,
     old: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {

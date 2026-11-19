@@ -72,7 +72,7 @@ fn audit(app: &AppHandle, event: &str, server: &McpServerConfig) {
 /// 新增或编辑 MCP 服务器。id 为空 = 新建（后端生成 uuid）；非空 = 按 id 整体替换。
 /// 返回保存后的完整列表。
 #[tauri::command]
-pub fn mcp_server_save(
+pub(crate) fn mcp_server_save(
     app: AppHandle,
     server: McpServerConfig,
 ) -> CommandResult<Vec<McpServerConfig>> {
@@ -166,7 +166,7 @@ fn restore_prev_secrets(
 
 /// 按 id 删除 MCP 服务器（幂等：不存在不报错）。返回删除后的完整列表。
 #[tauri::command]
-pub fn mcp_server_delete(app: AppHandle, id: String) -> CommandResult<Vec<McpServerConfig>> {
+pub(crate) fn mcp_server_delete(app: AppHandle, id: String) -> CommandResult<Vec<McpServerConfig>> {
     // 内置条目（Playwright）不可删：启动时缺失会补写回来，删了等于没删，
     // 用户看到的却是「我明明删掉了又冒出来」。停用走 mcp_server_toggle。
     if super::builtin::is_builtin_id(&id) {
@@ -228,7 +228,7 @@ fn purge_tool_cache(app: &AppHandle, id: &str) -> Result<(), String> {
 
 /// 启停 MCP 服务器（窄口径：只动 enabled 字段）。返回更新后的完整列表。
 #[tauri::command]
-pub fn mcp_server_toggle(
+pub(crate) fn mcp_server_toggle(
     app: AppHandle,
     id: String,
     enabled: bool,
@@ -389,7 +389,7 @@ pub async fn mcp_status(app: AppHandle) -> CommandResult<Vec<McpServerStatus>> {
 /// 前端拿不到明文（`skip_serializing`），但用户要看得见「哪些变量已设置」
 /// 并能逐项增删——于是下发脱敏视图，保存时掩码值原样回传即表示「保留原值」。
 #[tauri::command]
-pub fn mcp_server_secrets_masked(
+pub(crate) fn mcp_server_secrets_masked(
     app: AppHandle,
     id: String,
 ) -> CommandResult<crate::bot::mcp::secrets::McpSecretsMasked> {

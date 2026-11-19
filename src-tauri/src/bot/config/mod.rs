@@ -40,31 +40,31 @@ pub mod types;
 // 子模块内符号分别 re-export 到此，供 facade 一一加载，保持外部路径 crate::bot::X 不变。
 
 pub use crate::memory::MemoryTuning;
-pub use audit::{audit_log, audit_log_hook, bot_log_read};
-pub use commands::{
-    apply_active_model_switch, apply_perm_mode, archive_after_days, bot_get_config,
+pub use audit::{audit_log, audit_log_hook};
+// 收窄批（M-9）：子树外零引用的 pub fn 降 pub(crate)，re-export 随同降级。
+pub(crate) use audit::bot_log_read;
+#[cfg(test)]
+use commands::apply_active_model_switch;
+pub use commands::{archive_after_days, bot_get_config, perm_mode};
+pub(crate) use commands::{
     bot_set_active_model, bot_set_config, bot_set_perm_mode, memory_tuning_get, memory_tuning_set,
-    perm_mode,
 };
 pub use io::{
     config_path, migrate_legacy_key, migrate_search_keys, read_bypass_llm_switch,
-    read_memory_control, read_memory_tuning, write_memory_tuning_at,
+    read_memory_control, read_memory_tuning,
 };
-pub use keyring::{
-    has_api_key, has_search_key, has_vendor_key, read_api_key, read_llm_key, read_search_key,
-    read_vendor_key, write_search_key,
-};
+pub(crate) use keyring::{read_llm_key, read_search_key, read_vendor_key};
+pub(crate) use schema::EffectiveInference;
 pub use schema::{
-    active_model_entry, effective_inference, ensure_vendor_verified, inference_for_entry,
-    migrate_bot_config_schema, resolve_max_tokens, EffectiveInference, DEFAULT_MAX_TOKENS,
-    MAX_MAX_TOKENS, MIN_MAX_TOKENS,
+    active_model_entry, ensure_vendor_verified, DEFAULT_MAX_TOKENS, MAX_MAX_TOKENS, MIN_MAX_TOKENS,
 };
+pub(crate) use schema::{effective_inference, migrate_bot_config_schema};
+pub(crate) use types::check_len;
 pub use types::{
-    check_len, resolve_archive_after_days, resolve_model_override, ActiveModelId, ApiProvider,
-    BotConfig, BotConfigView, KeySlot, ModelEntry, ModelsByProvider, PermMode, ResolvedModel,
-    BOT_CONFIG_SCHEMA_VERSION, DEFAULT_ARCHIVE_DAYS, KEYRING_SERVICE, KEYRING_USER,
-    MAX_ARCHIVE_DAYS, MAX_DUE, MAX_KEYWORD, MAX_NOTE, MAX_SUBTASK_TEXT, MAX_TAGS, MAX_TAG_LEN,
-    MAX_TITLE,
+    resolve_model_override, ActiveModelId, ApiProvider, BotConfig, BotConfigView, KeySlot,
+    ModelEntry, ModelsByProvider, PermMode, ResolvedModel, BOT_CONFIG_SCHEMA_VERSION,
+    DEFAULT_ARCHIVE_DAYS, KEYRING_SERVICE, KEYRING_USER, MAX_ARCHIVE_DAYS, MAX_DUE, MAX_KEYWORD,
+    MAX_NOTE, MAX_SUBTASK_TEXT, MAX_TAGS, MAX_TAG_LEN, MAX_TITLE,
 };
 
 // pub(crate) 项：bot.rs 的 `pub(crate) use config::{...}` 块需要。
@@ -72,18 +72,19 @@ pub(crate) use audit::{escape_for_log, truncate_for_log};
 pub(crate) use io::{add_allowed_dir, load_config, update_config_file};
 
 // tauri 命令宏生成物（__cmd__* / __tauri_command_name_*）：在 commands.rs 里
-// #[tauri::command] 函数旁边自动生成；同样 re-export 以让 bot.rs 的 facade 一行不动。
-pub use commands::{
-    __cmd__bot_get_config, __cmd__bot_set_active_model, __cmd__bot_set_config,
-    __cmd__bot_set_perm_mode, __cmd__memory_tuning_get, __cmd__memory_tuning_set,
-    __tauri_command_name_bot_get_config, __tauri_command_name_bot_set_active_model,
+// #[tauri::command] 函数旁边自动生成；宏工件可见性随命令函数走（收窄批后
+// bot_get_config 保持 pub，其余降 pub(crate)）。
+pub use commands::{__cmd__bot_get_config, __tauri_command_name_bot_get_config};
+pub(crate) use commands::{
+    __cmd__bot_set_active_model, __cmd__bot_set_config, __cmd__bot_set_perm_mode,
+    __cmd__memory_tuning_get, __cmd__memory_tuning_set, __tauri_command_name_bot_set_active_model,
     __tauri_command_name_bot_set_config, __tauri_command_name_bot_set_perm_mode,
     __tauri_command_name_memory_tuning_get, __tauri_command_name_memory_tuning_set,
 };
 // bot_log_read 是 #[tauri::command] 但住在 audit.rs（同模块同生命周期），
 // 宏生成物也在 audit 里。__cmd__bot_log_read 与 __tauri_command_name_bot_log_read
 // 因此走 audit 子模块 re-export。
-pub use audit::{__cmd__bot_log_read, __tauri_command_name_bot_log_read};
+pub(crate) use audit::{__cmd__bot_log_read, __tauri_command_name_bot_log_read};
 
 // 抑制 unused 警告：escape_for_log / truncate_for_log 跨模块被外部 bot_chat / bot_model_loop
 // 仍通过 bot.rs 的 `pub use config::{...}` 路径使用，本模块测试不直接覆盖

@@ -421,7 +421,7 @@ pub const MAX_ARCHIVE_DAYS: u32 = 365;
 
 /// 归档天数解析：None → 7 默认；有值钳制 1..=365（防 0 把规则打死或超大值
 /// 形同关闭）。前端设置页同规则钳制（src/lib/archiveRule.ts clampArchiveDays）。
-pub fn resolve_archive_after_days(v: Option<u32>) -> u32 {
+pub(crate) fn resolve_archive_after_days(v: Option<u32>) -> u32 {
     v.unwrap_or(DEFAULT_ARCHIVE_DAYS).clamp(1, MAX_ARCHIVE_DAYS)
 }
 

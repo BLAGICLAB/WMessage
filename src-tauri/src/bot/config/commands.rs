@@ -299,7 +299,7 @@ fn clamp_agent_params(config: &mut BotConfig) {
 }
 
 #[tauri::command]
-pub fn bot_set_config(
+pub(crate) fn bot_set_config(
     app: AppHandle,
     config: BotConfig,
     api_key: Option<String>,
@@ -421,7 +421,7 @@ pub fn bot_set_config(
 /// （api_provider + 该协议的 active_model_id），derive 老字段自然跟随新协议。
 /// 列表为空 / id 两边都不在（已删除）→ InvalidArgument 响亮失败，
 /// 不静默回退到 first——用户点的是哪一个就该切哪一个。
-pub fn apply_active_model_switch(cfg: &mut BotConfig, model_id: &str) -> CommandResult<()> {
+pub(crate) fn apply_active_model_switch(cfg: &mut BotConfig, model_id: &str) -> CommandResult<()> {
     let mbp = cfg
         .models_by_provider
         .get_or_insert_with(ModelsByProvider::default);
@@ -468,7 +468,10 @@ pub fn apply_active_model_switch(cfg: &mut BotConfig, model_id: &str) -> Command
 /// **不做整份配置写回**——避免前端旧快照覆盖设置页并发修改的字段（白名单/开关等）。
 /// key 相关路径完全不触碰。返回切换后的 BotConfigView，前端免二次读取。
 #[tauri::command]
-pub fn bot_set_active_model(app: AppHandle, model_id: String) -> CommandResult<BotConfigView> {
+pub(crate) fn bot_set_active_model(
+    app: AppHandle,
+    model_id: String,
+) -> CommandResult<BotConfigView> {
     // 读改写全程持 CONFIG_WRITE_LOCK——与 bot_set_config 同锁，消除并发丢更新
     let _g = io::lock_config_write();
     // MCP env/headers 机密迁移先于读取与写盘：skip_serializing 写回即剥明文，
@@ -516,7 +519,7 @@ pub fn bot_set_active_model(app: AppHandle, model_id: String) -> CommandResult<B
 /// 授权模式落盘的纯函数：只认 ask/yolo 两个合法值，退役值（strict/auto）与
 /// 非法值按 Ask 归一（与 `PermMode::from_cfg` 同口径——安全默认偏严，
 /// 不因为前端传了脏值就放宽成 yolo）。
-pub fn apply_perm_mode(cfg: &mut BotConfig, mode: &str) -> PermMode {
+pub(crate) fn apply_perm_mode(cfg: &mut BotConfig, mode: &str) -> PermMode {
     let m = PermMode::from_cfg(Some(mode));
     cfg.perm_mode = Some(m.as_str().to_string());
     m
@@ -528,7 +531,7 @@ pub fn apply_perm_mode(cfg: &mut BotConfig, mode: &str) -> PermMode {
 /// 覆盖设置页并发修改的字段（白名单/开关/密钥开关等）。
 /// key 相关路径完全不触碰。返回更新后的 BotConfigView，前端免二次读取。
 #[tauri::command]
-pub fn bot_set_perm_mode(app: AppHandle, mode: String) -> CommandResult<BotConfigView> {
+pub(crate) fn bot_set_perm_mode(app: AppHandle, mode: String) -> CommandResult<BotConfigView> {
     // 读改写全程持 CONFIG_WRITE_LOCK——与 bot_set_config / bot_set_active_model
     // 同锁，消除并发丢更新
     let _g = io::lock_config_write();
@@ -559,7 +562,7 @@ pub fn bot_set_perm_mode(app: AppHandle, mode: String) -> CommandResult<BotConfi
 /// 下次 test_connection 会凭仍可读的 key 重新验证回绿——失败方向与
 /// fail-closed 一致且可重试恢复，不改先移名单后删 key 的次序。
 #[tauri::command]
-pub fn bot_clear_vendor_key(app: AppHandle, vendor: String) -> CommandResult<()> {
+pub(crate) fn bot_clear_vendor_key(app: AppHandle, vendor: String) -> CommandResult<()> {
     let vendor = vendor.trim();
     super::io::update_config_file(&app, |cfg| {
         cfg.verified_vendors.retain(|v| v != vendor);
@@ -567,17 +570,15 @@ pub fn bot_clear_vendor_key(app: AppHandle, vendor: String) -> CommandResult<()>
     keyring::delete_vendor_key(vendor)
 }
 
-pub use super::audit::bot_log_read;
-
 /// 记忆检索参数读取（memoryTuning；已过 clamped，前端只见合法值）
 #[tauri::command]
-pub fn memory_tuning_get(app: AppHandle) -> CommandResult<crate::memory::MemoryTuning> {
+pub(crate) fn memory_tuning_get(app: AppHandle) -> CommandResult<crate::memory::MemoryTuning> {
     Ok(io::read_memory_tuning(&app))
 }
 
 /// 记忆检索参数写回（None = 移除配置块回落默认；写入前服务端 clamped 兜底）
 #[tauri::command]
-pub fn memory_tuning_set(
+pub(crate) fn memory_tuning_set(
     app: AppHandle,
     tuning: Option<crate::memory::MemoryTuning>,
 ) -> CommandResult<()> {

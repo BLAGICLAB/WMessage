@@ -38,7 +38,7 @@ static WATCHDOGS: LazyLock<Mutex<HashMap<String, Watchdog>>> =
 /// 等于服务 pid）；`child` 是服务进程本身（Windows 侧要它的句柄）。
 /// 装不上（缺 /bin/sh、job 创建失败等）就不登记——**不因看门狗装不上而
 /// 拒绝服务启动**：看门狗是兜底，不是服务能不能跑的前提。
-pub fn attach(service_id: &str, service_pgid: i32, child: &Child) -> bool {
+pub(crate) fn attach(service_id: &str, service_pgid: i32, child: &Child) -> bool {
     let wd = match Watchdog::create(service_pgid, child) {
         Some(w) => w,
         None => return false,
@@ -49,7 +49,7 @@ pub fn attach(service_id: &str, service_pgid: i32, child: &Child) -> bool {
 }
 
 /// 服务停了 / 自己退了：收掉看门狗助手（别留一个空转的 sh 进程）。
-pub fn disarm(service_id: &str) {
+pub(crate) fn disarm(service_id: &str) {
     let mut map = WATCHDOGS.lock().unwrap_or_else(|e| e.into_inner());
     // 移除即 Drop：Drop 里杀助手进程
     map.remove(service_id);
@@ -57,7 +57,7 @@ pub fn disarm(service_id: &str) {
 
 /// 当前登记着的看门狗数（测试与诊断用；只有 unix 侧的测试会读它）。
 #[cfg(all(test, unix))]
-pub fn registered_count() -> usize {
+pub(crate) fn registered_count() -> usize {
     WATCHDOGS.lock().unwrap_or_else(|e| e.into_inner()).len()
 }
 

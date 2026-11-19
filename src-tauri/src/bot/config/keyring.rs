@@ -313,11 +313,11 @@ pub(crate) fn classify_has_key(r: Result<String, keyring::Error>) -> CommandResu
 
 // slot 顶层入口
 
-pub fn read_api_key() -> CommandResult<String> {
+pub(crate) fn read_api_key() -> CommandResult<String> {
     read_key_of_slot(KeySlot::Llm)
 }
 
-pub fn has_api_key() -> CommandResult<bool> {
+pub(crate) fn has_api_key() -> CommandResult<bool> {
     has_key_of_slot(KeySlot::Llm)
 }
 
@@ -370,12 +370,12 @@ pub fn read_search_key(slot: KeySlot) -> CommandResult<String> {
 }
 
 /// 搜索 key 存在性检查（bot_get_config 组 view 用）
-pub fn has_search_key(slot: KeySlot) -> CommandResult<bool> {
+pub(crate) fn has_search_key(slot: KeySlot) -> CommandResult<bool> {
     has_key_of_slot(slot)
 }
 
 /// 写搜索 key（bot_set_config 顶层参数用；Some(非空) 覆盖语义在调用方）
-pub fn write_search_key(slot: KeySlot, key: &str) -> CommandResult<()> {
+pub(crate) fn write_search_key(slot: KeySlot, key: &str) -> CommandResult<()> {
     write_key_of_slot(slot, key)
 }
 
@@ -549,7 +549,7 @@ fn require_vendor(vendor: &str) -> CommandResult<&str> {
 }
 
 /// 读厂商 key：未配置 → KeyringError（同 read_api_key 的 NoEntry 口径）
-pub fn read_vendor_key(vendor: &str) -> CommandResult<String> {
+pub(crate) fn read_vendor_key(vendor: &str) -> CommandResult<String> {
     let vendor = require_vendor(vendor)?;
     let backend = key_backend();
     if backend == KeyBackend::PlaintextFile {
@@ -562,7 +562,7 @@ pub fn read_vendor_key(vendor: &str) -> CommandResult<String> {
 }
 
 /// 厂商 key 存在性检查（bot_get_config 组 vendorKeys 列表用）
-pub fn has_vendor_key(vendor: &str) -> CommandResult<bool> {
+pub(crate) fn has_vendor_key(vendor: &str) -> CommandResult<bool> {
     let vendor = require_vendor(vendor)?;
     let backend = key_backend();
     if backend == KeyBackend::PlaintextFile {
@@ -581,7 +581,7 @@ pub fn has_vendor_key(vendor: &str) -> CommandResult<bool> {
 }
 
 /// 写厂商 key（bot_set_config 的 vendorKey 参数用）
-pub fn write_vendor_key(vendor: &str, key: &str) -> CommandResult<()> {
+pub(crate) fn write_vendor_key(vendor: &str, key: &str) -> CommandResult<()> {
     let vendor = require_vendor(vendor)?;
     let backend = key_backend();
     if backend == KeyBackend::PlaintextFile {
@@ -596,7 +596,7 @@ pub fn write_vendor_key(vendor: &str, key: &str) -> CommandResult<()> {
 }
 
 /// 删厂商 key（幂等：不存在 = Ok）
-pub fn delete_vendor_key(vendor: &str) -> CommandResult<()> {
+pub(crate) fn delete_vendor_key(vendor: &str) -> CommandResult<()> {
     let vendor = require_vendor(vendor)?;
     let backend = key_backend();
     if backend == KeyBackend::PlaintextFile {

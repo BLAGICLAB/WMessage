@@ -267,7 +267,7 @@ pub fn run_started_at(session_id: &str) -> Option<i64> {
 }
 
 /// 在途会话列表（谁正在跑）。
-pub fn inflight_list() -> Vec<InflightRun> {
+pub(crate) fn inflight_list() -> Vec<InflightRun> {
     let now = now_ms();
     let mut m = logs();
     sweep_expired(&mut m, now);
@@ -318,13 +318,13 @@ pub fn replay(session_id: &str, after_seq: u64) -> StreamReplay {
 
 /// 在途会话列表（客户端命令）。
 #[tauri::command]
-pub fn bot_inflight_list() -> Vec<InflightRun> {
+pub(crate) fn bot_inflight_list() -> Vec<InflightRun> {
     inflight_list()
 }
 
 /// 回放某会话的流式事件（客户端命令）。
 #[tauri::command]
-pub fn bot_stream_replay(session_id: String, after_seq: u64) -> StreamReplay {
+pub(crate) fn bot_stream_replay(session_id: String, after_seq: u64) -> StreamReplay {
     replay(&session_id, after_seq)
 }
 

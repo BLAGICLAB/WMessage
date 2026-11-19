@@ -199,7 +199,7 @@ pub use claims::{
     states_execution_not_done,
 };
 pub use schemas::{
-    mutating_tools, profile_tools_json, profile_whitelist, tools_index, tools_json, tools_json_for,
+    mutating_tools, profile_whitelist, tools_index, tools_json, tools_json_for,
     tools_json_with_mcp, BUILTIN_TOOL_COUNT, CODER_TOOLS, GENERAL_TOOLS, RESEARCH_TOOLS,
     SCHEMA_ACTIVATE_WINDOW, SCHEMA_ADD_SUBTASK, SCHEMA_APPS_CREATE, SCHEMA_APPS_LIST,
     SCHEMA_APPS_UPDATE_FILES, SCHEMA_ASK_USER, SCHEMA_AST_INSPECT, SCHEMA_CANCEL_REMINDER,

@@ -104,7 +104,7 @@ pub struct InstructionsView {
 
 /// 读指令文件（设置页编辑卡回填）
 #[tauri::command]
-pub fn instructions_get(app: AppHandle) -> CommandResult<InstructionsView> {
+pub(crate) fn instructions_get(app: AppHandle) -> CommandResult<InstructionsView> {
     let path = instructions_path(&app);
     let content = match std::fs::read_to_string(&path) {
         Ok(s) => s,
@@ -120,7 +120,7 @@ pub fn instructions_get(app: AppHandle) -> CommandResult<InstructionsView> {
 
 /// 写指令文件（设置页保存）。空内容 = 清空指令（合法，槽位随之消失）。
 #[tauri::command]
-pub fn instructions_set(app: AppHandle, content: String) -> CommandResult<InstructionsView> {
+pub(crate) fn instructions_set(app: AppHandle, content: String) -> CommandResult<InstructionsView> {
     let chars = content.chars().count();
     if chars > INSTRUCTIONS_MAX_CHARS {
         return Err(CommandError::IoError(format!(

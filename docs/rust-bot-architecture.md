@@ -191,7 +191,7 @@ src-tauri/src/
 │   ├── bot_model_loop/tests/sse.rs (402)    读流层测试（叫停后不推流 / 正文照旧记账）
 │   ├── bot_model_loop/tests/repeat_gate.rs (248) 重复闸测试（指纹连击 / 第 3 次拦截 / 转问三态 /
 │   │                                    豁免表 / 与收尾窗叠加）
-├── bot.rs (221)         bot 族唯一对外门面：跨族 re-export（BotChatResult/TaskRef/ChatMsg/
+├── bot.rs (185)         bot 族唯一对外门面：跨族 re-export（BotChatResult/TaskRef/ChatMsg/
 │                        model_loop/StopGuard/StopToken/AuditLevel/db::* 等）+ 子模块声明；
 │                        **跨族引用一律走 `crate::bot::`**，族外不得直接摸
 │                        `crate::bot_chat::` 这类深层路径（tests-audit/audit_bot_namespace.py
@@ -221,7 +221,7 @@ src-tauri/src/
 │   ├── bot/registry/mentioned_tool_names_tests.rs (77)  工具点名整词匹配单测
 │   ├── bot/registry/claimed_executed_tools_tests.rs (63) 执行声称单测
 │   ├── bot/registry/result_claim_tests.rs (98)  结果值抽取与回声判定单测
-│   └── bot/registry/registry_tests.rs (1267)  工具表基线守卫（表长 / 条目顺序 / schema 字面量 /
+│   └── bot/registry/registry_tests.rs (1268)  工具表基线守卫（表长 / 条目顺序 / schema 字面量 /
 │                        profile 白名单 / tools JSON 形状）+ TOOLS_TABLE 无 cfg-gated 条目守卫
 ├── bot/dispatch.rs (1089)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计；
@@ -286,7 +286,7 @@ src-tauri/src/
 │   └── bot/mcp/builtin.rs       内置条目（Playwright 浏览器）：playwright-mcp/ 包目录解析
 │                                （env → exe 同目录 → 资源目录 → 仓库根）+ Chromium 内核定位
 │                                + 启动时缺失才补写配置（默认停用）
-├── bot/procs.rs (1274)      进程树公共模块（受管服务层与 MCP stdio 共用）：
+├── bot/procs.rs (1276)      进程树公共模块（受管服务层与 MCP stdio 共用）：
 │                        纯进程操作，不碰任何上层登记表——只依赖 pid 空间与系统进程表：
 │                        进程快照（pid/ppid/启动标识/RSS/CPU 时间，Linux 读 /proc、
 │                        macOS 调 ps）+ ppid 树子孙收集 + 增量比对（PID 复用识别）
@@ -306,7 +306,7 @@ src-tauri/src/
 │                        `#[cfg(test)] mod X;` 声明识别 + 生产切片剔除内联
 │                        `#[cfg(test)]` 块。判据不看文件名也不看代码位置——
 │                        位置启发式会把「测试块在前、生产代码在后」的文件整段漏扫
-├── bot/services.rs (494) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
+├── bot/services.rs (497) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
 │                        **门面**——实现按面拆到下面六个子模块，这里只留类型 / 常量 / use /
 │                        逐项转出（`crate::bot::services::X` 旧路径与旧可见性保持不变）
 │                        登记表（AppState.services）+ 状态机（Starting/Running/Stopping/Exited/Failed）
@@ -377,10 +377,10 @@ src-tauri/src/
 │   │                     按模型族/协议的 ReasoningWire（OpenAI effort/GLM thinking/
 │   │                     Anthropic budget），resolve 装配 + describe 审计展示
 │   └── audit.rs         audit_log
-├── bot/tools.rs (101)      工具实现门面：23 个 tool_* 逐项转出（crate::bot::tools::X 旧路径 1:1 保持）
+├── bot/tools.rs (99)      工具实现门面：23 个 tool_* 逐项转出（crate::bot::tools::X 旧路径 1:1 保持）
 │   ├── bot/tools/task.rs (1110)   任务面：查询族（view/过滤/渲染/query）+ 管理族（增删改/子任务/绑文件）
 │   ├── bot/tools/doc.rs (889)     文档面：提取文档 / Word·Excel·PPT·PDF 生成 / 联网搜索 / 抓页 / 自由 Python
-│   ├── bot/tools/service.rs (277) 受管服务面：start/stop/list 长驻进程 + 集成测试钩子
+│   ├── bot/tools/service.rs (270) 受管服务面：start/stop/list 长驻进程 + 集成测试钩子
 │   ├── bot/tools/common.rs (153)  公共杂项面：时间工具 / files 参数解析与安全校验 / 审计补充 kv / 改库广播
 │   ├── bot/tools/trace.rs (245)    凭证召回面：按 tool_call_id/span_id/trace_id 调回历史工具结果（只读、零新表）
 │   ├── bot/tools/http.rs (669)     专用 HTTP 工具面：http_request（方法/请求体/自定义头/下载落产物目录；
@@ -397,7 +397,7 @@ src-tauri/src/
 │   ├── bot/tools/trace_tests.rs (251)             凭证召回工具单测（查回一致/查不到/只读无副作用）
 │   ├── bot/tools/tool_run_python_tests.rs (55)   run_python 代码来源 / 退出码判定纯函数单测
 │   ├── bot/tools/background_dialog_tests.rs (24)    后台执行不得弹框的源码守卫
-├── bot/plan_state.rs (308)  Agent 计划状态（会话内 transient）：update_plan 的参数校验与状态存取
+├── bot/plan_state.rs (309)  Agent 计划状态（会话内 transient）：update_plan 的参数校验与状态存取
 │                        （整表替换、三态 pending/in_progress/completed、至多一条 in_progress）→
 │                        进程内会话表 → bot-plan 事件；bot_plan_state 命令给面板取当前快照
 ├── bot/effects.rs       统一持久化副作用队列的派发器（表见 db/effects.rs）：单 tokio 任务

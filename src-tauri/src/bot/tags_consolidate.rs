@@ -234,7 +234,7 @@ pub fn cluster_archived_tags(
 
 /// 生成 run_id：`tgc-<timestamp_ms>-<rand6>` —— 时间戳可读、6 位随机
 /// 避免同一毫秒合并冲撞
-pub fn new_run_id() -> String {
+pub(crate) fn new_run_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)

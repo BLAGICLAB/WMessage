@@ -328,13 +328,13 @@ pub fn set_enabled<R: tauri::Runtime>(app: &AppHandle<R>, on: bool) -> Result<bo
 
 /// 读开关状态（设置页）。
 #[tauri::command]
-pub fn service_get_enabled(app: AppHandle) -> bool {
+pub(crate) fn service_get_enabled(app: AppHandle) -> bool {
     enabled(&app)
 }
 
 /// 写开关状态（设置页）。
 #[tauri::command]
-pub fn service_set_enabled(app: AppHandle, enabled: bool) -> Result<bool, String> {
+pub(crate) fn service_set_enabled(app: AppHandle, enabled: bool) -> Result<bool, String> {
     set_enabled(&app, enabled)
 }
 
@@ -346,7 +346,7 @@ pub(crate) fn expose_net_flag_path<R: tauri::Runtime>(app: &AppHandle<R>) -> Pat
 }
 
 /// 非 loopback 暴露是否被允许（L1 的放开方式，默认关）。
-pub fn expose_net_allowed<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
+pub(crate) fn expose_net_allowed<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
     expose_net_flag_path(app).exists()
 }
 
@@ -355,7 +355,7 @@ pub fn expose_net_allowed<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
 /// L1 暴露闸的放开方式，与启用开关同款 0600 + 审计——这个 flag 一旦被
 /// 同机进程静默创建，受管服务就能绑 0.0.0.0 暴露到局域网，事后必须查得到
 /// 「是谁在什么时候放开的」。
-pub fn set_expose_net_allowed<R: tauri::Runtime>(
+pub(crate) fn set_expose_net_allowed<R: tauri::Runtime>(
     app: &AppHandle<R>,
     on: bool,
 ) -> Result<bool, String> {
@@ -405,19 +405,22 @@ fn set_flag_with_audit<R: tauri::Runtime>(
 
 /// 读「允许服务暴露到非 loopback」开关（设置页）。
 #[tauri::command]
-pub fn service_get_expose_net_allowed(app: AppHandle) -> bool {
+pub(crate) fn service_get_expose_net_allowed(app: AppHandle) -> bool {
     expose_net_allowed(&app)
 }
 
 /// 写「允许服务暴露到非 loopback」开关（设置页）。
 #[tauri::command]
-pub fn service_set_expose_net_allowed(app: AppHandle, allowed: bool) -> Result<bool, String> {
+pub(crate) fn service_set_expose_net_allowed(
+    app: AppHandle,
+    allowed: bool,
+) -> Result<bool, String> {
     set_expose_net_allowed(&app, allowed)
 }
 
 /// 读受管服务全景（设置页）。
 #[tauri::command]
-pub fn services_list(app: AppHandle) -> serde_json::Value {
+pub(crate) fn services_list(app: AppHandle) -> serde_json::Value {
     services_snapshot_json(&app, true)
 }
 

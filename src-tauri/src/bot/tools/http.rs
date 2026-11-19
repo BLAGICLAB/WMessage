@@ -375,7 +375,7 @@ pub async fn tool_http_request(
 /// dispatch 记账的 args_preview 特供：http_request 的入参前 80 字符必含完整 URL
 /// （含查询串），与「审计不记完整 URL」冲突——这里裁成只留方法与目标 host。
 /// 解析失败回落通用 80 字符截断（保守：宁可少裁不可崩）。
-pub fn preview_args(args: &str) -> String {
+pub(crate) fn preview_args(args: &str) -> String {
     if let Ok(v) = serde_json::from_str::<Value>(args) {
         let method = v["method"]
             .as_str()
@@ -399,7 +399,7 @@ pub fn preview_args(args: &str) -> String {
 /// 那是模型塞进请求 URL 的数据（可带 token），与 tool.call 入参「不记完整
 /// URL」同一口径；正文节选里的第三方链接是页面内容，不在此列。
 /// 模型可见的 tool result 不经此函数：模型需要知道重定向后的最终落点。
-pub fn redact_result_text(text: &str) -> String {
+pub(crate) fn redact_result_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for (i, seg) in text.split('\n').enumerate() {
         if i > 0 {
@@ -420,7 +420,7 @@ pub fn redact_result_text(text: &str) -> String {
 /// userinfo 是完整 URL 里的凭据段——入参侧的 preview_args 已用
 /// `host_str()` 把它裁掉，返回侧不裁就是同一口径自相矛盾；重定向 Location
 /// 里的 userinfo 更是服务端可控的（不是模型自己写的）。
-pub fn strip_url_secrets(url: &str) -> String {
+pub(crate) fn strip_url_secrets(url: &str) -> String {
     let Some(pos) = url.find("://") else {
         return url.to_string();
     };
@@ -456,7 +456,7 @@ fn strip_url_query(line: &str) -> String {
 ///
 /// 查询串是模型塞进去的数据（可带 token），与 http_request 的入参裁剪
 /// 同一口径；解析失败回落通用 80 字符截断（保守：宁可少裁不可崩）。
-pub fn preview_fetch_url_args(args: &str) -> String {
+pub(crate) fn preview_fetch_url_args(args: &str) -> String {
     if let Ok(v) = serde_json::from_str::<Value>(args) {
         if let Some(u) = v["url"]
             .as_str()
@@ -475,7 +475,7 @@ pub fn preview_fetch_url_args(args: &str) -> String {
 /// 只认「（URL）」这一形态——那是 fetch_url 失败文案里 URL 的固定位置；
 /// 正文里的第三方链接是页面内容，不在此列（与 http_request 的「来源：」行
 /// 同一口径：只裁模型自己来源的那个 URL）。
-pub fn redact_fetch_result_text(text: &str) -> String {
+pub(crate) fn redact_fetch_result_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for (i, line) in text.split('\n').enumerate() {
         if i > 0 {

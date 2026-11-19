@@ -192,7 +192,7 @@ pub fn read_memory_tuning<R: tauri::Runtime>(
 /// memoryTuning 定向写回（RMW 只改 memoryTuning 块，其余字段原样保留；
 /// 与 set_apply_policy_at 同款）。None = 移除该块（回落内置默认）。
 /// 写入前过 clamped 统一钳制；JSON 损坏拒绝写（防整库覆盖，fail-closed）。
-pub fn write_memory_tuning_at(
+pub(crate) fn write_memory_tuning_at(
     path: &Path,
     tuning: Option<crate::memory::MemoryTuning>,
 ) -> Result<(), String> {

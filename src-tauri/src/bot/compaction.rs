@@ -54,7 +54,7 @@ pub fn classify_level(chars: usize, budget: usize) -> CompactionLevel {
     }
 }
 
-pub fn soft_compact(
+pub(crate) fn soft_compact(
     msgs: &mut [Value],
     sidecar_dir: Option<&Path>,
     session_id: Option<&str>,
@@ -69,7 +69,7 @@ pub fn soft_compact(
     )
 }
 
-pub fn hard_compact(
+pub(crate) fn hard_compact(
     msgs: &mut [Value],
     sidecar_dir: Option<&Path>,
     session_id: Option<&str>,

@@ -29,7 +29,7 @@ macro_rules! hardcoded_resolver {
 // ── 仍有外部消费的常量与钳制（配置键已退役的一律收进 constants）──
 
 /// 联网搜索条数的工具入参钳制（web_search 的 count 仍需上限，其余配置键已退役）。
-pub fn clamp_search_max_results(n: u32) -> u32 {
+pub(crate) fn clamp_search_max_results(n: u32) -> u32 {
     n.clamp(
         crate::bot::constants::SEARCH_MAX_RESULTS_MIN,
         crate::bot::constants::SEARCH_MAX_RESULTS_CAP,
@@ -40,7 +40,7 @@ pub fn clamp_search_max_results(n: u32) -> u32 {
 /// `verifier_retry_max` 是保留的 bot-config.json 手改键（无 UI）。
 pub const DEFAULT_VERIFIER_RETRY_MAX: u32 = 1;
 
-pub fn clamp_verifier_retry_max(n: u32) -> u32 {
+pub(crate) fn clamp_verifier_retry_max(n: u32) -> u32 {
     n.clamp(0, crate::bot::constants::VERIFIER_RETRY_MAX_CAP)
 }
 
@@ -147,7 +147,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
 ///
 /// 默认值从 resolver 在空配置下的输出派生——派生与运行时同走一条路，不存在
 /// 「页面默认 X、实际生效 Y」的分叉。
-pub fn effective_params(cfg: &BotConfig) -> Vec<ParamView> {
+pub(crate) fn effective_params(cfg: &BotConfig) -> Vec<ParamView> {
     let empty = BotConfig::default();
     PARAMS_TABLE
         .iter()
@@ -172,7 +172,7 @@ pub fn effective_params(cfg: &BotConfig) -> Vec<ParamView> {
 
 /// 数据管理卡 / 记忆区 / Python 确认框的常量数据源：生效值 + 默认值 + 来源 + 范围。
 #[tauri::command]
-pub fn bot_effective_params(app: tauri::AppHandle) -> Vec<ParamView> {
+pub(crate) fn bot_effective_params(app: tauri::AppHandle) -> Vec<ParamView> {
     let cfg = crate::bot::config::load_config(&app);
     effective_params(&cfg)
 }

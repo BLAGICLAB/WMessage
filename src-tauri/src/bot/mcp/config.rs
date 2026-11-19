@@ -147,7 +147,7 @@ impl McpServerConfig {
 
 /// 单条服务器配置校验（纯逻辑）：字段随 transport 分流必填。
 /// 全列表级校验（名称唯一 / 条目数）在 upsert_in_config。
-pub fn validate_server(s: &McpServerConfig) -> Result<(), String> {
+pub(crate) fn validate_server(s: &McpServerConfig) -> Result<(), String> {
     // id 基本卫生（ 评审）：空 id 合法 = 新建（mcp_server_save 在校验前生成
     // uuid）；非空时防超长/控制字符——id 是编辑/启停/删除与连接池的定位键
     if !s.id.is_empty() {
@@ -232,7 +232,7 @@ pub fn validate_server(s: &McpServerConfig) -> Result<(), String> {
 }
 
 /// 超时入参钳制（保存路径）：None 保留 None（= 默认），Some 钳 5..=600。
-pub fn clamp_timeout(v: Option<u64>) -> Option<u64> {
+pub(crate) fn clamp_timeout(v: Option<u64>) -> Option<u64> {
     v.map(|n| {
         n.clamp(
             MCP_TIMEOUT_MIN_SECS,
@@ -247,7 +247,7 @@ pub fn clamp_timeout(v: Option<u64>) -> Option<u64> {
 /// `McpServerConfig` 每台都带着 keyring 值（拿它判恒为 true，判不出「文件里还有
 /// 没有明文」）。非对象形态（env/headers 写成字符串或数组）不算内联机密——那种
 /// 条目没有可迁移的键值对，迁移段会在解析时上抛而不是静默放过。
-pub fn has_inline_secrets(server: &serde_json::Value) -> bool {
+pub(crate) fn has_inline_secrets(server: &serde_json::Value) -> bool {
     ["env", "headers"].iter().any(|k| {
         server
             .get(*k)
@@ -261,7 +261,7 @@ pub fn has_inline_secrets(server: &serde_json::Value) -> bool {
 /// 的 map collect 会静默合并（BTreeMap 迭代序决定谁活谁死，丢配置无感知）。
 /// 冲突即拒绝整个保存，错误同时列出原始键与规范化键；不落库、不写 keyring。
 /// normalize 本身无失败路径（纯 trim/retain/collect），无需改签名。
-pub fn find_trim_collisions(s: &McpServerConfig) -> Result<(), String> {
+pub(crate) fn find_trim_collisions(s: &McpServerConfig) -> Result<(), String> {
     for (what, map) in [("env", &s.env), ("headers", &s.headers)] {
         let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for raw in map.keys() {
@@ -286,7 +286,7 @@ pub fn find_trim_collisions(s: &McpServerConfig) -> Result<(), String> {
     Ok(())
 }
 
-pub fn normalize_server(mut s: McpServerConfig) -> McpServerConfig {
+pub(crate) fn normalize_server(mut s: McpServerConfig) -> McpServerConfig {
     // id 一并 trim（ 评审：带空白 id 会被原样入库，后续按 id 定位全歪）
     s.id = s.id.trim().to_string();
     s.name = s.name.trim().to_string();
@@ -325,7 +325,7 @@ pub fn normalize_server(mut s: McpServerConfig) -> McpServerConfig {
 /// 公网，并把结果钉给 reqwest），保存口不做网络解析。
 ///
 /// 通过时返回解析后的 URL：连接口要拿它去做 DNS 级校验。
-pub fn http_url_is_public(u: &str) -> Result<url::Url, String> {
+pub(crate) fn http_url_is_public(u: &str) -> Result<url::Url, String> {
     // 解析失败不回显原文（ 评审：URL 可能内嵌凭据 user:pass@ 或敏感 query）
     let parsed = url::Url::parse(u).map_err(|_| {
         format!(
@@ -339,7 +339,7 @@ pub fn http_url_is_public(u: &str) -> Result<url::Url, String> {
 
 /// 已解析 URL 的字面量级安全闸（scheme + host 字面量）——与 `http_url_is_public`
 /// 同一判据，单源。
-pub fn http_parsed_is_public(parsed: &url::Url) -> Result<(), String> {
+pub(crate) fn http_parsed_is_public(parsed: &url::Url) -> Result<(), String> {
     match parsed.scheme() {
         "http" | "https" => {}
         _ => return Err("URL 仅支持 http/https".into()),
@@ -436,7 +436,7 @@ fn is_reserved_ipv6(ip: std::net::Ipv6Addr) -> bool {
 
 /// 服务器名 → 工具名前缀段：ASCII 字母数字与 `-` 保留（小写化），其余一律 `_`。
 /// 输出恒为 ASCII，最长 24 字节（可安全按字节截断）。
-pub fn tool_prefix(server_name: &str) -> String {
+pub(crate) fn tool_prefix(server_name: &str) -> String {
     let mut s: String = server_name
         .trim()
         .chars()
@@ -464,7 +464,7 @@ pub fn tool_prefix(server_name: &str) -> String {
 /// 已知边界：不同服务器净化后前缀相同（「my tool」与「my.tool」）且工具同名时
 /// 会产出同名 function——阶段 3 构建 schema 时做全列表查重，冲突条目由
 /// 挂载层追加序号消歧（不在本函数内处理，此处保持纯函数）。
-pub fn mcp_tool_name(server_name: &str, tool_name: &str) -> String {
+pub(crate) fn mcp_tool_name(server_name: &str, tool_name: &str) -> String {
     let prefix = tool_prefix(server_name);
     let tool: String = tool_name
         .trim()
@@ -506,7 +506,7 @@ fn invalid(field: &str, value: &str, reason: impl Into<String>) -> CommandError 
 }
 
 /// 新增或按 id 整体替换。校验失败响亮报错（InvalidArgument），不静默修正。
-pub fn upsert_in_config(cfg: &mut BotConfig, server: McpServerConfig) -> CommandResult<()> {
+pub(crate) fn upsert_in_config(cfg: &mut BotConfig, server: McpServerConfig) -> CommandResult<()> {
     let server = normalize_server(server);
     validate_server(&server).map_err(|reason| invalid("server", &server.name, reason))?;
     let list = servers_mut(cfg);
@@ -532,7 +532,7 @@ pub fn upsert_in_config(cfg: &mut BotConfig, server: McpServerConfig) -> Command
 }
 
 /// 按 id 删除；返回是否真的删了（幂等：不存在 = false，不报错）。
-pub fn remove_from_config(cfg: &mut BotConfig, id: &str) -> bool {
+pub(crate) fn remove_from_config(cfg: &mut BotConfig, id: &str) -> bool {
     let Some(list) = cfg.mcp_servers.as_mut() else {
         return false;
     };
@@ -546,7 +546,7 @@ pub fn remove_from_config(cfg: &mut BotConfig, id: &str) -> bool {
 }
 
 /// 按 id 启停；返回是否找到（不存在 = false）。
-pub fn set_enabled_in_config(cfg: &mut BotConfig, id: &str, enabled: bool) -> bool {
+pub(crate) fn set_enabled_in_config(cfg: &mut BotConfig, id: &str, enabled: bool) -> bool {
     cfg.mcp_servers
         .as_mut()
         .and_then(|list| list.iter_mut().find(|s| s.id == id))

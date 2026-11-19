@@ -263,13 +263,6 @@ pub async fn test_hook_tool_stop_service<R: tauri::Runtime>(
     tool_stop_service(app, args).await
 }
 
-/// 真 `list_services`
-#[doc(hidden)]
-#[cfg(debug_assertions)]
-pub fn test_hook_tool_list_services<R: tauri::Runtime>(app: &AppHandle<R>) -> ToolResult {
-    tool_list_services(app)
-}
-
 /// list_services：列出宿主托管的受管服务。
 pub(crate) fn tool_list_services<R: tauri::Runtime>(app: &AppHandle<R>) -> ToolResult {
     let out = crate::bot::services::services_snapshot_json(app, true);

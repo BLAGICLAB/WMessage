@@ -75,7 +75,7 @@ pub(crate) fn truncate_for_log(s: &str, max: usize) -> String {
 /// 读失败（权限/磁盘/损坏）返回 Err(IoError) + ERROR 审计，
 /// 不静默吞成「暂无日志」；仅「文件不存在」返回占位文案。
 #[tauri::command]
-pub fn bot_log_read(app: AppHandle, limit: Option<usize>) -> CommandResult<String> {
+pub(crate) fn bot_log_read(app: AppHandle, limit: Option<usize>) -> CommandResult<String> {
     let p = db::data_dir(&app).join("bot.log");
     match read_log_tail(&p, limit) {
         Ok(s) => Ok(s),

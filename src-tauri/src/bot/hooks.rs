@@ -343,8 +343,9 @@ pub fn registry() -> &'static HookRegistry {
     REGISTRY.get_or_init(HookRegistry::with_builtins)
 }
 
-/// 内置钩子的累计命中次数（进程内单调递增）。
-pub fn builtin_calls() -> u64 {
+/// 内置钩子的累计命中次数（进程内单调递增）。仅测试消费（生产不读计数）。
+#[cfg(test)]
+pub(crate) fn builtin_calls() -> u64 {
     BUILTIN_CALLS.load(Ordering::Relaxed)
 }
 
@@ -409,13 +410,15 @@ impl PostTurnHook for BuiltinPostTurnObserver {
     }
 }
 
-/// L5 内置钩子的累计命中次数（进程内单调递增）。
-pub fn builtin_post_tool_calls() -> u64 {
+/// L5 内置钩子的累计命中次数（进程内单调递增）。仅测试消费。
+#[cfg(test)]
+pub(crate) fn builtin_post_tool_calls() -> u64 {
     POST_TOOL_CALLS.load(Ordering::Relaxed)
 }
 
-/// L6 内置钩子的累计命中次数（进程内单调递增）。
-pub fn builtin_post_turn_calls() -> u64 {
+/// L6 内置钩子的累计命中次数（进程内单调递增）。仅测试消费。
+#[cfg(test)]
+pub(crate) fn builtin_post_turn_calls() -> u64 {
     POST_TURN_CALLS.load(Ordering::Relaxed)
 }
 

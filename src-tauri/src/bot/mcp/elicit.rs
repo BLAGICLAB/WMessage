@@ -33,7 +33,7 @@ const ELICIT_OPTIONS_MAX: usize = 4;
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 /// 首个 MCP 入口注册 app（幂等，后写不覆盖先写）
-pub fn set_app(app: tauri::AppHandle) {
+pub(crate) fn set_app(app: tauri::AppHandle) {
     let _ = APP.set(app);
 }
 
@@ -51,7 +51,7 @@ fn active_calls() -> &'static Mutex<HashMap<String, (String, String)>> {
 }
 
 /// call_tool 入口登记（session_id = 会话归属；server_name = 卡面来源标识）
-pub fn register_active_call(server_id: &str, session_id: &str, server_name: &str) {
+pub(crate) fn register_active_call(server_id: &str, session_id: &str, server_name: &str) {
     active_calls()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -62,7 +62,7 @@ pub fn register_active_call(server_id: &str, session_id: &str, server_name: &str
 }
 
 /// call_tool 收尾注销（retire 前后皆可，幂等）
-pub fn unregister_active_call(server_id: &str) {
+pub(crate) fn unregister_active_call(server_id: &str) {
     active_calls()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -378,7 +378,7 @@ fn decline(reason: &str) -> McpError {
 /// 用户应答回程（AskCard source=mcp_elicit 时调这个）：按 qid 唤醒等待方。
 /// 应答值只在内存中转一次，不进审计/日志。
 #[tauri::command]
-pub fn elicit_respond(qid: String, text: String) -> crate::error::CommandResult<()> {
+pub(crate) fn elicit_respond(qid: String, text: String) -> crate::error::CommandResult<()> {
     let tx = waiters()
         .lock()
         .unwrap_or_else(|p| p.into_inner())

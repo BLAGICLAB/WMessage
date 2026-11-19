@@ -355,7 +355,7 @@ pub(crate) static SHARED_MCP_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mu
 /// 字段，`Serialize` 里被 `skip_serializing` 剥掉，用序列化值算指纹就看不见
 /// 它们：改了 API token / 环境变量不换指纹 = 不重连 = 旧凭据继续用
 /// （配置已保存、面板已刷新，实际行为没变）。
-pub fn fingerprint(cfg: &McpServerConfig) -> u64 {
+pub(crate) fn fingerprint(cfg: &McpServerConfig) -> u64 {
     let mut h = DefaultHasher::new();
     cfg.id.hash(&mut h);
     cfg.name.hash(&mut h);

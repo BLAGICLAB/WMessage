@@ -48,9 +48,7 @@ pub(crate) use http::{
 };
 pub(crate) use plan::tool_update_plan;
 #[cfg(debug_assertions)]
-pub use service::{
-    test_hook_tool_list_services, test_hook_tool_start_service, test_hook_tool_stop_service,
-};
+pub use service::{test_hook_tool_start_service, test_hook_tool_stop_service};
 pub(crate) use service::{tool_list_services, tool_start_service, tool_stop_service};
 pub(crate) use task::{
     tool_add_subtask, tool_complete_task, tool_create_task, tool_delete_task, tool_edit_task,

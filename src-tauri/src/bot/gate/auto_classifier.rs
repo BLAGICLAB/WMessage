@@ -45,7 +45,7 @@ pub fn set_enabled(v: bool) {
 }
 
 /// 从配置同步开关（io.rs 两处调用）
-pub fn sync_from_cfg(cfg: &crate::bot::config::types::BotConfig) {
+pub(crate) fn sync_from_cfg(cfg: &crate::bot::config::types::BotConfig) {
     set_enabled(cfg.auto_gate_classifier.unwrap_or(false));
 }
 

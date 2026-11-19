@@ -49,7 +49,7 @@ const BROWSERS_REL: &str = "browsers";
 const BROWSERS_WIN_REL: &str = "browsers-win";
 
 /// id 是否为内置条目（删除守卫 + 前端隐藏删除按钮的唯一判据）
-pub fn is_builtin_id(id: &str) -> bool {
+pub(crate) fn is_builtin_id(id: &str) -> bool {
     id.trim() == PLAYWRIGHT_ID
 }
 
@@ -125,7 +125,7 @@ fn resolve_package_dir(app: &tauri::AppHandle) -> PathBuf {
 
 /// 包是否已就位（cli.js 在位）：卡片文案与审计用它区分「命令指了个空目录」
 /// 与「服务器连不上」。
-pub fn package_present(pkg_dir: &Path) -> bool {
+pub(crate) fn package_present(pkg_dir: &Path) -> bool {
     pkg_dir.join(CLI_REL).is_file()
 }
 
@@ -228,7 +228,7 @@ fn platform_binary(rev_dir: &Path) -> Option<PathBuf> {
 ///
 /// 不传 `--caps`：该参数是**追加**额外能力（vision/pdf/devtools），
 /// 导航/快照/点击这些核心工具默认就在，传 `--caps=core` 会被判为非法值。
-pub fn build_playwright_server(pkg_dir: &Path) -> McpServerConfig {
+pub(crate) fn build_playwright_server(pkg_dir: &Path) -> McpServerConfig {
     let mut args = vec![
         pkg_dir.join(CLI_REL).to_string_lossy().into_owned(),
         "--isolated".to_string(),

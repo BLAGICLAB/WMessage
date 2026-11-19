@@ -396,7 +396,7 @@ pub(crate) fn tree_sample(snap: &[ProcSnapshot], root: u32) -> Option<ResourceSa
 /// Windows 不能（既没有 `/proc` 也没有 `lsof`）。判定层据此返回
 /// **Unsupported（没判）而不是 Ok（判了没事）**——安全闸在某个平台静默
 /// 不生效是缺陷，不是功能缺失。
-pub fn listening_supported() -> bool {
+pub(crate) fn listening_supported() -> bool {
     cfg!(any(target_os = "linux", target_os = "macos"))
 }
 
@@ -405,7 +405,7 @@ pub fn listening_supported() -> bool {
 /// Windows 不能：快照层走 `ps`（Linux 走 `/proc`），Windows 上没有这个命令，
 /// 采回来是空表——于是「内存 / CPU / 监听」全空。**空不等于没占用**：那是
 /// **没判**，面板必须说出来，不能让用户对着空白猜这进程没在跑。
-pub fn snapshot_supported() -> bool {
+pub(crate) fn snapshot_supported() -> bool {
     cfg!(any(target_os = "linux", target_os = "macos"))
 }
 
@@ -449,7 +449,7 @@ impl ListeningSample {
 /// 平台覆盖：Linux 与 macOS 有路径；**Windows 没有**（`lsof` 不存在，
 /// 而现有进程快照层在 Windows 上本来就退化了——它依赖 `ps`）。Windows 要做
 /// 得走 `netstat -ano`，另开条目。
-pub fn listening_sockets(pids: &[u32]) -> ListeningSample {
+pub(crate) fn listening_sockets(pids: &[u32]) -> ListeningSample {
     let pids: Vec<u32> = pids.iter().copied().filter(|p| *p != 0).collect();
     if pids.is_empty() {
         return ListeningSample::empty();
@@ -480,7 +480,7 @@ pub(crate) fn tree_pids(snap: &[ProcSnapshot], root: u32) -> Vec<u32> {
 }
 
 /// 合并多组监听 socket（去重 + 按端口排序，面板展示要稳定顺序）。
-pub fn merge_sockets(groups: Vec<Vec<ListeningSocket>>) -> Vec<ListeningSocket> {
+pub(crate) fn merge_sockets(groups: Vec<Vec<ListeningSocket>>) -> Vec<ListeningSocket> {
     let mut list: Vec<ListeningSocket> = groups.into_iter().flatten().collect();
     list.sort_by(|a, b| {
         (a.port, &a.address, a.protocol.as_str()).cmp(&(b.port, &b.address, b.protocol.as_str()))
@@ -575,6 +575,8 @@ fn socket_inodes(pid: u32) -> Vec<u64> {
 /// - `inode` = 第 10 列
 ///
 /// TCP 只认 LISTEN 态；UDP 没有 LISTEN 态，**绑定即占用端口**，全收。
+/// 保持 pub：调用链在 cfg(linux) 内（/proc/net 读侧），mac 构建下整条链不可达——
+/// pub 让平台条件实现不被 dead_code 误判（同 win_job 的 Windows 平台面口径）。
 pub fn parse_proc_net(text: &str, proto: SocketProtocol) -> Vec<(u64, ListeningSocket)> {
     let mut out = Vec::new();
     for line in text.lines() {
@@ -728,7 +730,7 @@ fn run_lsof(pids: &str, filters: &[&str]) -> Option<String> {
 /// 进程名撞上 TCP 这种位置假设会错行。
 ///
 /// 返回 (pid, socket)：pid 用来把 socket 归属到进程（fd 被父子继承时两边都算持有）。
-pub fn parse_lsof_line(line: &str, proto: SocketProtocol) -> Option<(u32, ListeningSocket)> {
+pub(crate) fn parse_lsof_line(line: &str, proto: SocketProtocol) -> Option<(u32, ListeningSocket)> {
     let cols: Vec<&str> = line.split_whitespace().collect();
     let pid: u32 = cols.get(1)?.parse().ok()?;
     // 协议名的位置不能靠「第一个 TCP/UDP token」认（进程名可能撞上这个词）——
