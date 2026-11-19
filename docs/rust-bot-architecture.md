@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 343 个文件、约 15.1 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 344 个文件、约 15.1 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -440,7 +440,7 @@ src-tauri/src/
 ├── bot/subagent_repair.rs (954) 收尾 JSON 的本地修复与结果判定：结构化输出三段修复的第二段（尾逗号 / 截断闭合，
 │                        零 token 零延迟）+ parse_final_json + classify_outcome + 熔断出口恢复链
 │                        recover_fused_exit（剥标记 → 盘上 verdict → 强制交卷轮 → 原会话续跑一次）
-├── bot/subagent_runner.rs (1443) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
+├── bot/subagent_runner.rs (1300) + bot/subagent_runner/reporting.rs (319) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
 │                        + panic 隔离 + 任务包装渲染
 ├── bot/subagent_spawn.rs (434) 子 agent 派发：入参校验 / 建行 / 并发闸 SubagentGate（per-session 2 /
 │                        global 3，闸满排队）
@@ -462,9 +462,9 @@ src-tauri/src/
 │       │                          parent_card / fake_state / digest_row / req / OK_RESULT
 │       ├── orchestrator_tests/lifecycle.rs (631) 生命周期与接线守卫：panic 隔离 / 收尾事件唤醒 /
 │       │                          wait 策略 / 摘要注入位置
-│       ├── orchestrator_tests/outcome.rs (625) 收尾契约与摘要：机器判据 / digest 幂等 / 汇报轮顺序 /
+│       ├── orchestrator_tests/outcome.rs (640) 收尾契约与摘要：机器判据 / digest 幂等 / 汇报轮顺序 /
 │       │                          包装渲染
-│       └── orchestrator_tests/spawn.rs (1168) 派发与并发闸：建行 / 幂等 / 队列位次
+│       └── orchestrator_tests/spawn.rs (1170) 派发与并发闸：建行 / 幂等 / 队列位次
 ├── bot_artifacts.rs     产物登记：link_file_to_task → 收尾按 TaskExecOrigin 分流 →
 │                        落「通知中心」artifact_bind 消息（原 artifact-batch-ready 挂件弹窗已下线）→
 │                        通知页勾选 → confirm_artifact_batch 落库 + notif_resolve_artifact 回写
@@ -1048,6 +1048,7 @@ flowchart TD
 - `bot/subagent_digest.rs`
 - `bot/subagent_repair.rs`
 - `bot/subagent_runner.rs`
+- `bot/subagent_runner/reporting.rs`
 - `bot/subagent_spawn.rs`
 - `bot/subagent_tools.rs`
 - `bot/registry.rs`

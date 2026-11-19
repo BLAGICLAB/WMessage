@@ -6,15 +6,14 @@
 use crate::bot_chat::ChatGuard;
 use crate::bot_orchestrator::{
     acceptance_criteria_of, apply_machine_verdicts, artifact_dir_of, classify_outcome, db_locked,
-    eval_machine_criteria, finish_notify, gen_dir_rule_for, reconcile_machine_override,
-    repair_final_json_once, spawn_parent_report, SpawnOnion, SubagentStage,
+    eval_machine_criteria, gen_dir_rule_for, reconcile_machine_override, repair_final_json_once,
+    spawn_parent_report, SpawnOnion, SubagentStage,
 };
 use crate::db::{now_ms, SubagentProfile, SubagentRow, SubagentStatus};
 use crate::error::{CommandError, CommandResult};
 use futures_util::FutureExt;
 use std::path::PathBuf;
 use tauri::AppHandle;
-use tauri::Emitter;
 
 /// 取消令牌的 RAII 反注册守卫。
 ///
@@ -100,27 +99,9 @@ pub(crate) async fn run_subagent(
     {
         Ok(r) => r,
         Err(e) => {
-            // 加载失败也要落终态，防 ghost queued 行永挂
-            let ghost_err = e.message();
-            // 终态写不进去 = 行永远停在 queued/running：入队重试兜 DB 锁瞬态
-            let _ = enqueue_terminal_write(
-                &app,
-                &subagent_id,
-                SubagentStatus::Failed,
-                now_ms(),
-                &ghost_err,
-            )
-            .await;
-            crate::bot::audit_log(
-                &app,
-                &format!(
-                    "subagent_runner_abort | id: {} | err: {}",
-                    subagent_id,
-                    e.message()
-                ),
-            );
-            // parent 会话未知（行没读到），发不带归属的收尾事件——前端只重拉不弹提示
-            emit_subagent_finished(&app, &subagent_id, None, SubagentStatus::Failed, "");
+            // 加载失败也要落终态，防 ghost queued 行永挂；parent 会话未知（行
+            // 没读到），发不带归属的收尾事件——前端只重拉不弹提示
+            abort_and_finish(&app, &subagent_id, None, &e.message(), &e.message()).await;
             return;
         }
     };
@@ -146,263 +127,19 @@ pub(crate) async fn run_subagent(
         }
     };
 
-    // 并发闸global 3 / per-session 2，超限等待不失败）。
-    // 排队可取消——每轮退避同时查行终态，取消即退队；Running 改在**拿到槽位并复核后**
-    // 才写，排队中的行不再假挂运行中。
-    let sid_gate_check = row.id.clone();
-    // 评审 M 采纳 + 挪线修正：取消检测的 DB 读不该压在 async worker 上——
-    // open_db 含建目录 + PRAGMA + 全量 DDL 迁移，500ms 一次就是反复整套迁移。
-    // 闸门闭包是同步 FnMut（放不进 await），改用排队期专用轻连接：直接 open
-    //（不跑 DDL）+ busy_timeout，单行 SELECT 只花微秒级；拿到槽位后的复核
-    // 仍走 open_db 全量路径。
-    let gate_conn: Option<std::sync::Mutex<rusqlite::Connection>> = {
-        let path = crate::db::data_dir(&app).join("wmessage.db");
-        rusqlite::Connection::open(&path)
-            .map(|conn| {
-                let _ = conn.busy_timeout(std::time::Duration::from_secs(2));
-                std::sync::Mutex::new(conn)
-            })
-            .ok() // 开不出连接 = 取消检测降级为 no-op（槽后复核兜底）
+    // 排队闸 + 槽后复核 + Running 落库（见 acquire_gate_slot）
+    let Some(_gate_ticket) = acquire_gate_slot(&app, &row).await else {
+        return;
     };
-    let gate_tick = std::cell::Cell::new(0u32);
-    let mut cancelled_while_queued = move || {
-        let n = gate_tick.get();
-        gate_tick.set(n.wrapping_add(1));
-        if !n.is_multiple_of(10) {
-            return false;
-        }
-        let Some(conn) = &gate_conn else {
-            return false; // DB 读失败不误判取消（拿到槽位后的复核兜底）
-        };
-        let Ok(conn) = conn.lock() else {
-            return false;
-        };
-        crate::db::load_subagent(&conn, &sid_gate_check)
-            .ok()
-            .flatten()
-            .map(|r| r.status.is_terminal())
-            .unwrap_or(false)
-    };
-    let ticket = crate::bot_orchestrator::SubagentGate::wait_slot_cancellable(
-        row.parent_session_id.clone(),
-        &mut cancelled_while_queued,
-    )
-    .await;
-    let _ticket = match ticket {
-        Some(t) => t,
-        // 排队中被取消：行已被 cancel 写成终态，此处仅退出（守卫 RAII 清理）
-        None => {
-            crate::bot::audit_log(
-                &app,
-                &format!(
-                    "subagent_runner_abort | id: {} | err: cancelled_while_queued",
-                    row.id
-                ),
-            );
-            emit_subagent_finished(
-                &app,
-                &row.id,
-                row.parent_session_id.as_deref(),
-                SubagentStatus::Cancelled,
-                "",
-            );
-            return;
-        }
-    };
-    {
-        // 拿到槽位后复核（cancel-vs-runner 竞态闸）：行已终态 = cancel 先赢 →
-        // 中止；DB 读失败保守中止（执行已取消的任务比不跑更糟
-        let sid_still_queued = row.id.clone();
-        let state_now = db_locked(&app, move |conn| {
-            Ok(crate::db::load_subagent(conn, &sid_still_queued)
-                .ok()
-                .flatten()
-                .map(|r| r.status))
-        })
-        .await
-        .unwrap_or(None);
-        match state_now {
-            Some(s) if !s.is_terminal() => {}
-            other => {
-                crate::bot::audit_log(
-                    &app,
-                    &format!(
-                        "subagent_runner_abort | id: {} | err: aborted_while_queued | state: {}",
-                        row.id,
-                        other
-                            .map(|s| s.as_str().to_string())
-                            .unwrap_or_else(|| "db_read_failed".into()),
-                    ),
-                );
-                // 拿到槽位后的复核撞上终态：行已由 cancel 写成 cancelled；
-                // 读不到行（DB 失败/行已没）时不要谎报——只留审计，等启动清扫
-                if let Some(s) = other {
-                    emit_subagent_finished(&app, &row.id, row.parent_session_id.as_deref(), s, "");
-                }
-                return;
-            }
-        }
-        // Running 写库挪到槽位拿到之后（排队窗口内行保持 queued 语义）。
-        // 写失败必须中止（评审 HIGH 采纳）：recheck 与本写之间 cancel 可抢先写
-        // Cancelled，update_subagent_status 因非法状态转移报错——吞错等于在
-        // 已取消任务上继续跑
-        let sid_running = row.id.clone();
-        let run_write = db_locked(&app, move |conn| {
-            crate::db::update_subagent_status(
-                conn,
-                &sid_running,
-                SubagentStatus::Running,
-                now_ms(),
-                None,
-            )
-            .map_err(CommandError::DbError)
-        })
-        .await;
-        if let Err(e) = run_write {
-            crate::bot::audit_log(
-                &app,
-                &format!(
-                    "subagent_runner_abort | id: {} | err: running_write_failed | {e}",
-                    row.id
-                ),
-            );
-            // 写 Running 被拒基本只有一种成因：cancel 已把行写成终态。回读
-            // 真实终态上报（直接写 Cancelled 会在「DB 抖动」这类非 cancel
-            // 失败上撒谎）；读不到行就只留审计，交给启动清扫收尸
-            let st = load_subagent_status(&app, &row.id).await;
-            if let Some(st) = st {
-                emit_subagent_finished(&app, &row.id, row.parent_session_id.as_deref(), st, "");
-            }
-            return;
-        }
-    }
     let started = std::time::Instant::now();
 
-    // 产物目录（设计 §6 隔离）：gen_dir/subagents/{subagent_id}/
-    // gen_dir 解析失败必须 fail-closed：此前退到 "__gen_dir__" 相对路径兜底，
-    // 会把产物目录钉到进程 CWD（打包应用 CWD 可能是 /），产物越过配置的隔离根
-    #[allow(unused_mut)]
-    let mut artifact_dir = match crate::db::gen_dir(&app) {
-        Ok(g) => artifact_dir_of(&g, &row.id),
-        Err(e) => {
-            let msg = format!("产物目录不可用（{e}），子任务中止");
-            // 终态写不进去 = 行永远停在 queued/running：入队重试兜 DB 锁瞬态
-            let _ =
-                enqueue_terminal_write(&app, &row.id, SubagentStatus::Failed, now_ms(), &msg).await;
-            crate::bot::audit_log(
-                &app,
-                &format!(
-                    "subagent_runner_abort | id: {} | err: gen_dir_failed | {e}",
-                    row.id
-                ),
-            );
-            emit_subagent_finished(
-                &app,
-                &row.id,
-                row.parent_session_id.as_deref(),
-                SubagentStatus::Failed,
-                "",
-            );
-            return;
-        }
+    let Some(artifact_dir) = prepare_artifact_dir(&app, &row).await else {
+        return;
     };
-    // create + canonicalize（写路径钉死规范化目录）。失败仅审计：
-    // write_artifact_file 每次调用会再校验，目录坏了只影响产物不影响状态机
-    let mk_dir = artifact_dir.clone();
-    let mk_res = tauri::async_runtime::spawn_blocking(move || -> Result<PathBuf, String> {
-        std::fs::create_dir_all(&mk_dir).map_err(|e| e.to_string())?;
-        std::fs::canonicalize(&mk_dir).map_err(|e| e.to_string())
-    })
-    .await
-    .unwrap_or_else(|e| Err(e.to_string()));
-    match mk_res {
-        Ok(c) => {
-            // 覆盖为规范化路径（registry ctx 与包装渲染都用它）
-            artifact_dir = c;
-        }
-        Err(e) => {
-            crate::bot::audit_log(
-                &app,
-                &format!(
-                    "subagent_artifact_dir_warn | id: {} | 产物目录创建/规范化失败（{e}），产物写将被拒绝",
-                    row.id
-                ),
-            );
-        }
-    }
-
-    // 开跑：建会话 + 包装落库 + session/assignee 回填（单次锁内完成）。
-    // 标题不带 emoji 前缀：子 agent 身份由 bot_sessions.is_subagent 结构化
-    // 字段承载（U20D 批 5），会话列表据此把它们挡在对话列表外
-    let title = format!(
-        "子任务：{}",
-        crate::bot::truncate_for_log(row.objective.trim(), 30)
-    );
-    let setup = {
-        let artifact_dir = artifact_dir.clone();
-        let row = row.clone();
-        let onion = onion.clone();
-        db_locked(&app, move |conn| -> CommandResult<(String, String)> {
-            // 建会话与回填 session_id 包同一事务，防出现「建了会话但行没记」的孤儿会话
-            let tx = conn
-                .transaction()
-                .map_err(|e| CommandError::DbError(e.to_string()))?;
-            let session = crate::db::bot_session_create_subagent_inner(&tx, Some(title.clone()))
-                .map_err(CommandError::DbError)?;
-            // 包装文本仅返回（渲染一次，交 runner 供 LLM 与 finalize 复用）——
-            // 历史落库统一在 finalize 全量覆盖写（setup 的
-            // bot_history_save_inner 是半截写，会被 finalize DELETE+INSERT 覆盖，
-            // 中途崩溃还留「只有任务块没有结论」的误导历史）
-            let wrapper = render_task_wrapper(&row, &artifact_dir);
-            crate::db::set_subagent_session(&tx, &row.id, &session.id)
-                .map_err(CommandError::DbError)?;
-            // 配置档元列随会话一起建：配置正文在 `<数据目录>/onions/`，这里只存指针。
-            // 不写的话 bind_session 读不到，子 agent 会拿到未收窄的整套 profile 工具。
-            if let Some(o) = &onion {
-                crate::db::bot_session_set_onion(
-                    &tx,
-                    &session.id,
-                    Some(&o.config),
-                    o.max_turn.map(|t| t as i64),
-                )
-                .map_err(CommandError::DbError)?;
-            }
-            tx.commit()
-                .map_err(|e| CommandError::DbError(e.to_string()))?;
-            Ok((session.id, wrapper))
-        })
-    }
-    .await;
-    let (session_id, wrapper) = match setup {
-        Ok(v) => v,
-        Err(e) => {
-            let msg = e.message();
-            let msg_for_db = msg.clone();
-            // 终态写不进去 = 行永远停在 queued/running：入队重试兜 DB 锁瞬态
-            let _ = enqueue_terminal_write(
-                &app,
-                &row.id,
-                SubagentStatus::Failed,
-                now_ms(),
-                &msg_for_db,
-            )
-            .await;
-            crate::bot::audit_log(
-                &app,
-                &format!(
-                    "subagent_runner_abort | id: {} | err: session_setup_failed | {msg}",
-                    row.id
-                ),
-            );
-            emit_subagent_finished(
-                &app,
-                &row.id,
-                row.parent_session_id.as_deref(),
-                SubagentStatus::Failed,
-                "",
-            );
-            return;
-        }
+    let Some((session_id, wrapper)) =
+        setup_subagent_session(&app, &row, &artifact_dir, &onion).await
+    else {
+        return;
     };
 
     // per-onion 配置绑定（两层配置的 DB 层）：读会话的 onion_config 元列 + 落盘
@@ -506,85 +243,409 @@ pub(crate) async fn run_subagent(
         id: row.id.clone(),
     };
 
-    // 取消 watcher（设计 §4.3 硬停）：2s 轮询行状态，进终态即停工具循环。
-    // 子 agent 无卡，不再有「软删卡 = 取消派发」这条信号——cancel 置行终态，
-    // 这是唯一的外部取消入口。
-    // 同一轮询顺带判停滞：心跳超过停滞超时没刷新 → 置位 stalled 并停循环
-    // （子 agent 没有墙钟，这是它唯一的时间兜底）。
-    let watcher_app = app.clone();
-    let watcher_stop = stop.token();
-    let watcher_sid = row.id.clone();
-    let watcher_progress = last_progress_ms.clone();
-    let watcher_tool_in_flight = tool_in_flight.clone();
+    // 取消 watcher（设计 §4.3 硬停）：2s 轮询行状态，进终态即停工具循环；
+    // 同一轮询顺带判停滞（子 agent 没有墙钟，这是它唯一的时间兜底）
     let stalled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let watcher_stalled = stalled.clone();
-    struct AbortOnDrop(tauri::async_runtime::JoinHandle<()>);
-    impl Drop for AbortOnDrop {
-        fn drop(&mut self) {
-            self.0.abort();
+    let watcher = spawn_cancel_watcher(
+        &app,
+        &stop,
+        &row.id,
+        &last_progress_ms,
+        &tool_in_flight,
+        &stalled,
+    );
+
+    // 消息装配 + 配置档绑定 + 跨进程续跑装载（见 assemble_messages）
+    let (msgs, max_rounds, bound_onion) = assemble_messages(
+        &app,
+        &row,
+        stage,
+        &session_id,
+        &artifact_dir,
+        &prompt_tools,
+        &wrapper,
+        max_rounds,
+    );
+
+    // 工具循环：轮数预算（熔断→budget_exceeded；排队不计——running 起算）。
+    // 没有墙钟：时间兜底在工具级超时与停滞判定，不在整条 future 上掐。
+    //
+    // 收尾 JSON 解析失败时**补答一次**（结构化输出三段修复的第 3 段）：产出
+    // 完整、机检全过，只因最后一段不是 JSON 就判 failed，是完成率最大的单项
+    // 黑洞。
+    // 熔断出口前留一份完整对话历史副本：恢复链要带着历史发交卷轮 / 续跑轮，
+    // 恢复失败时它就是 sidecar 的内容（熔断残留只钳 800 字，全量历史只在这里）。
+    let recovery_msgs = msgs.clone();
+    // 盘上交付件的 mtime 下限：本轮开跑前落盘的 verif*.json 一律不算（跨会话
+    // 旧报告冒充防线，与模型循环薄壳里 B 的探测同一个口径、各自取各自的开跑时刻）
+    let started_at = std::time::SystemTime::now();
+    let run = execute_with_recovery(
+        &app,
+        &stop,
+        &row.id,
+        &artifact_dir,
+        msgs,
+        recovery_msgs,
+        max_rounds,
+        // 配置档的采样温度（f32 → f64 无损）。这是 yaml `temperature:` 字段的
+        // 唯一消费者；None 时用模型条目的 temperature。
+        bound_onion
+            .as_ref()
+            .and_then(|c| c.temperature)
+            .map(f64::from),
+        self_judged_criteria_count(&row),
+        started_at,
+    );
+    // runner panic 隔离（bot_scheduler 的既有范式）：panic 会跳过下面所有收尾
+    // ——取消令牌反注册、状态落库、subagent-finished 事件——前端那一行永远转圈，
+    // 行状态也停在 running（只能靠重启清扫僵尸行）。故把 panic 捕获成普通失败，
+    // 让收尾路径照常走完：行落 failed，事件发出去，前端不再转圈。
+    let outcome = match std::panic::AssertUnwindSafe(run).catch_unwind().await {
+        // 正常跑完
+        Ok(Ok(v)) => Ok(v),
+        // runner 自己返错
+        Ok(Err(e)) => Err(e),
+        // runner panic → 归一成普通失败（与返错同一层，收尾路径不变）
+        Err(panic) => {
+            let msg = crate::audit::panic_payload_msg(panic.as_ref());
+            crate::bot::audit_log(
+                &app,
+                &format!(
+                    "subagent_runner_panic | id: {} | {} | 已归一为执行失败",
+                    row.id,
+                    crate::bot::truncate_for_log(&msg, 200)
+                ),
+            );
+            Err(panic_to_command_error(&msg))
         }
+    };
+
+    // 收尾清理：watcher 由 AbortOnDrop Drop 保证中止（含 panic/unwind 路径——
+    // StopGuard::drop 不置位停止标志，单靠手动 abort 会泄漏）
+    let _watcher = watcher;
+    // tool_guard 注册走 RAII 守卫（_session_guard Drop 反注册）
+    crate::db::lock::lock_or_recover(
+        &crate::app_state::subagent_stops(&app),
+        "app_state::subagent_stops",
+    )
+    .remove(&row.id);
+    drop(chat_guard);
+
+    // 收尾判定（设计 §6/§7）：classify/停滞改判/机器验收旁证与改判
+    let (status, error, result, final_text) = judge_outcome(
+        &app,
+        &row,
+        &outcome,
+        stalled.load(std::sync::atomic::Ordering::SeqCst),
+        &artifact_dir,
+    );
+    // usage 记账：模型循环累计的 token 三档随终态同事务落库（返错 / panic
+    // 路径拿不到 trace，保持 NULL——对账时按「未记」读，不编 0）
+    let usage_for_db = match &outcome {
+        Ok((_, _, trace)) => Some((
+            trace.prompt_tokens,
+            trace.completion_tokens,
+            trace.cache_read_tokens,
+        )),
+        _ => None,
+    };
+    // 返回 fresh row——下游审计/事件直接用，免二次持锁查询
+    let finalized = persist_final_state(
+        &app,
+        &row,
+        &session_id,
+        &wrapper,
+        status,
+        error,
+        result,
+        &final_text,
+        usage_for_db,
+    )
+    .await;
+
+    // 审计 + 广播 + 前端事件（设计 §3 事件全链按 subagent_id 串链）
+    let elapsed = started.elapsed().as_millis() as u64;
+    report_and_emit(&app, &row, finalized, status, elapsed).await;
+}
+
+/// 审计 + 广播 + 前端事件（设计 §3 事件全链按 subagent_id 串链）。
+/// 行的真实终态优先于 classify_outcome：用户取消走到这里时 classify 只会给出
+/// Failed（执行被 StopToken 打断），照它上报 = 每次取消都记一条 subagent_failed
+/// 并沉淀「失败原因：」的空教训。收尾闭包整体失败拿不到行时回读一次真实终态
+///（cancel 抢先后的收尾失败等场景），读不到才回落 classify 的观感值。
+async fn report_and_emit(
+    app: &AppHandle,
+    row: &SubagentRow,
+    finalized: Option<SubagentRow>,
+    status: SubagentStatus,
+    elapsed: u64,
+) {
+    let mut row_status = finalized.as_ref().map(|r| r.status);
+    if row_status.is_none() {
+        row_status = load_subagent_status(app, &row.id).await;
     }
-    let watcher = tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            if watcher_stop.stopped() {
-                return;
-            }
-            let idle_ms = (now_ms() as u64)
-                .saturating_sub(watcher_progress.load(std::sync::atomic::Ordering::Relaxed));
-            // 工具在跑时不判停滞：run_python/MCP 单调用上限同为 600s，与阈值
-            // 零余量，长工具执行期 emit 不发心跳，会被这一刀误杀。工具各有
-            // 自己的超时上限兜底，标记不会永久占住。
-            let tool_running = watcher_tool_in_flight.load(std::sync::atomic::Ordering::Relaxed);
-            if !tool_running && idle_ms >= crate::bot::constants::SUBAGENT_STALL_TIMEOUT_SECS * 1000
-            {
-                watcher_stalled.store(true, std::sync::atomic::Ordering::SeqCst);
+    let effective_status = effective_status(row_status, status);
+    let event = match effective_status {
+        SubagentStatus::Succeeded => "subagent_done",
+        SubagentStatus::BudgetExceeded => "subagent_budget_exceeded",
+        SubagentStatus::Cancelled => "subagent_cancelled",
+        _ => "subagent_failed",
+    };
+    // fresh 直接取自收尾闭包返回值（不再二次持锁查询）
+    let summary = finalized
+        .as_ref()
+        .and_then(|r| r.result_json.as_deref())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| {
+            v.get("summary")
+                .and_then(|s| s.as_str())
+                .map(str::to_string)
+        });
+    let row_error = finalized
+        .as_ref()
+        .and_then(|r| r.error.clone())
+        .unwrap_or_default();
+    crate::audit::write_event(
+        app,
+        crate::audit::AuditLevel::Info,
+        event,
+        &[
+            ("subagent_id", row.id.clone()),
+            ("task_id", row.task_id.clone().unwrap_or_default()),
+            (
+                "parent_session_id",
+                row.parent_session_id.clone().unwrap_or_default(),
+            ),
+            ("profile", row.profile.as_str().to_string()),
+            ("trace_id", row.trace_id.clone()),
+            ("elapsed_ms", elapsed.to_string()),
+            ("error", row_error.clone()),
+        ],
+    );
+    crate::bot::audit_log(
+        app,
+        &format!(
+            "{} | id: {} | status: {} | elapsed_ms: {} | error: {}",
+            event,
+            row.id,
+            effective_status.as_str(),
+            elapsed,
+            crate::bot::truncate_for_log(&row_error, 120)
+        ),
+    );
+    // Failed / BudgetExceeded 自动沉淀 lesson：与 run_task_in_chat 的
+    // auto_lesson_on_task_failure 同口径（source=system, scenario=task_exec,
+    // tags=[lesson, task_exec]）——store 语义去重自动合并同类失败教训。
+    // 走 fire-and-forget，不阻塞 finalize 返回路径。
+    // Cancelled 是用户选择不沉淀，Succeeded 无失败不沉淀。
+    if matches!(
+        effective_status,
+        SubagentStatus::Failed | SubagentStatus::BudgetExceeded
+    ) {
+        let app_for_lesson = app.clone();
+        let lesson_title = row.objective.clone();
+        let lesson_error = row_error.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::memory::auto_lesson_on_task_failure(
+                &app_for_lesson,
+                &lesson_title,
+                &lesson_error,
+            )
+            .await;
+        });
+    }
+    emit_subagent_finished(
+        app,
+        &row.id,
+        row.parent_session_id.as_deref(),
+        effective_status,
+        summary.as_deref().unwrap_or_default(),
+    );
+    spawn_parent_report(app, row, effective_status);
+}
+
+/// 加载/产物目录/会话 setup 失败的统一中止路径：终态入队（兜 DB 锁瞬态，防
+/// 行永挂 queued/running）+ 审计 + 收尾事件。调用方 await 后直接 return。
+async fn abort_and_finish(
+    app: &AppHandle,
+    id: &str,
+    parent_session_id: Option<&str>,
+    audit_reason: &str,
+    msg: &str,
+) {
+    let _ = enqueue_terminal_write(app, id, SubagentStatus::Failed, now_ms(), msg).await;
+    crate::bot::audit_log(
+        app,
+        &format!("subagent_runner_abort | id: {id} | err: {audit_reason}"),
+    );
+    emit_subagent_finished(app, id, parent_session_id, SubagentStatus::Failed, "");
+}
+
+/// 排队闸（global 3 / per-session 2，超限等待不失败）。排队可取消——每轮退避
+/// 同时查行终态，取消即退队；Running 改在**拿到槽位并复核后**才写，排队中的
+/// 行不再假挂运行中。返回 None = 应中止（已审计/已发事件），调用方直接 return。
+async fn acquire_gate_slot(
+    app: &AppHandle,
+    row: &SubagentRow,
+) -> Option<crate::bot::subagent_spawn::GateTicket> {
+    // 评审 M 采纳 + 挪线修正：取消检测的 DB 读不该压在 async worker 上——
+    // open_db 含建目录 + PRAGMA + 全量 DDL 迁移，500ms 一次就是反复整套迁移。
+    // 闸门闭包是同步 FnMut（放不进 await），改用排队期专用轻连接：直接 open
+    //（不跑 DDL）+ busy_timeout，单行 SELECT 只花微秒级；拿到槽位后的复核
+    // 仍走 open_db 全量路径。
+    let gate_conn: Option<std::sync::Mutex<rusqlite::Connection>> = {
+        let path = crate::db::data_dir(app).join("wmessage.db");
+        rusqlite::Connection::open(&path)
+            .map(|conn| {
+                let _ = conn.busy_timeout(std::time::Duration::from_secs(2));
+                std::sync::Mutex::new(conn)
+            })
+            .ok() // 开不出连接 = 取消检测降级为 no-op（槽后复核兜底）
+    };
+    let sid_gate_check = row.id.clone();
+    let gate_tick = std::cell::Cell::new(0u32);
+    let mut cancelled_while_queued = move || {
+        let n = gate_tick.get();
+        gate_tick.set(n.wrapping_add(1));
+        if !n.is_multiple_of(10) {
+            return false;
+        }
+        let Some(conn) = &gate_conn else {
+            return false; // DB 读失败不误判取消（拿到槽位后的复核兜底）
+        };
+        let Ok(conn) = conn.lock() else {
+            return false;
+        };
+        crate::db::load_subagent(&conn, &sid_gate_check)
+            .ok()
+            .flatten()
+            .map(|r| r.status.is_terminal())
+            .unwrap_or(false)
+    };
+    let ticket = crate::bot_orchestrator::SubagentGate::wait_slot_cancellable(
+        row.parent_session_id.clone(),
+        &mut cancelled_while_queued,
+    )
+    .await;
+    let ticket = match ticket {
+        Some(t) => t,
+        // 排队中被取消：行已被 cancel 写成终态，此处仅退出（守卫 RAII 清理）
+        None => {
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "subagent_runner_abort | id: {} | err: cancelled_while_queued",
+                    row.id
+                ),
+            );
+            emit_subagent_finished(
+                app,
+                &row.id,
+                row.parent_session_id.as_deref(),
+                SubagentStatus::Cancelled,
+                "",
+            );
+            return None;
+        }
+    };
+    {
+        // 拿到槽位后复核（cancel-vs-runner 竞态闸）：行已终态 = cancel 先赢 →
+        // 中止；DB 读失败保守中止（执行已取消的任务比不跑更糟
+        let sid_still_queued = row.id.clone();
+        let state_now = db_locked(app, move |conn| {
+            Ok(crate::db::load_subagent(conn, &sid_still_queued)
+                .ok()
+                .flatten()
+                .map(|r| r.status))
+        })
+        .await
+        .unwrap_or(None);
+        match state_now {
+            Some(s) if !s.is_terminal() => {}
+            other => {
                 crate::bot::audit_log(
-                    &watcher_app,
+                    app,
                     &format!(
-                        "subagent_stalled | id: {} | idle_ms: {idle_ms} | 停滞超时，已强制停止",
-                        watcher_sid
+                        "subagent_runner_abort | id: {} | err: aborted_while_queued | state: {}",
+                        row.id,
+                        other
+                            .map(|s| s.as_str().to_string())
+                            .unwrap_or_else(|| "db_read_failed".into()),
                     ),
                 );
-                watcher_stop.stop();
-                return;
-            }
-            let sid = watcher_sid.clone();
-            // 只读轮询：直接开连接，不持 DB_WRITE_LOCK（防多子 agent 写锁互饿）
-            let watcher_app2 = watcher_app.clone();
-            // 查询期瞬时错误（DB 忙/锁竞争）按「未取消」处理——误停健康 run
-            // 比晚两秒发现真取消伤得多；真取消由下一 tick 复查兜住，与排队
-            // 路径「DB 读失败不误判取消」同一容错方向。
-            let aborted = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
-                let conn = crate::db::open_db(&watcher_app2)?;
-                Ok(crate::db::load_subagent(&conn, &sid)
-                    .ok()
-                    .flatten()
-                    .map(|r| r.status.is_terminal())
-                    .unwrap_or(false))
-            })
-            .await
-            .unwrap_or(Ok(false))
-            .unwrap_or(false);
-            if aborted {
-                watcher_stop.stop();
-                return;
+                // 拿到槽位后的复核撞上终态：行已由 cancel 写成 cancelled；
+                // 读不到行（DB 失败/行已没）时不要谎报——只留审计，等启动清扫
+                if let Some(s) = other {
+                    emit_subagent_finished(app, &row.id, row.parent_session_id.as_deref(), s, "");
+                }
+                return None;
             }
         }
-    });
+        // Running 写库挪到槽位拿到之后（排队窗口内行保持 queued 语义）。
+        // 写失败必须中止（评审 HIGH 采纳）：recheck 与本写之间 cancel 可抢先写
+        // Cancelled，update_subagent_status 因非法状态转移报错——吞错等于在
+        // 已取消任务上继续跑
+        let sid_running = row.id.clone();
+        let run_write = db_locked(app, move |conn| {
+            crate::db::update_subagent_status(
+                conn,
+                &sid_running,
+                SubagentStatus::Running,
+                now_ms(),
+                None,
+            )
+            .map_err(CommandError::DbError)
+        })
+        .await;
+        if let Err(e) = run_write {
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "subagent_runner_abort | id: {} | err: running_write_failed | {e}",
+                    row.id
+                ),
+            );
+            // 写 Running 被拒基本只有种成因：cancel 已把行写成终态。回读
+            // 真实终态上报（直接写 Cancelled 会在「DB 抖动」这类非 cancel
+            // 失败上撒谎）；读不到行就只留审计，交给启动清扫收尸
+            let st = load_subagent_status(app, &row.id).await;
+            if let Some(st) = st {
+                emit_subagent_finished(app, &row.id, row.parent_session_id.as_deref(), st, "");
+            }
+            return None;
+        }
+    }
+    Some(ticket)
+}
 
-    // 消息装配：system = 子 agent 通用提示 + profile 段 + 产物目录规则；user = 任务包装
-    // stage 在场：拼 PROFILE_RECON/EXECUTOR/VERIFIER 替代基线 PROFILE_*（设计 §8.5）。
-    // profile 仍决定工具白名单档——stage 只换角色语义层。两层解耦，允许调用方：
-    // 1) 仅给 stage（profile 自动按 default_profile 派生）；或
-    // 2) 同时给 stage + profile（白名单与角色互不干扰，如 verifier=research 的只读够用）。
+/// 消息装配：system = 子 agent 通用提示 + profile 段 + 产物目录规则；user = 任务包装。
+/// stage 在场：拼 PROFILE_RECON/EXECUTOR/VERIFIER 替代基线 PROFILE_*（设计 §8.5）。
+/// profile 仍决定工具白名单档——stage 只换角色语义层。两层解耦，允许调用方：
+/// 1) 仅给 stage（profile 自动按 default_profile 派生）；或
+/// 2) 同时给 stage + profile（白名单与角色互不干扰，如 verifier=research 的只读够用）。
+/// 附：配置档绑定读取 + 跨进程续跑装载（sidecar 存在且属本行 → 全量历史代替
+/// 新任务包装，轮数按 RESUME_ROUNDS 收紧）。返回 (msgs, 生效轮数, 绑定的配置档)。
+fn assemble_messages(
+    app: &AppHandle,
+    row: &SubagentRow,
+    stage: Option<SubagentStage>,
+    session_id: &str,
+    artifact_dir: &std::path::Path,
+    prompt_tools: &str,
+    wrapper: &str,
+    max_rounds: usize,
+) -> (
+    Vec<serde_json::Value>,
+    usize,
+    Option<crate::bot_onions::OnionConfig>,
+) {
     let profile_prompt = match stage {
         Some(SubagentStage::Recon) => crate::prompts::PROFILE_RECON.to_string(),
         Some(SubagentStage::Executor) => {
             // 工具行按实际生效集（profile ∩ 配置档 allowed）——subagent_tools
             // 就是那个交集：写死某一档的话，显式给了别的配置档时清单与白名单
             // 脱节，模型照着调用必撞 dispatch 白名单闸
-            crate::prompts::profile_executor(&prompt_tools)
+            crate::prompts::profile_executor(prompt_tools)
         }
         Some(SubagentStage::Verifier) => crate::prompts::PROFILE_VERIFIER.to_string(),
         None => match row.profile {
@@ -596,7 +657,7 @@ pub(crate) async fn run_subagent(
     // wrapper 已由 setup 渲染返回（同一文本：LLM 输入 = 历史落库 = 收尾覆盖源）
     // 配置档段：角色 + 交集后的实际可用工具（§3.4「配置看着生效、实际落空」
     // 要让模型也看得见）；无配置档时是空串，不占位也不改既有提示词。
-    let bound_onion = crate::bot_onions::cached_for_session(Some(session_id.as_str()));
+    let bound_onion = crate::bot_onions::cached_for_session(Some(session_id));
     let onion_note = bound_onion
         .as_ref()
         .map(|cfg| {
@@ -610,7 +671,7 @@ pub(crate) async fn run_subagent(
         "{}\n\n{}\n\n{}{}",
         crate::prompts::SUBAGENT_BASE,
         profile_prompt,
-        gen_dir_rule_for(&artifact_dir),
+        gen_dir_rule_for(artifact_dir),
         onion_note,
     );
     let mut msgs = vec![
@@ -638,7 +699,7 @@ pub(crate) async fn run_subagent(
         }));
         max_rounds = crate::bot::subagent_repair::RESUME_ROUNDS.min(max_rounds);
         crate::bot::audit_log(
-            &app,
+            app,
             &format!(
                 "subagent_resumed_cross_process | id: {} | 历史消息 {} 条",
                 row.id,
@@ -646,198 +707,189 @@ pub(crate) async fn run_subagent(
             ),
         );
     }
+    (msgs, max_rounds, bound_onion)
+}
 
-    // 工具循环：轮数预算（熔断→budget_exceeded；排队不计——running 起算）。
-    // 没有墙钟：时间兜底在工具级超时与停滞判定，不在整条 future 上掐。
-    //
-    // 收尾 JSON 解析失败时**补答一次**（结构化输出三段修复的第 3 段）：产出
-    // 完整、机检全过，只因最后一段不是 JSON 就判 failed，是完成率最大的单项
-    // 黑洞。
-    // 熔断出口前留一份完整对话历史副本：恢复链要带着历史发交卷轮 / 续跑轮，
-    // 恢复失败时它就是 sidecar 的内容（熔断残留只钳 800 字，全量历史只在这里）。
-    let recovery_msgs = msgs.clone();
-    // 盘上交付件的 mtime 下限：本轮开跑前落盘的 verif*.json 一律不算（跨会话
-    // 旧报告冒充防线，与模型循环薄壳里 B 的探测同一个口径、各自取各自的开跑时刻）
-    let started_at = std::time::SystemTime::now();
-    let run = async {
-        let first = crate::bot_model_loop::run_model_loop(
-            app.clone(),
-            msgs,
-            max_rounds,
-            &stop,
-            None,
-            None,
-            // 配置档的采样温度（f32 → f64 无损）。这是 yaml `temperature:` 字段的
-            // 唯一消费者；None 时用模型条目的 temperature。
-            bound_onion
-                .as_ref()
-                .and_then(|c| c.temperature)
-                .map(f64::from),
-            // 子 agent 不落 exec_traces，无需失败明细回传槽（轮数另走 tool_guard 仪表）
-            None,
-        )
-        .await?;
-        let (text, refs, trace) = first;
-        // 熔断出口恢复链（剥标记 → 盘上 verdict → 强制交卷轮 → 原会话续跑一次）：
-        // 恢复成功就把收尾正文换回给下游 classify 照常判定（交出收尾 JSON 判真实
-        // 完成，收尾窗同款口径）；恢复失败维持熔断正文走 budget_exceeded 留产。
-        // 恢复轮次的 refs / trace 不并回——refs 是主聊天的引用面板数据，恢复轮
-        // 不新增用户可见引用；恢复轮与补答轮的轮数与 token 不进 usage 记账，
-        // 恢复出口只有 subagent_fuse_recovered（带 via）一条审计。
-        if text.contains(crate::bot_model_loop::FUSE_MARKER)
-            || text.contains(crate::bot_model_loop::ROUNDS_FUSE_MARKER)
-        {
-            let gen_dir_opt = crate::db::gen_dir(&app).ok();
-            let ctx = crate::bot::subagent_repair::FusedRecoveryCtx {
-                required_checks: self_judged_criteria_count(&row),
-                artifact_dir: &artifact_dir,
-                gen_dir: gen_dir_opt.as_deref(),
-                started: started_at,
-            };
-            // 轮执行注入点：恢复轮共用同一 StopGuard（取消即时生效）与 LLM 装配。
-            // app 取引用克隆（move 闭包搬走 AppHandle 会断掉后续收尾路径的 app 使用）
-            let app_ref = &app;
-            let stop_ref = &stop;
-            let run_rounds = move |history: Vec<serde_json::Value>, rounds: usize| {
-                let app = app_ref.clone();
-                async move {
-                    crate::bot_model_loop::run_model_loop(
-                        app, history, rounds, stop_ref, None, None, None, None,
-                    )
-                    .await
-                    .ok()
-                    .map(|(t, _, _)| t)
-                }
-            };
-            let mut recovery_msgs = recovery_msgs;
-            let outcome = crate::bot::subagent_repair::recover_fused_exit(
-                &stop,
-                &mut recovery_msgs,
-                &text,
-                &ctx,
-                run_rounds,
-            )
-            .await;
-            match outcome {
-                crate::bot::subagent_repair::FusedRecovery::Recovered { text, via } => {
-                    crate::bot::audit_log(
-                        &app,
-                        &format!("subagent_fuse_recovered | id: {} | via: {via}", row.id),
-                    );
-                    if let Some(fixed) = repair_final_json_once(&app, &stop, &text).await {
-                        return Ok((fixed, refs, trace));
-                    }
-                    return Ok((text, refs, trace));
-                }
-                crate::bot::subagent_repair::FusedRecovery::NotRecovered => {
-                    // 续跑-1：全量对话历史落 sidecar——熔断残留只有 800 字，这里
-                    // 是跨进程续跑的原料与事后诊断的完整底账。
-                    let sidecar = artifact_dir.join("session_history.json");
-                    let payload = serde_json::json!({
-                        "subagent_id": row.id,
-                        "fused": true,
-                        "messages": recovery_msgs,
-                    });
-                    if let Err(e) = std::fs::create_dir_all(&artifact_dir)
-                        .and_then(|_| std::fs::write(&sidecar, payload.to_string()))
-                    {
-                        crate::bot::audit_log(
-                            &app,
-                            &format!(
-                                "subagent_history_sidecar_failed | id: {} | {} | {e}",
-                                row.id,
-                                sidecar.display()
-                            ),
-                        );
-                    } else {
-                        crate::bot::audit_log(
-                            &app,
-                            &format!(
-                                "subagent_history_sidecar | id: {} | {}",
-                                row.id,
-                                sidecar.display()
-                            ),
-                        );
-                    }
-                }
+/// 工具循环 + 熔断出口恢复链 + sidecar 生命周期 + 收尾 JSON 补答一次。
+/// 轮数预算（熔断→budget_exceeded；排队不计——running 起算）；没有墙钟：
+/// 时间兜底在工具级超时与停滞判定，不在整条 future 上掐。
+/// 熔断出口恢复链（剥标记 → 盘上 verdict → 强制交卷轮 → 原会话续跑一次）：
+/// 恢复成功就把收尾正文换回给下游 classify 照常判定（交出收尾 JSON 判真实
+/// 完成，收尾窗同款口径）；恢复失败维持熔断正文走 budget_exceeded 留产。
+/// 恢复轮次的 refs / trace 不并回——refs 是主聊天的引用面板数据，恢复轮
+/// 不新增用户可见引用；恢复轮与补答轮的轮数与 token 不进 usage 记账，
+/// 恢复出口只有 subagent_fuse_recovered（带 via）一条审计。
+async fn execute_with_recovery(
+    app: &AppHandle,
+    stop: &crate::bot_slash::StopGuard,
+    row_id: &str,
+    artifact_dir: &std::path::Path,
+    msgs: Vec<serde_json::Value>,
+    recovery_msgs: Vec<serde_json::Value>,
+    max_rounds: usize,
+    temperature: Option<f64>,
+    required_checks: usize,
+    started_at: std::time::SystemTime,
+) -> CommandResult<(
+    String,
+    Vec<crate::bot::TaskRef>,
+    crate::bot_model_loop::LoopTrace,
+)> {
+    let first = crate::bot_model_loop::run_model_loop(
+        app.clone(),
+        msgs,
+        max_rounds,
+        stop,
+        None,
+        None,
+        temperature,
+        // 子 agent 不落 exec_traces，无需失败明细回传槽（轮数另走 tool_guard 仪表）
+        None,
+    )
+    .await?;
+    let (text, refs, trace) = first;
+    if text.contains(crate::bot_model_loop::FUSE_MARKER)
+        || text.contains(crate::bot_model_loop::ROUNDS_FUSE_MARKER)
+    {
+        let gen_dir_opt = crate::db::gen_dir(app).ok();
+        let ctx = crate::bot::subagent_repair::FusedRecoveryCtx {
+            required_checks,
+            artifact_dir,
+            gen_dir: gen_dir_opt.as_deref(),
+            started: started_at,
+        };
+        // 轮执行注入点：恢复轮共用同一 StopGuard（取消即时生效）与 LLM 装配。
+        // app 取引用克隆（move 闭包搬走 AppHandle 会断掉后续收尾路径的 app 使用）
+        let app_ref = app;
+        let stop_ref = stop;
+        let run_rounds = move |history: Vec<serde_json::Value>, rounds: usize| {
+            let app = app_ref.clone();
+            async move {
+                crate::bot_model_loop::run_model_loop(
+                    app, history, rounds, stop_ref, None, None, None, None,
+                )
+                .await
+                .ok()
+                .map(|(t, _, _)| t)
             }
-        } else {
-            // 非熔断收尾（交卷/补答成功/失败带 JSON）：sidecar 已无续跑价值
-            // （只有 budget_exceeded 行可续跑），清掉——「存在且 id 匹配」就是
-            // 续跑判定，残留旧文件会让下一次同名误判失真。
-            let sidecar = artifact_dir.join("session_history.json");
-            if sidecar.exists() {
-                match std::fs::remove_file(&sidecar) {
-                    Ok(()) => crate::bot::audit_log(
-                        &app,
+        };
+        let mut recovery_msgs = recovery_msgs;
+        let outcome = crate::bot::subagent_repair::recover_fused_exit(
+            stop,
+            &mut recovery_msgs,
+            &text,
+            &ctx,
+            run_rounds,
+        )
+        .await;
+        match outcome {
+            crate::bot::subagent_repair::FusedRecovery::Recovered { text, via } => {
+                crate::bot::audit_log(
+                    app,
+                    &format!("subagent_fuse_recovered | id: {} | via: {via}", row_id),
+                );
+                if let Some(fixed) = repair_final_json_once(app, stop, &text).await {
+                    return Ok((fixed, refs, trace));
+                }
+                return Ok((text, refs, trace));
+            }
+            crate::bot::subagent_repair::FusedRecovery::NotRecovered => {
+                // 续跑-1：全量对话历史落 sidecar——熔断残留只有 800 字，这里
+                // 是跨进程续跑的原料与事后诊断的完整底账。
+                let sidecar = artifact_dir.join("session_history.json");
+                let payload = serde_json::json!({
+                    "subagent_id": row_id,
+                    "fused": true,
+                    "messages": recovery_msgs,
+                });
+                if let Err(e) = std::fs::create_dir_all(artifact_dir)
+                    .and_then(|_| std::fs::write(&sidecar, payload.to_string()))
+                {
+                    crate::bot::audit_log(
+                        app,
                         &format!(
-                            "subagent_history_sidecar_cleared | id: {} | {}",
-                            row.id,
+                            "subagent_history_sidecar_failed | id: {} | {} | {e}",
+                            row_id,
                             sidecar.display()
                         ),
-                    ),
-                    Err(e) => crate::bot::audit_log(
-                        &app,
+                    );
+                } else {
+                    crate::bot::audit_log(
+                        app,
                         &format!(
-                            "subagent_history_sidecar_clear_failed | id: {} | {e}",
-                            row.id
+                            "subagent_history_sidecar | id: {} | {}",
+                            row_id,
+                            sidecar.display()
                         ),
-                    ),
+                    );
                 }
             }
         }
-        if let Some(fixed) = repair_final_json_once(&app, &stop, &text).await {
-            return Ok((fixed, refs, trace));
-        }
-        Ok((text, refs, trace))
-    };
-    // runner panic 隔离（bot_scheduler 的既有范式）：panic 会跳过下面所有收尾
-    // ——取消令牌反注册、状态落库、subagent-finished 事件——前端那一行永远转圈，
-    // 行状态也停在 running（只能靠重启清扫僵尸行）。故把 panic 捕获成普通失败，
-    // 让收尾路径照常走完：行落 failed，事件发出去，前端不再转圈。
-    let outcome = match std::panic::AssertUnwindSafe(run).catch_unwind().await {
-        // 正常跑完
-        Ok(Ok(v)) => Ok(v),
-        // runner 自己返错
-        Ok(Err(e)) => Err(e),
-        // runner panic → 归一成普通失败（与返错同一层，收尾路径不变）
-        Err(panic) => {
-            let msg = crate::audit::panic_payload_msg(panic.as_ref());
-            crate::bot::audit_log(
-                &app,
-                &format!(
-                    "subagent_runner_panic | id: {} | {} | 已归一为执行失败",
-                    row.id,
-                    crate::bot::truncate_for_log(&msg, 200)
+    } else {
+        // 非熔断收尾（交卷/补答成功/失败带 JSON）：sidecar 已无续跑价值
+        // （只有 budget_exceeded 行可续跑），清掉——「存在且 id 匹配」就是
+        // 续跑判定，残留旧文件会让下一次同名误判失真。
+        let sidecar = artifact_dir.join("session_history.json");
+        if sidecar.exists() {
+            match std::fs::remove_file(&sidecar) {
+                Ok(()) => crate::bot::audit_log(
+                    app,
+                    &format!(
+                        "subagent_history_sidecar_cleared | id: {} | {}",
+                        row_id,
+                        sidecar.display()
+                    ),
                 ),
-            );
-            Err(panic_to_command_error(&msg))
+                Err(e) => crate::bot::audit_log(
+                    app,
+                    &format!(
+                        "subagent_history_sidecar_clear_failed | id: {} | {e}",
+                        row_id
+                    ),
+                ),
+            }
         }
-    };
+    }
+    if let Some(fixed) = repair_final_json_once(app, stop, &text).await {
+        return Ok((fixed, refs, trace));
+    }
+    Ok((text, refs, trace))
+}
 
-    // 收尾清理：watcher 由 AbortOnDrop Drop 保证中止（含 panic/unwind 路径——
-    // StopGuard::drop 不置位停止标志，单靠手动 abort 会泄漏）
-    let _watcher = AbortOnDrop(watcher);
-    // tool_guard 注册走 RAII 守卫（_session_guard Drop 反注册）
-    crate::db::lock::lock_or_recover(
-        &crate::app_state::subagent_stops(&app),
-        "app_state::subagent_stops",
-    )
-    .remove(&row.id);
-    drop(chat_guard);
-
-    // 收尾判定（设计 §6/§7）
-    let (mut status, mut error, mut result) = match &outcome {
+/// 收尾判定（设计 §6/§7）：classify_outcome → 停滞改判 → 机器验收旁证与改判。
+/// 停滞超时强制停止：循环按「用户停止」出口带正文返回，判定看不出是假死，
+/// 这里按真实原因改判——父 agent 读 error 决定重试，「stalled」比
+/// 「result_json_unparseable」如实得多。部分正文照常保留。
+/// 机器可判定验收：verifier 收尾里的 met 是自述，服务端对「产物文件在不在」
+/// 这类标准能自己判——判了才覆盖自评，并在正文里点名未通过项。
+/// 只在跑完（有收尾 JSON 或恢复链 verdict）时判：熔断/停滞行没有验收可言。
+/// 机器验收是对「模型自报」的独立旁证，判定顺序不能让它落在终态之后：
+/// 不在这里回头修正，「机器验收通过」与「行状态失败」就会永远同时成立。
+/// 返回 (status, error, result, final_text)。
+fn judge_outcome(
+    app: &AppHandle,
+    row: &SubagentRow,
+    outcome: &CommandResult<(
+        String,
+        Vec<crate::bot::TaskRef>,
+        crate::bot_model_loop::LoopTrace,
+    )>,
+    stalled: bool,
+    artifact_dir: &std::path::Path,
+) -> (
+    SubagentStatus,
+    Option<String>,
+    Option<serde_json::Value>,
+    String,
+) {
+    let (mut status, mut error, mut result) = match outcome {
         Err(e) => classify_outcome(Some(&e.message()), None),
         Ok((text, _refs, _loop_trace)) => classify_outcome(None, Some(text)),
     };
-    // 停滞超时强制停止：循环按「用户停止」出口带正文返回，判定看不出是假死，
-    // 这里按真实原因改判——父 agent 读 error 决定重试，「stalled」比
-    // 「result_json_unparseable」如实得多。部分正文照常保留。
-    if stalled.load(std::sync::atomic::Ordering::SeqCst) {
+    if stalled {
         status = SubagentStatus::Failed;
         error = Some("stalled".into());
-        if let Ok((text, _, _)) = &outcome {
+        if let Ok((text, _, _)) = outcome {
             result = Some(serde_json::json!({
                 "summary": crate::bot::truncate_for_log(text, 800),
                 "note": format!(
@@ -851,29 +903,23 @@ pub(crate) async fn run_subagent(
     // 强停都走 Ok 出口但没有收尾 JSON，等于没交答卷——机器验收必须让开：拿
     // 产物文件判熔断行「未通过」只会在正文里凭空多出一段子 agent 没说过的话。
     // 恢复链交出的收尾正文不带标记，照常判定。
-    let outcome_text = match &outcome {
+    let outcome_text = match outcome {
         Ok((text, _, _)) => Some(text.as_str()),
         Err(_) => None,
     };
-    let final_text: String = match &outcome {
+    let final_text: String = match outcome {
         Ok((text, _, _)) => text.clone(),
         Err(e) => format!("⚠️ 执行失败：{}", e.message()),
     };
-    // 机器可判定验收：verifier 收尾里的 met 是自述，服务端对「产物文件在不在」
-    // 这类标准能自己判——判了才覆盖自评，并在正文里点名未通过项。
-    // 只在跑完（有收尾 JSON 或恢复链 verdict）时判：熔断/停滞行没有验收可言。
-    let machine_verdicts = if machine_verdicts_allowed(
-        outcome_text,
-        stalled.load(std::sync::atomic::Ordering::SeqCst),
-    ) {
-        eval_machine_criteria(&acceptance_criteria_of(&row), &artifact_dir)
+    let machine_verdicts = if machine_verdicts_allowed(outcome_text, stalled) {
+        eval_machine_criteria(&acceptance_criteria_of(row), artifact_dir)
     } else {
         Vec::new()
     };
     let failed_machine = machine_verdicts.iter().filter(|v| !v.met).count();
     if failed_machine > 0 {
         crate::audit_event!(
-            &app,
+            app,
             crate::audit::AuditLevel::Warn,
             "subagent.machine_check_failed",
             "subagent_id" => row.id.clone(),
@@ -882,7 +928,7 @@ pub(crate) async fn run_subagent(
         );
     } else if !machine_verdicts.is_empty() {
         crate::audit_event!(
-            &app,
+            app,
             crate::audit::AuditLevel::Info,
             "subagent.machine_check_passed",
             "subagent_id" => row.id.clone(),
@@ -892,8 +938,6 @@ pub(crate) async fn run_subagent(
     // 收尾 JSON 与最终正文都带上机器结论——正文这行是模型和用户唯一同时
     // 看得到的地方，不能只躺在 result_json 里等人去查
     let (result, final_text) = apply_machine_verdicts(result, final_text, &machine_verdicts);
-    // 机器验收是对「模型自报」的独立旁证，判定顺序不能让它落在终态之后：
-    // 不在这里回头修正，「机器验收通过」与「行状态失败」就会永远同时成立。
     let (status, error, recovered_by_machine) =
         reconcile_machine_override(status, error, &machine_verdicts);
     let final_text = if recovered_by_machine {
@@ -906,34 +950,42 @@ pub(crate) async fn run_subagent(
     };
     if recovered_by_machine {
         crate::audit_event!(
-            &app,
+            app,
             crate::audit::AuditLevel::Warn,
             "subagent.parse_failure_recovered",
             "subagent_id" => row.id.clone(),
             "criteria" => machine_verdicts.len().to_string(),
         );
     }
-    let wrapper_for_db = wrapper.clone();
+    (status, error, result, final_text)
+}
+
+/// finalize 落库（多写包同一事务 + cancel-vs-runner 竞态闸——行已终态（cancel
+/// 先赢）时不做任何状态/结果副作用，只落历史）：状态/结果/usage 更新 + 任务包装
+/// 与收尾文本历史落库 + 重建广播。失败 best-effort 落 Failed（收尾失败行会永挂
+/// Running）。返回 fresh row——下游审计/事件直接用，免二次持锁查询；None =
+/// 收尾闭包本身失败（已审计）。
+async fn persist_final_state(
+    app: &AppHandle,
+    row: &SubagentRow,
+    session_id: &str,
+    wrapper: &str,
+    status: SubagentStatus,
+    error: Option<String>,
+    result: Option<serde_json::Value>,
+    final_text: &str,
+    usage_for_db: Option<(u64, u64, u64)>,
+) -> Option<SubagentRow> {
+    let app_for_audit = app.clone();
     let row_for_db = row.clone();
-    let session_id_for_db = session_id.clone();
+    let session_id_for_db = session_id.to_string();
     let status_for_db = status;
     let result_for_db = result.clone();
     let error_for_db = error.clone();
-    let final_for_db = final_text.clone();
-    // usage 记账：模型循环累计的 token 三档随终态同事务落库（返错 / panic
-    // 路径拿不到 trace，保持 NULL——对账时按「未记」读，不编 0）
-    let usage_for_db = match &outcome {
-        Ok((_, _, trace)) => Some((
-            trace.prompt_tokens,
-            trace.completion_tokens,
-            trace.cache_read_tokens,
-        )),
-        _ => None,
-    };
-    // 返回 fresh row——下游审计/事件直接用，免二次持锁查询
-    let app_for_audit = app.clone();
+    let wrapper_for_db = wrapper.to_string();
+    let final_for_db = final_text.to_string();
     let finalized: Option<SubagentRow> =
-        db_locked(&app, move |conn| -> CommandResult<Option<SubagentRow>> {
+        db_locked(app, move |conn| -> CommandResult<Option<SubagentRow>> {
             // 多写包同一事务 + cancel-vs-runner 竞态闸——
             // 行已终态（cancel 先赢）时不做任何状态/结果副作用，只落历史
             let current = crate::db::load_subagent(conn, &row_for_db.id)
@@ -1032,7 +1084,7 @@ pub(crate) async fn run_subagent(
                 .await;
             });
             crate::bot::audit_log(
-                &app,
+                app,
                 &format!(
                     "subagent_finalize_error | id: {} | err: {}",
                     row.id,
@@ -1041,403 +1093,208 @@ pub(crate) async fn run_subagent(
             );
             None
         });
+    finalized
+}
 
-    // 审计 + 广播 + 前端事件（设计 §3 事件全链按 subagent_id 串链）
-    let elapsed = started.elapsed().as_millis() as u64;
-    // 行的真实终态优先于 classify_outcome：用户取消走到这里时 classify 只会给出
-    // Failed（执行被 StopToken 打断），照它上报 = 每次取消都记一条 subagent_failed
-    // 并沉淀「失败原因：」的空教训。收尾闭包整体失败拿不到行时回读一次真实终态
-    //（cancel 抢先后的收尾失败等场景），读不到才回落 classify 的观感值
-    let mut row_status = finalized.as_ref().map(|r| r.status);
-    if row_status.is_none() {
-        row_status = load_subagent_status(&app, &row.id).await;
+/// watcher 句柄 RAII：Drop 即 abort（收尾/panic/unwind 路径都不会泄漏循环任务；
+/// StopGuard::drop 不置位停止标志，单靠手动 abort 会泄漏）。
+struct AbortOnDrop(tauri::async_runtime::JoinHandle<()>);
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
-    let effective_status = effective_status(row_status, status);
-    let event = match effective_status {
-        SubagentStatus::Succeeded => "subagent_done",
-        SubagentStatus::BudgetExceeded => "subagent_budget_exceeded",
-        SubagentStatus::Cancelled => "subagent_cancelled",
-        _ => "subagent_failed",
-    };
-    // fresh 直接取自收尾闭包返回值（不再二次持锁查询）
-    let summary = finalized
-        .as_ref()
-        .and_then(|r| r.result_json.as_deref())
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-        .and_then(|v| {
-            v.get("summary")
-                .and_then(|s| s.as_str())
-                .map(str::to_string)
-        });
-    let row_error = finalized
-        .as_ref()
-        .and_then(|r| r.error.clone())
-        .unwrap_or_default();
-    crate::audit::write_event(
-        &app,
-        crate::audit::AuditLevel::Info,
-        event,
-        &[
-            ("subagent_id", row.id.clone()),
-            ("task_id", row.task_id.clone().unwrap_or_default()),
-            (
-                "parent_session_id",
-                row.parent_session_id.clone().unwrap_or_default(),
-            ),
-            ("profile", row.profile.as_str().to_string()),
-            ("trace_id", row.trace_id.clone()),
-            ("elapsed_ms", elapsed.to_string()),
-            ("error", row_error.clone()),
-        ],
-    );
-    crate::bot::audit_log(
-        &app,
-        &format!(
-            "{} | id: {} | status: {} | elapsed_ms: {} | error: {}",
-            event,
-            row.id,
-            effective_status.as_str(),
-            elapsed,
-            crate::bot::truncate_for_log(&row_error, 120)
-        ),
-    );
-    // Failed / BudgetExceeded 自动沉淀 lesson：与 run_task_in_chat 的
-    // auto_lesson_on_task_failure 同口径（source=system, scenario=task_exec,
-    // tags=[lesson, task_exec]）——store 语义去重自动合并同类失败教训。
-    // 走 fire-and-forget，不阻塞 finalize 返回路径。
-    // Cancelled 是用户选择不沉淀，Succeeded 无失败不沉淀。
-    if matches!(
-        effective_status,
-        SubagentStatus::Failed | SubagentStatus::BudgetExceeded
-    ) {
-        let app_for_lesson = app.clone();
-        let lesson_title = row.objective.clone();
-        let lesson_error = row_error.clone();
-        tauri::async_runtime::spawn(async move {
-            crate::memory::auto_lesson_on_task_failure(
-                &app_for_lesson,
-                &lesson_title,
-                &lesson_error,
-            )
-            .await;
-        });
-    }
-    emit_subagent_finished(
-        &app,
-        &row.id,
-        row.parent_session_id.as_deref(),
-        effective_status,
-        summary.as_deref().unwrap_or_default(),
-    );
-    spawn_parent_report(&app, &row, effective_status);
 }
-/// 任务包装（设计 §8.5）：orchestrator 从 subagents 行渲染，不接受 LLM 自由拼接。
-/// 目标 / 验收标准 / 上下文摘要全部来自行上字段。
-pub(crate) fn render_task_wrapper(row: &SubagentRow, artifact_dir: &std::path::Path) -> String {
-    let criteria: Vec<String> = acceptance_criteria_of(row);
-    let mut w = String::new();
-    w.push_str("[子任务派发]\n");
-    w.push_str(&format!("subagent_id: {}\n", row.id));
-    w.push_str(&format!("objective: {}\n", row.objective));
-    w.push_str("\nacceptance_criteria:\n");
-    for c in &criteria {
-        w.push_str(&format!("- {c}\n"));
-    }
-    if let Some(ctx) = row
-        .context_summary
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        w.push_str("\n上下文摘要:\n");
-        w.push_str(ctx);
-        w.push('\n');
-    }
-    w.push_str(&format!("\n产物目录:\n{}\n", artifact_dir.display()));
-    // 交卷指令（二期乙）：收尾走 submit_result 工具——参数即收尾 JSON，协议级
-    // 载体免去 markdown 围栏/散文/截断三害；文本 JSON 由补答链兜底（仍在）。
-    // 字段契约单源在工具 schema 与系统提示工作流第 4 步，任务包装只指路不复述
-    //（复述即第二份要同步的契约）。
-    w.push_str(
-        "\n完成后调用 submit_result 工具提交收尾（字段与规则见该工具的说明、\
-         系统提示工作流第 4 步）：调用成功即任务结束，不要再输出收尾文本。\n",
-    );
-    w
-}
-/// 上报用终态：行已写入终态时以行为准（cancel 抢先 → cancelled），
-/// 收尾闭包自身失败拿不到行时才回落 classify 的观感值
-pub(crate) fn effective_status(
-    row: Option<SubagentStatus>,
-    classified: SubagentStatus,
-) -> SubagentStatus {
-    row.unwrap_or(classified)
-}
-/// 回读一行子 agent 的状态：读失败或行已不存在都返 None（调用方据此决定
-/// 「按真实状态上报」还是「只留审计」）
-async fn load_subagent_status(app: &AppHandle, id: &str) -> Option<SubagentStatus> {
-    let id = id.to_string();
-    db_locked(app, move |conn| {
-        Ok(crate::db::load_subagent(conn, &id)
-            .ok()
-            .flatten()
-            .map(|r| r.status))
-    })
-    .await
-    .unwrap_or(None)
-}
-/// `subagent-finished` 唯一收尾出口：主会话视图据此刷新子 agent 列表 + 打完成
-/// 提示。所有把行写成终态的路径都必须走到这里（含排队期取消、启动中止、
-/// 行加载失败的 ghost 路径）——前端只认事件，不发就永远停在 queued
-fn emit_subagent_finished(
+
+/// 取消 watcher（设计 §4.3 硬停）：2s 轮询行状态，进终态即停工具循环。
+/// 子 agent 无卡，不再有「软删卡 = 取消派发」这条信号——cancel 置行终态，
+/// 这是唯一的外部取消入口。同一轮询顺带判停滞：心跳超过停滞超时没刷新 →
+/// 置位 stalled 并停循环。
+fn spawn_cancel_watcher(
     app: &AppHandle,
+    stop: &crate::bot_slash::StopGuard,
     subagent_id: &str,
-    parent_session_id: Option<&str>,
-    status: SubagentStatus,
-    summary: &str,
-) {
-    let _ = app.emit_to(
-        "main",
-        "subagent-finished",
-        serde_json::json!({
-            "subagentId": subagent_id,
-            "parentSessionId": parent_session_id,
-            "status": status.as_str(),
-            "summary": summary,
-        }),
-    );
-    // 叫醒 check 等待方：本函数是所有转终态路径的唯一出口，通知挂在这里
-    // 就不会漏（含排队期取消 / 启动中止 / ghost 路径）。
-    finish_notify().notify_waiters();
-}
-
-/// 需自评判据数：acceptanceCriteria 里非机器判据（`file_exists:` /
-/// `file_nonempty:` 前缀）的条数。机器判据由服务端收尾代验、提示词明说模型
-/// 可不自评——交付件探测的覆盖基准因此不含它们，否则 checks 数永远差几条。
-fn self_judged_criteria_count(row: &SubagentRow) -> usize {
-    acceptance_criteria_of(row)
-        .iter()
-        .filter(|c| crate::bot::subagent_digest::parse_machine_criterion(c.trim()).is_none())
-        .count()
-}
-
-/// 机器验收的豁免口径：没有收尾正文（执行返错）、正文带任一熔断标记
-/// （`FUSE_MARKER` 是轮数标记的前缀子串，查短标记即覆盖两者）、或停滞强停
-/// ——没有「跑完」就没有验收可言。恢复链交出的收尾正文不带标记，照常判定。
-fn machine_verdicts_allowed(final_text: Option<&str>, stalled: bool) -> bool {
-    let Some(text) = final_text else {
-        return false;
-    };
-    !stalled && !text.contains(crate::bot_model_loop::FUSE_MARKER)
-}
-
-/// 盘上交付件报告（丙：熔断出口 verdict 推导的数据源；B：轮末提醒的数据源）。
-pub(crate) struct DeliverableReport {
-    pub path: std::path::PathBuf,
-    pub value: serde_json::Value,
-    pub checks: usize,
-}
-
-/// 盘上交付件探测：产物目录与 gen 根目录里名字含 verif 的 .json，
-/// `checks` 数组条数 ≥ 基准判据数 → 验收已齐，返回**数据**（路径 + 解析后的
-/// JSON）。全部探测点都不满足 → None。
-///
-/// 消费方两个：轮末收尾提醒（[verifier_deliverable_nudge]，B）与熔断出口的
-/// verdict 推导（subagent_repair::recover_fused_exit，丙）——同一套「算不算
-/// 齐了」的口径只写一份，提醒说「该收尾」、恢复说「结论我拿回来了」。
-///
-/// 只认「覆盖条数」不比对条目内容：单条判据被拆成多条 checks 只会让条件更早
-/// 满足，而「满足」正是想要的结果；反向的漏判（写少了）由下一轮重探兜住，
-/// 探测是每轮重跑的，不是一次定终身。半截写入解析失败同样按未就绪处理。
-///
-/// `not_before` 是 mtime 下限：gen 根目录是跨会话共享区，历史会话的同名旧
-/// 报告（实测：上轮任务的 verified.json 在根目录滞留数日）不能算这次的交付
-/// 件——本轮开跑之前落盘的一律不算。
-pub(crate) fn find_fresh_deliverable_report(
-    artifact_dir: &std::path::Path,
-    gen_dir: Option<&std::path::Path>,
-    required_checks: usize,
-    not_before: std::time::SystemTime,
-) -> Option<DeliverableReport> {
-    if required_checks == 0 {
-        return None;
-    }
-    let mut dirs = vec![artifact_dir];
-    if let Some(g) = gen_dir {
-        dirs.push(g);
-    }
-    for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let lower = name.to_string_lossy().to_ascii_lowercase();
-            if !lower.contains("verif") || !lower.ends_with(".json") {
-                continue;
+    last_progress_ms: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+    tool_in_flight: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stalled: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> AbortOnDrop {
+    let watcher_app = app.clone();
+    let watcher_stop = stop.token();
+    let watcher_sid = subagent_id.to_string();
+    let watcher_progress = last_progress_ms.clone();
+    let watcher_tool_in_flight = tool_in_flight.clone();
+    let watcher_stalled = stalled.clone();
+    let watcher = tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if watcher_stop.stopped() {
+                return;
             }
-            let fresh = entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .map(|t| t >= not_before)
-                .unwrap_or(false);
-            if !fresh {
-                continue;
+            let idle_ms = (now_ms() as u64)
+                .saturating_sub(watcher_progress.load(std::sync::atomic::Ordering::Relaxed));
+            // 工具在跑时不判停滞：run_python/MCP 单调用上限同为 600s，与阈值
+            // 零余量，长工具执行期 emit 不发心跳，会被这一刀误杀。工具各有
+            // 自己的超时上限兜底，标记不会永久占住。
+            let tool_running = watcher_tool_in_flight.load(std::sync::atomic::Ordering::Relaxed);
+            if !tool_running && idle_ms >= crate::bot::constants::SUBAGENT_STALL_TIMEOUT_SECS * 1000
+            {
+                watcher_stalled.store(true, std::sync::atomic::Ordering::SeqCst);
+                crate::bot::audit_log(
+                    &watcher_app,
+                    &format!(
+                        "subagent_stalled | id: {} | idle_ms: {idle_ms} | 停滞超时，已强制停止",
+                        watcher_sid
+                    ),
+                );
+                watcher_stop.stop();
+                return;
             }
-            let Ok(text) = std::fs::read_to_string(entry.path()) else {
-                continue;
-            };
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-                continue;
-            };
-            let checks_len = v.get("checks").and_then(|c| c.as_array()).map(|a| a.len());
-            let Some(checks_len) = checks_len else {
-                continue;
-            };
-            if checks_len >= required_checks {
-                return Some(DeliverableReport {
-                    path: entry.path(),
-                    value: v,
-                    checks: checks_len,
-                });
+            let sid = watcher_sid.clone();
+            // 只读轮询：直接开连接，不持 DB_WRITE_LOCK（防多子 agent 写锁互饿）
+            let watcher_app2 = watcher_app.clone();
+            // 查询期瞬时错误（DB 忙/锁竞争）按「未取消」处理——误停健康 run
+            // 比晚两秒发现真取消伤得多；真取消由下一 tick 复查兜住，与排队
+            // 路径「DB 读失败不误判取消」同一容错方向。
+            let aborted = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
+                let conn = crate::db::open_db(&watcher_app2)?;
+                Ok(crate::db::load_subagent(&conn, &sid)
+                    .ok()
+                    .flatten()
+                    .map(|r| r.status.is_terminal())
+                    .unwrap_or(false))
+            })
+            .await
+            .unwrap_or(Ok(false))
+            .unwrap_or(false);
+            if aborted {
+                watcher_stop.stop();
+                return;
             }
         }
-    }
-    None
+    });
+    AbortOnDrop(watcher)
 }
 
-/// 轮末收尾提醒文案（B 的注入口）：同一探测口径，产出面向模型的提醒。
-pub(crate) fn verifier_deliverable_nudge(
+/// 产物目录（设计 §6 隔离）：gen_dir/subagents/{subagent_id}/。
+/// gen_dir 解析失败必须 fail-closed：此前退到 "__gen_dir__" 相对路径兜底，
+/// 会把产物目录钉到进程 CWD（打包应用 CWD 可能是 /），产物越过配置的隔离根。
+/// create + canonicalize（写路径钉死规范化目录）失败仅审计：write_artifact_file
+/// 每次调用会再校验，目录坏了只影响产物不影响状态机。
+/// None = 已中止，调用方直接 return。
+async fn prepare_artifact_dir(app: &AppHandle, row: &SubagentRow) -> Option<PathBuf> {
+    #[allow(unused_mut)]
+    let mut artifact_dir = match crate::db::gen_dir(app) {
+        Ok(g) => artifact_dir_of(&g, &row.id),
+        Err(e) => {
+            let msg = format!("产物目录不可用（{e}），子任务中止");
+            abort_and_finish(
+                app,
+                &row.id,
+                row.parent_session_id.as_deref(),
+                &format!("gen_dir_failed | {e}"),
+                &msg,
+            )
+            .await;
+            return None;
+        }
+    };
+    let mk_dir = artifact_dir.clone();
+    let mk_res = tauri::async_runtime::spawn_blocking(move || -> Result<PathBuf, String> {
+        std::fs::create_dir_all(&mk_dir).map_err(|e| e.to_string())?;
+        std::fs::canonicalize(&mk_dir).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    match mk_res {
+        Ok(c) => {
+            // 覆盖为规范化路径（registry ctx 与包装渲染都用它）
+            artifact_dir = c;
+        }
+        Err(e) => {
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "subagent_artifact_dir_warn | id: {} | 产物目录创建/规范化失败（{e}），产物写将被拒绝",
+                    row.id
+                ),
+            );
+        }
+    }
+    Some(artifact_dir)
+}
+
+/// 开跑：建会话 + 包装落库 + session/assignee 回填（单次锁内完成）。
+/// 标题不带 emoji 前缀：子 agent 身份由 bot_sessions.is_subagent 结构化
+/// 字段承载（U20D 批 5），会话列表据此把它们挡在对话列表外。
+/// None = 已中止，调用方直接 return。
+async fn setup_subagent_session(
+    app: &AppHandle,
+    row: &SubagentRow,
     artifact_dir: &std::path::Path,
-    gen_dir: Option<&std::path::Path>,
-    required_checks: usize,
-    not_before: std::time::SystemTime,
-) -> Option<String> {
-    let report = find_fresh_deliverable_report(artifact_dir, gen_dir, required_checks, not_before)?;
-    Some(format!(
-        "【系统提示】验收报告已齐：{} 的 checks 已覆盖全部需自评判据（{} 条）。\
-         请立即输出收尾 JSON 结束任务，不要再调用任何核对、取证或加固类工具。",
-        report.path.display(),
-        report.checks
-    ))
-}
-
-#[cfg(test)]
-mod machine_gate_tests {
-    use super::*;
-
-    /// 熔断（轮数与工具两轴）与停滞行不给机器验收——注释承诺的「预算触顶/
-    /// 异常退出的行没有验收可言」由这条守卫收口。恢复链交出的干净正文照常判。
-    #[test]
-    fn machine_verdicts_skip_fused_and_stalled_runs() {
-        // 轮数熔断正文
-        let rounds = format!(
-            "已核对 40+ 个数字\n\n{}",
-            crate::bot_model_loop::ROUNDS_FUSE_MARKER
-        );
-        assert!(
-            !machine_verdicts_allowed(Some(&rounds), false),
-            "轮数熔断不让验收"
-        );
-        // 工具熔断正文（原守卫只挡轮数标记，这条是本次收口的主目标）
-        let tool = format!(
-            "进度记录\n\n{}：本轮 Function 调用超过上限",
-            crate::bot_model_loop::FUSE_MARKER
-        );
-        assert!(
-            !machine_verdicts_allowed(Some(&tool), false),
-            "工具熔断同样不让验收"
-        );
-        // 停滞强停：没有收尾 JSON，不给验收
-        assert!(
-            !machine_verdicts_allowed(Some("停止前的最后一段正文"), true),
-            "停滞行不让验收"
-        );
-        // 执行返错：没有正文
-        assert!(!machine_verdicts_allowed(None, false));
-        // 恢复链交出的干净收尾 JSON：照常判定
-        assert!(machine_verdicts_allowed(
-            Some(r#"{"status":"succeeded"}"#),
-            false
-        ));
+    onion: &Option<SpawnOnion>,
+) -> Option<(String, String)> {
+    let title = format!(
+        "子任务：{}",
+        crate::bot::truncate_for_log(row.objective.trim(), 30)
+    );
+    let setup = {
+        let artifact_dir = artifact_dir.to_path_buf();
+        let row = row.clone();
+        let onion = onion.clone();
+        db_locked(app, move |conn| -> CommandResult<(String, String)> {
+            // 建会话与回填 session_id 包同一事务，防出现「建了会话但行没记」的孤儿会话
+            let tx = conn
+                .transaction()
+                .map_err(|e| CommandError::DbError(e.to_string()))?;
+            let session = crate::db::bot_session_create_subagent_inner(&tx, Some(title.clone()))
+                .map_err(CommandError::DbError)?;
+            // 包装文本仅返回（渲染一次，交 runner 供 LLM 与 finalize 复用）——
+            // 历史落库统一在 finalize 全量覆盖写（setup 的
+            // bot_history_save_inner 是半截写，会被 finalize DELETE+INSERT 覆盖，
+            // 中途崩溃还留「只有任务块没有结论」的误导历史）
+            let wrapper = render_task_wrapper(&row, &artifact_dir);
+            crate::db::set_subagent_session(&tx, &row.id, &session.id)
+                .map_err(CommandError::DbError)?;
+            // 配置档元列随会话一起建：配置正文在 `<数据目录>/onions/`，这里只存指针。
+            // 不写的话 bind_session 读不到，子 agent 会拿到未收窄的整套 profile 工具。
+            if let Some(o) = &onion {
+                crate::db::bot_session_set_onion(
+                    &tx,
+                    &session.id,
+                    Some(&o.config),
+                    o.max_turn.map(|t| t as i64),
+                )
+                .map_err(CommandError::DbError)?;
+            }
+            tx.commit()
+                .map_err(|e| CommandError::DbError(e.to_string()))?;
+            Ok((session.id, wrapper))
+        })
+    }
+    .await;
+    match setup {
+        Ok(v) => Some(v),
+        Err(e) => {
+            let msg = e.message();
+            abort_and_finish(
+                app,
+                &row.id,
+                row.parent_session_id.as_deref(),
+                &format!("session_setup_failed | {msg}"),
+                &msg,
+            )
+            .await;
+            None
+        }
     }
 }
 
-#[cfg(test)]
-mod deliverable_probe_tests {
-    use super::*;
+mod reporting;
 
-    /// 就绪判定只认本轮新写的 verif*.json：旧文件（跨会话残留）不算，
-    /// checks 数不足不算，非 JSON / 无 checks 数组不算。
-    #[test]
-    fn deliverable_nudge_requires_fresh_full_checks() {
-        // 截断先取、文件后写——与生产一致（下限在循环开跑前定，交付件在其后落盘）
-        let now = std::time::SystemTime::now();
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("verified.json");
-        std::fs::write(&p, r#"{"checks":[{}, {}, {}]}"#).unwrap();
-        // 3 条 checks ≥ 基准 3 → 就绪
-        let hit = verifier_deliverable_nudge(dir.path(), None, 3, now);
-        assert!(hit.is_some(), "满额 checks 应判就绪");
-        assert!(
-            hit.unwrap().contains(&p.display().to_string()),
-            "文案带路径"
-        );
-        // 基准 4 → 未满
-        assert!(verifier_deliverable_nudge(dir.path(), None, 4, now).is_none());
-        // 名字不含 verif 的 json 不探
-        let other = dir.path().join("evidence.json");
-        std::fs::write(other, r#"{"checks":[{}, {}, {}]}"#).unwrap();
-        std::fs::remove_file(&p).unwrap();
-        assert!(verifier_deliverable_nudge(dir.path(), None, 3, now).is_none());
-        // 半截 JSON（写一半被抓到）不算就绪
-        let half = dir.path().join("verified.json");
-        std::fs::write(&half, r#"{"checks":[{}, {"#).unwrap();
-        assert!(verifier_deliverable_nudge(dir.path(), None, 3, now).is_none());
-    }
-
-    /// gen 根目录的跨会话旧报告不冒充本次交付件：mtime 在本轮开跑之前一律跳过，
-    /// 就算文件名与内容都齐也不算。
-    #[test]
-    fn deliverable_nudge_ignores_stale_gen_root_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let stale = dir.path().join("verified.json");
-        std::fs::write(&stale, r#"{"checks":[{}, {}, {}]}"#).unwrap();
-        let file_older_than_run =
-            std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-        assert!(
-            verifier_deliverable_nudge(dir.path(), None, 3, file_older_than_run).is_some(),
-            "下限早于文件 mtime 时照常命中（对照组）"
-        );
-        assert!(
-            verifier_deliverable_nudge(dir.path(), None, 3, std::time::SystemTime::now()).is_none(),
-            "下限晚于文件 mtime 时旧文件不算"
-        );
-        // 基准 0（全部是机器判据）整档让开：探测根本不该跑
-        assert!(
-            verifier_deliverable_nudge(dir.path(), None, 0, std::time::SystemTime::now()).is_none()
-        );
-    }
-
-    /// 产物目录与 gen 根目录两处都探（判据允许报告落任一处），产物目录优先。
-    #[test]
-    fn deliverable_nudge_probes_both_dirs() {
-        let artifact = tempfile::tempdir().unwrap();
-        let gen = tempfile::tempdir().unwrap();
-        let now = std::time::SystemTime::now();
-        // 只落 gen 根：产物目录没有 → 探得到
-        let in_gen = gen.path().join("verified_final.json");
-        std::fs::write(&in_gen, r#"{"checks":[{}]}"#).unwrap();
-        let hit = verifier_deliverable_nudge(artifact.path(), Some(gen.path()), 1, now);
-        assert!(hit.is_some(), "gen 根目录的交付件应被探到");
-        assert!(hit.unwrap().contains("verified_final.json"));
-        // 两处都有：产物目录的先命中
-        let in_artifact = artifact.path().join("verified.json");
-        std::fs::write(&in_artifact, r#"{"checks":[{}, {}]}"#).unwrap();
-        let hit2 = verifier_deliverable_nudge(artifact.path(), Some(gen.path()), 1, now);
-        let hit2 = hit2.unwrap();
-        assert!(
-            hit2.contains("verified.json") && !hit2.contains("verified_final"),
-            "产物目录优先命中：{hit2}"
-        );
-    }
-}
+pub(crate) use reporting::{
+    effective_status, find_fresh_deliverable_report, render_task_wrapper,
+    verifier_deliverable_nudge,
+};
+use reporting::{
+    emit_subagent_finished, load_subagent_status, machine_verdicts_allowed,
+    self_judged_criteria_count,
+};

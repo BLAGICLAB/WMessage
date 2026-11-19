@@ -15,8 +15,8 @@ use crate::bot::subagent_tools::own_card_payload;
 fn onion_temperature_reaches_the_model_loop() {
     let body = orch_prod_src();
     let runner = body
-        .split_once("let first = crate::bot_model_loop::run_model_loop(")
-        .expect("子 agent 调模型循环")
+        .split_once("let run = execute_with_recovery(")
+        .expect("子 agent 调模型循环（经恢复链包装）")
         .1
         .split(";")
         .next()
@@ -30,6 +30,21 @@ fn onion_temperature_reaches_the_model_loop() {
     assert!(
         runner.contains("c.temperature"),
         "传的是配置档的 temperature 字段：{runner}"
+    );
+    // 第二跳钉住透传：包装函数体里的 run_model_loop 调用必须带温度参数
+    let wrapper = body
+        .split_once("async fn execute_with_recovery(")
+        .expect("恢复链包装应存在")
+        .1
+        .split_once("crate::bot_model_loop::run_model_loop(")
+        .expect("包装应把请求发进模型循环")
+        .1
+        .split(";")
+        .next()
+        .expect("调用应在此处收尾");
+    assert!(
+        wrapper.contains("temperature"),
+        "包装必须把温度透传给模型循环：{wrapper}"
     );
 }
 /// tool_calls 计数器（ctx 侧）——dispatch 累计语义的单测锚点（纯仪表，强制在模型循环层）
@@ -399,11 +414,11 @@ fn terminal_state_fallback_write_leaves_a_trace_on_failure() {
     );
     let helper_needle = concat!("enqueue_terminal_", "write(");
     let call_count = src.matches(helper_needle).count();
-    // 四处兜底写口（加载失败 / 产物目录不可用 / 会话建立失败 / 收尾失败）
-    // 各一次调用，助手本体定义还有一次 → 下界 5
+    // 三处兜底写口（加载/目录/会话 setup 三路中止统一收进 abort_and_finish
+    // 内含一次入队 + 收尾失败兜底一次），助手本体定义还有一次 → 下界 3
     assert!(
-        call_count >= 5,
-        "兜底写终态有四处（加助手本体一次），现 {call_count} 处走集中助手"
+        call_count >= 3,
+        "兜底写终态须走集中助手（中止三路合一 + 收尾失败 + 本体），现 {call_count} 处"
     );
     // 派发器侧：终态写库最终失败的超限审计还在（subagent_finalize kind 的
     // give-up 分支），失败可查不静默

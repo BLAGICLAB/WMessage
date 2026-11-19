@@ -350,17 +350,19 @@ fn cancelled_subagent_does_not_report_to_parent() {
 /// 单测验不到调用点传的是哪个值，故这里扫源码钉住接线。
 #[test]
 fn parent_report_gate_is_wired_to_the_effective_status() {
-    // 调用点在 runner 收尾路径——精确扫 runner 自己的生产段（首个 #[cfg(test)]
-    // 之前）。不能对六文件拼接体 split_once：任何一个兄弟文件先出现测试模块
-    // （如 subagent_repair 的恢复链测试）都会把「生产段」截短，守卫跟着误报。
+    // 调用点在 runner 收尾路径（report_and_emit）——精确扫 runner 自己的生产段
+    //（reporting 子模块声明之前；runner 本体已无内联测试块，收尾辅助族及其
+    // 测试在 reporting.rs）。不能对六文件拼接体 split_once：任何一个兄弟文件
+    // 先出现测试模块（如 subagent_repair 的恢复链测试）都会把「生产段」截短，
+    // 守卫跟着误报。
     let runner = include_str!("../../bot/subagent_runner.rs");
     let production = runner
-        .split_once("#[cfg(test)]")
-        .expect("subagent_runner.rs 应有测试模块")
+        .split_once("mod reporting;")
+        .expect("subagent_runner.rs 应有 reporting 子模块声明")
         .0;
     assert!(
         production.contains(concat!(
-            "spawn_parent_report(&app, &row, effective_",
+            "spawn_parent_report(app, row, effective_",
             "status)"
         )),
         "汇报轮必须传收尾时的真实终态（effective_status）"
