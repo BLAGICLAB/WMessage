@@ -825,7 +825,7 @@ pub(crate) async fn tool_run_python(
         }
     };
     // 超时优先级：工具参数 timeoutSecs > 设置页配置 python_timeout_secs > 内置 120s
-    //（硬钳在 py::runtime::resolve_timeout，上限 600s）
+    //（硬钳在 py::runtime::resolve_timeout_with_cap，上限 600s）
     let timeout_secs = v["timeoutSecs"]
         .as_u64()
         .or_else(|| load_config(app).python_timeout_secs);

@@ -37,9 +37,6 @@ pub struct PyRunResult {
 
 pub const OUTPUT_CAP: usize = 64 * 1024;
 pub const DEFAULT_TIMEOUT_SECS: u64 = crate::bot::constants::PYTHON_TIMEOUT_SECS;
-pub fn resolve_timeout(timeout_secs: Option<u64>) -> (u64, bool) {
-    resolve_timeout_with_cap(timeout_secs, PY_MAX_TIMEOUT_SECS)
-}
 
 /// 带调用方天花板的钳制：工具路径传 `PY_MAX_TIMEOUT_SECS`，apps 用户直跑传
 /// `APPS_MAX_TIMEOUT_SECS`——apps 声明的 1800s 天花板在执行层真实生效，
@@ -54,7 +51,7 @@ pub fn resolve_timeout_with_cap(timeout_secs: Option<u64>, cap: u64) -> (u64, bo
 }
 
 /// 写侧钳制（1..=PY_MAX_TIMEOUT_SECS）——设置页落盘前用。运行期钳制在
-/// `resolve_timeout` 但只在执行时生效：写下 10000、显示 10000、实跑 600——
+/// `resolve_timeout_with_cap` 但只在执行时生效：写下 10000、显示 10000、实跑 600——
 /// 落盘值必须等于生效值，写侧先钳一遍。
 pub fn clamp_timeout_secs(n: u64) -> u64 {
     n.clamp(1, PY_MAX_TIMEOUT_SECS)

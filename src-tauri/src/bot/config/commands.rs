@@ -282,7 +282,7 @@ pub(crate) fn prune_verified_vendors(
 ///
 /// 单独成函数是为了能单测：`bot_set_config` 要 AppHandle，测不到里面这一段。
 fn clamp_agent_params(config: &mut BotConfig) {
-    // Python 执行超时：运行期钳在 py::runtime::resolve_timeout，但那条只在
+    // Python 执行超时：运行期钳在 py::runtime::resolve_timeout_with_cap，但那条只在
     // **执行时**生效——写侧不钳的话设置页写下去 10000、显示 10000、实际跑 300。
     // 写侧用同一个上界钳一遍（边界仍是 py::runtime 那一个常量）。
     config.python_timeout_secs = config
