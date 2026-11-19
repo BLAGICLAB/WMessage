@@ -37,6 +37,8 @@ fn guard_test_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_ops;
 
 #[cfg(test)]
 mod exiting_tests;

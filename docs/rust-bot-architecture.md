@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 342 个文件、约 15.0 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 343 个文件、约 15.1 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -252,7 +252,7 @@ src-tauri/src/
 │   ├── bot/mcp/mod.rs   模块声明
 │   ├── bot/mcp/config.rs        McpServerConfig/校验（stdio 启动器白名单、URL 公网闸、
 │   │                            normalize/timeout 钳制）+ 工具命名 mcp_tool_name/tool_prefix
-│   ├── bot/mcp/manager.rs       McpManager（OnceLock 单例）：**按需启停**（静默待命 /
+│   ├── bot/mcp/manager.rs (1407)  McpManager（OnceLock 单例）：**按需启停**（静默待命 /
 │   │                            调用期拉起 / 调用完回收；ensure_connected/call_tool/retire）、
 │   │                            指纹懒重连、stderr 环形缓冲、spawn 白名单字面量构造、
 │   │                            子进程资源采样（5s TTL 缓存，口径同 bot/procs：
@@ -416,7 +416,7 @@ src-tauri/src/
 ├── bot_anthropic.rs     Anthropic 协议适配（纯函数）：OpenAI ↔ /v1/messages 双向转换、auth 头、prompt caching
 ├── bot_anthropic/tests.rs  协议转换单测（body 构造 / 工具槽位映射 / 思考块 / SSE 事件解析）
 ├── bot_plan.rs          PREVR 动态规划：复杂任务先生成计划注入 prompt，失败 Replan（≤2 次）
-├── bot_scheduler.rs     定时任务卡调度：30s 扫描 schedule（每日/每周/at:），到点走 run_task_in_chat 自动执行；
+├── bot_scheduler.rs (1402)  定时任务卡调度：30s 扫描 schedule（每日/每周/at:），到点走 run_task_in_chat 自动执行；
 │                        SchedGuard 防重入；完成发系统通知；
 │                        机器人总开关关着时到点的作业判 Held（不派发、水位不推进，
 │                        恢复后仍在补跑窗口内）——否则每 30s 空转一轮、每天几千条跳过审计
@@ -550,7 +550,7 @@ src-tauri/src/
 ├── bot_web/http.rs        专用 HTTP 工具内核（方法/请求体/自定义头/下载落产物目录；
 │                        凭据引用真值不过模型、响应头凭据类只回名）
 ├── bot_web/tests.rs     联网单测（各搜索后端解析 / URL 闸 / 正文抽取）
-├── bot_py.rs (45) + bot_py/tests.rs + bot_py/exiting_tests.rs + bot_py/platform_tests.rs
+├── bot_py.rs (47) + bot_py/tests.rs (951) + bot_py/tests_ops.rs (498) + bot_py/exiting_tests.rs + bot_py/platform_tests.rs
 │                        Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
 │                        （rlimit / Job Object）、固定脚本模板（`py/scripts/*.py`：extract/make_docx/xlsx/
 │                        pdf/pptx/harvest_proto/docx_revisions，Rust 侧 include_str! 载入）、
@@ -948,6 +948,7 @@ flowchart TD
 - `bot_py/exiting_tests.rs`
 - `bot_py/platform_tests.rs`
 - `bot_py/tests.rs`
+- `bot_py/tests_ops.rs`
 - `bot_reminders.rs`
 - `bot_scheduler.rs`
 - `bot_scheduler/plan_window_tests.rs`
