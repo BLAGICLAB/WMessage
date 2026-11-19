@@ -777,6 +777,15 @@ hooks:
                     "配置 {name} 的 allowed 里有 {tool}，但它不在 TOOLS_TABLE"
                 );
             }
+            // 终局交卷出口必须显式在列：运行时 effective_tools 的强制补回是给
+            // 用户自定义配置兜底的，内置三份不该依赖特判——配置与代码真相
+            // 分叉的话，特判被清理即交卷出口焊死且无人察觉。
+            assert!(
+                cfg.allowed
+                    .iter()
+                    .any(|t| t == crate::bot::registry::SUBMIT_RESULT_TOOL),
+                "配置 {name} 的 allowed 未列 submit_result——终局交卷出口不能只靠运行时特判补回"
+            );
         }
     }
 

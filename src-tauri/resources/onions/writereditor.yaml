@@ -7,7 +7,7 @@ onion_id: writereditor
 role: 公文撰写、PPT 大纲与生成、代码编写与 diff 补丁
 profile: coder
 allowed: [read_text_file, list_files, grep_files, edit_file, write_file,
-          run_python, write_artifact_file, read_own_card]
+          run_python, write_artifact_file, read_own_card, submit_result]
 # 轮数不设 max_turn：三段式派发与主/子 agent 共用同一安全网
 # （bot/constants.rs MAX_ROUNDS）；自定义配置档需要快停时可自行声明。
 temperature: 0.2
