@@ -3,14 +3,17 @@
 //! **安全关键**：kill_tree / ChildRegGuard / RunLimits 逻辑一字不动；
 //! 测试模块用 `super::is_live_group_leader` 等访问是经 `crate::bot_py` facade re-export。
 
-use std::collections::HashSet;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::AppHandle;
 
+use super::procs::{
+    cleanup_after_fail, cleanup_after_spawn_fail, kill_tree, silent_cmd, ChildRegGuard,
+};
+#[cfg(unix)]
+use super::rlimit::{rlimit_warn_line, setrlimit_probe_cached, SetrlimitProbe};
 use crate::bot::constants::PY_MAX_TIMEOUT_SECS;
 use crate::bot::StopToken;
 use crate::error::CommandError;
@@ -157,66 +160,6 @@ impl RunLimits {
     }
 }
 
-#[cfg(unix)]
-pub fn is_live_group_leader(pid: u32) -> bool {
-    // 超过 i32::MAX 的 pid 转换会回绕成负数（极端情况 -1），getpgid 的错误返回
-    // 值恰好也是 -1，等值比较会误判「存活 leader」→ 后续 kill -9 --1 误伤全系统。
-    // 真实内核 pid 远到不了这个值，纯防御；拒判即可。
-    if pid > i32::MAX as u32 {
-        return false;
-    }
-    // SAFETY: pid 由调用方传入（subprocess 子进程 PID），本函数语义：若 getpgid(pid) == pid 则该 pid 是进程组 leader。
-    // POSIX getpgid(0) 返回调用方 PGID 是无害的（这里 pid 是入参，不会传 0）。返回值仅用于 == 比较，无 wrapper 误用风险。
-    unsafe { libc::getpgid(pid as i32) == pid as i32 }
-}
-
-/// 进程组是否仍存在（组长已死、组里还有孙进程时也为真）。
-///
-/// 用于「能不能按组号杀」的判定。`kill(-pgid, 0)` 对不存在的组回 ESRCH、
-/// 对存在但无权限的组回 EPERM——两者都按「不在」处理（真去杀也会失败）。
-///
-/// 问的是**组还在不在**而不是「组长还在不在」：主循环已 reap 子进程，
-/// 组长已死时 getpgid 失败，只问组长会让「孙进程占住管道」那条路径
-/// 再也杀不掉进程组——而那正是 kill_tree 存在的理由。
-#[cfg(unix)]
-pub fn process_group_alive(pid: u32) -> bool {
-    // pid 0 = 调用方自己的进程组（kill -0 语义），绝不能当目标；
-    // 超 i32::MAX 的 pid 转 i32 会回绕成负数 → `kill -9 --1` = 杀光本用户
-    // 所有进程（同文件 is_live_group_leader 的注释）。
-    if pid == 0 || pid > i32::MAX as u32 {
-        return false;
-    }
-    // SAFETY: pid 已过区间校验（非 0、非负）；kill 的负 pid 表示进程组，
-    // 信号 0 只做存在性探测、不投递任何信号。
-    unsafe { libc::kill(-(pid as i32), 0) == 0 }
-}
-
-pub fn kill_tree(child: &mut Child, limits: &RunLimits) {
-    limits.terminate();
-    #[cfg(unix)]
-    {
-        let pid = child.id();
-        // 组号 = 子进程 pid（spawn 时 process_group(0) 起组，组号恒等于 pid）。
-        // 两道护栏都在「误伤系统」的位置上：
-        // - pid 必须落在 i32 有效区间：转 i32 回绕成负数 → kill -9 --1
-        //   杀光本用户所有进程；
-        // - 该组必须还在：组号可能被别的进程组占用（pid 回收），杀错组
-        //   等于杀无关进程。
-        if process_group_alive(pid) {
-            let _ = silent_cmd("kill").args(["-9", &format!("-{pid}")]).status();
-        }
-    }
-    #[cfg(windows)]
-    {
-        let pid = child.id().to_string();
-        let _ = silent_cmd("taskkill")
-            .args(["/PID", &pid, "/T", "/F"])
-            .status();
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
 /// 运行目录里的脚本正文文件名（模型写的那份，原样落盘）。
 ///
 /// 正文与执行入口**分文件**：正文保持模型写的样子，报错行号才与模型自己的
@@ -257,18 +200,6 @@ fn entry_source() -> String {
     src
 }
 
-pub fn cleanup_after_fail(child: &mut Child, limits: &RunLimits) {
-    kill_tree(child, limits);
-    // 运行目录**不删**：脚本留在里面，模型失败后能读回「刚才到底跑了什么」。
-    // 目录由超龄清扫回收（见 py::harvest::sweep_stale_py_runs_in）。
-}
-
-pub fn cleanup_after_spawn_fail(dir: &std::path::Path, limits: &RunLimits) {
-    limits.terminate();
-    // spawn 失败 = 脚本根本没跑起来，没有「刚才跑了什么」可读回，直接清掉。
-    let _ = std::fs::remove_dir_all(dir);
-}
-
 pub fn py_runs_root() -> std::path::PathBuf {
     std::env::temp_dir().join("wmessage-py-runs")
 }
@@ -294,62 +225,6 @@ pub fn setup_run_dir(
         let _ = std::fs::remove_dir_all(&dir);
     }
     r.map(|_| dir)
-}
-
-pub static PY_CHILDREN: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
-
-pub fn py_children() -> &'static Mutex<HashSet<u32>> {
-    PY_CHILDREN.get_or_init(|| Mutex::new(HashSet::new()))
-}
-
-pub struct ChildRegGuard(u32);
-
-impl ChildRegGuard {
-    pub fn register(child: &Child) -> Self {
-        crate::db::lock::lock_or_recover(py_children(), "py::runtime PY_CHILDREN")
-            .insert(child.id());
-        Self(child.id())
-    }
-}
-
-impl Drop for ChildRegGuard {
-    fn drop(&mut self) {
-        crate::db::lock::lock_or_recover(py_children(), "py::runtime PY_CHILDREN").remove(&self.0);
-    }
-}
-
-pub fn kill_py_children(pids: &[u32]) -> usize {
-    let mut killed = 0;
-    for pid in pids {
-        #[cfg(unix)]
-        let ok = if is_live_group_leader(*pid) {
-            silent_cmd("kill")
-                .args(["-9", &format!("-{pid}")])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        } else {
-            false
-        };
-        #[cfg(windows)]
-        let ok = silent_cmd("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if ok {
-            killed += 1;
-        }
-    }
-    killed
-}
-
-pub fn kill_all_py_children() -> usize {
-    let pids: Vec<u32> = crate::db::lock::lock_or_recover(py_children(), "py::runtime PY_CHILDREN")
-        .iter()
-        .copied()
-        .collect();
-    kill_py_children(&pids)
 }
 
 #[cfg(unix)]
@@ -526,22 +401,6 @@ pub fn run_python_ungated(
     unreachable!("最多 2 次尝试，循环内必然返回")
 }
 
-/// macOS/Windows 平台差异的 Command 构造器（强制 UTF-8 环境变量）
-#[cfg(windows)]
-pub fn silent_cmd(program: &str) -> Command {
-    use std::os::windows::process::CommandExt;
-    let mut cmd = Command::new(program);
-    cmd.creation_flags(crate::bot::procs::CREATE_NO_WINDOW)
-        .env("PYTHONIOENCODING", "utf-8")
-        .env("PYTHONUTF8", "1");
-    cmd
-}
-
-#[cfg(not(windows))]
-pub fn silent_cmd(program: &str) -> Command {
-    Command::new(program)
-}
-
 /// 子进程环境裁剪 + 编码基线：子进程默认继承宿主全量环境，用户 shell 里
 /// 导出的密钥（API token、数据库连接串之类）会原样进 app / run_python 脚本
 /// 的可见范围。改白名单：只带运行 Python 必需的系统变量（见 py_env_allowed）；
@@ -555,201 +414,6 @@ fn apply_child_env(cmd: &mut Command) {
         }
     }
     cmd.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
-}
-
-// ── S20：setrlimit 可用性探测（子进程一次探测 + 进程内缓存，逐资源结论）──
-//
-// 背景：pre_exec 里的 setrlimit 在部分环境被拒（实测：裸 macOS 内核即拒
-// setrlimit(RLIMIT_AS)，测试 sandbox 连 CPU 一起拒），旧实现静默吞掉
-// →「限额看似生效实则没生效」；硬失败方案此前实测打断 py_exec
-// （PHASE3-MEDIUM-TRIAGE P3S-20 FIX→回退登记）。折中：首次 py 执行前用同一解释器
-// 子进程逐资源探测一次并缓存；未生效项不设限额但必须 audit 留痕，可用项照设。
-// 硬约束：**探测失败 ≠ 可用**——ProbeError 项一律按「未探测到」处理，不许静默放行。
-
-/// 单个资源的 setrlimit 探测结论。ProbeError 表示探测自身失败（spawn/超时/输出
-/// 缺项/不可解析），**不许当可用**。
-#[cfg(unix)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SetrlimitProbe {
-    Available,
-    Unavailable(String),
-    ProbeError(String),
-}
-
-/// RLIMIT_AS / RLIMIT_CPU 逐资源探测结论。
-#[cfg(unix)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SetrlimitSupport {
-    pub rlimit_as: SetrlimitProbe,
-    pub rlimit_cpu: SetrlimitProbe,
-    pub rlimit_nproc: SetrlimitProbe,
-}
-
-#[cfg(unix)]
-impl SetrlimitSupport {
-    #[cfg(unix)]
-    fn all_available(&self) -> bool {
-        self.rlimit_as == SetrlimitProbe::Available
-            && self.rlimit_cpu == SetrlimitProbe::Available
-            && self.rlimit_nproc == SetrlimitProbe::Available
-    }
-}
-
-#[cfg(unix)]
-static SETRLIMIT_PROBE: OnceLock<SetrlimitSupport> = OnceLock::new();
-
-#[cfg(unix)]
-const SETRLIMIT_PROBE_SCRIPT: &str = concat!(
-    "import resource as _r, sys\n",
-    "def _t(res, v):\n",
-    "    try:\n",
-    "        _r.setrlimit(res, (v, v))\n",
-    "        return 'OK'\n",
-    "    except (OSError, ValueError) as e:\n",
-    "        # CPython 把 setrlimit 的 EINVAL 映射成 ValueError（文案固定），一并捕获\n",
-    "        return '%s: %s' % (type(e).__name__, e)\n",
-    "print('WM_RLIMIT_AS=' + _t(_r.RLIMIT_AS, int(sys.argv[1])))\n",
-    "print('WM_RLIMIT_CPU=' + _t(_r.RLIMIT_CPU, int(sys.argv[2])))\n",
-    // NPROC 上限按生产值（argv[3]）：脚本进程自身 + 看门狗 + 用户脚本，
-    // 太紧会挡掉 multiprocessing 的正常并发，取值见 nproc_limit()
-    "print('WM_RLIMIT_NPROC=' + _t(_r.RLIMIT_NPROC, int(sys.argv[3])))\n",
-);
-// 探测值取生产上限，且**由 argv 从 Rust 常量传入**（不在脚本文本里写死数字）：
-// AS 2GB = mem_limit_bytes 封顶 / CPU = timeout 上限 + 10 宽限。脚本与生产共用
-// 同一组常量，天花板一改两边同时跟着变，不会出现「探针按旧值判可用、生产按新值
-// 设置」的错位（那会让限额静默失效）。
-// 上限通过 → 单调 ceiling 下全部生产值可用；上限被拒 → 从严判 Unavailable 留痕。
-// 方向性硬约束：宁可误判「不可用」留痕（丢限额但诚实），不可误判「可用」静默（S20 原罪）。
-// 已知残差：仅拒中间值、放行两端的非单调沙箱不在覆盖；pre_exec 内仍
-// best-effort 静默，不做二次探测。
-
-/// 从探测 stdout 逐资源提结论；缺项/空值按探测失败算（绝不猜成可用）。
-#[cfg(unix)]
-pub fn parse_setrlimit_probe_output(out: &str) -> SetrlimitSupport {
-    fn pick(tag: &str, out: &str) -> SetrlimitProbe {
-        let line = out
-            .lines()
-            .map(str::trim)
-            .find(|l| l.starts_with(tag))
-            .map(|l| &l[tag.len()..]);
-        match line {
-            Some("OK") => SetrlimitProbe::Available,
-            Some("") | None => SetrlimitProbe::ProbeError(format!("探测输出缺 {tag} 项")),
-            Some(err) => SetrlimitProbe::Unavailable(err.to_string()),
-        }
-    }
-    SetrlimitSupport {
-        rlimit_as: pick("WM_RLIMIT_AS=", out),
-        rlimit_cpu: pick("WM_RLIMIT_CPU=", out),
-        rlimit_nproc: pick("WM_RLIMIT_NPROC=", out),
-    }
-}
-
-/// 未生效/探测失败项的每运行 audit 行（全部可用时返回 None，不另扰）。
-/// 硬约束文案：「限额未生效」/「未探测到 setrlimit 可用性」。
-#[cfg(unix)]
-pub fn rlimit_warn_line(s: &SetrlimitSupport) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-    for (name, p) in [
-        ("RLIMIT_AS", &s.rlimit_as),
-        ("RLIMIT_CPU", &s.rlimit_cpu),
-        ("RLIMIT_NPROC", &s.rlimit_nproc),
-    ] {
-        match p {
-            SetrlimitProbe::Available => {}
-            SetrlimitProbe::Unavailable(w) => {
-                parts.push(format!("{name}: 限额未生效({w})"));
-            }
-            SetrlimitProbe::ProbeError(w) => {
-                parts.push(format!("{name}: 未探测到 setrlimit 可用性，限额未设({w})"));
-            }
-        }
-    }
-    (!parts.is_empty()).then(|| format!("run_python warn | rlimit_off | {}", parts.join("; ")))
-}
-
-#[cfg(unix)]
-pub fn run_setrlimit_probe(py: &str) -> SetrlimitSupport {
-    // 与 run_python_at 同一构造器（参数列表传参，无 shell 参与，无注入面）。
-    use crate::bot::constants::APPS_MAX_TIMEOUT_SECS;
-    let mut cmd = silent_cmd(py);
-    cmd.arg("-c")
-        .arg(SETRLIMIT_PROBE_SCRIPT)
-        // 探测值来自生产常量（见 SETRLIMIT_PROBE_SCRIPT 注），脚本自己只读 argv。
-        // 取两条路径（工具 600s / apps 1800s）中更宽的限额探测：能设宽才代表真可用。
-        .arg(mem_limit_bytes(APPS_MAX_TIMEOUT_SECS).to_string())
-        .arg(cpu_limit_secs(APPS_MAX_TIMEOUT_SECS).to_string())
-        .arg(nproc_limit().to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            return SetrlimitSupport {
-                rlimit_as: SetrlimitProbe::ProbeError(format!("探测子进程 spawn 失败: {e}")),
-                rlimit_cpu: SetrlimitProbe::ProbeError("同上（探测子进程未运行）".to_string()),
-                rlimit_nproc: SetrlimitProbe::ProbeError("同上（探测子进程未运行）".to_string()),
-            };
-        }
-    };
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(st)) => break Some(st),
-            Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
-            Err(e) => {
-                return SetrlimitSupport {
-                    rlimit_as: SetrlimitProbe::ProbeError(format!("探测子进程 wait 失败: {e}")),
-                    rlimit_cpu: SetrlimitProbe::ProbeError("同上（探测子进程未运行）".to_string()),
-                    rlimit_nproc: SetrlimitProbe::ProbeError(
-                        "同上（探测子进程未运行）".to_string(),
-                    ),
-                };
-            }
-        }
-    };
-    let Some(status) = status else {
-        let msg = "探测子进程超时（10s）已强杀".to_string();
-        return SetrlimitSupport {
-            rlimit_as: SetrlimitProbe::ProbeError(msg.clone()),
-            rlimit_cpu: SetrlimitProbe::ProbeError(msg),
-            rlimit_nproc: SetrlimitProbe::ProbeError("同上（探测子进程未运行）".to_string()),
-        };
-    };
-    if !status.success() {
-        let msg = format!("探测子进程退出码异常: {status}");
-        return SetrlimitSupport {
-            rlimit_as: SetrlimitProbe::ProbeError(msg.clone()),
-            rlimit_cpu: SetrlimitProbe::ProbeError(msg),
-            rlimit_nproc: SetrlimitProbe::ProbeError("同上（探测子进程未运行）".to_string()),
-        };
-    }
-    let mut out = String::new();
-    if let Some(mut s) = child.stdout.take() {
-        let _ = std::io::Read::read_to_string(&mut s, &mut out);
-    }
-    parse_setrlimit_probe_output(&out)
-}
-
-/// 进程内一次缓存：rlimit 可用性是 OS/沙箱属性，与具体解释器实例无关，
-/// py 路径中途失效不重探。全可用时 audit 一条确认；未生效/探测失败留给每运行 warn。
-#[cfg(unix)]
-fn setrlimit_probe_cached(py: &str, audit: &mut dyn FnMut(&str)) -> SetrlimitSupport {
-    SETRLIMIT_PROBE
-        .get_or_init(|| {
-            let r = run_setrlimit_probe(py);
-            if r.all_available() {
-                audit("run_python | rlimit_probe | setrlimit 全可用，限额照设");
-            }
-            r
-        })
-        .clone()
 }
 
 /// 失败后给模型的提示：脚本还在哪、怎么改。
@@ -1104,6 +768,8 @@ fn prune_stale_run_dirs(audit: &mut dyn FnMut(&str)) {
 mod tests {
     use super::*;
     use crate::bot::constants::APPS_MAX_TIMEOUT_SECS;
+    use crate::py::procs::*;
+    use crate::py::rlimit::*;
 
     /// 子进程不继承宿主全量环境：宿主进程里放一个伪造密钥，脚本打印自己的
     /// 环境里是否可见——白名单裁剪后必须不可见；PATH 这类地基变量仍在。
@@ -1374,7 +1040,7 @@ mod tests {
         );
     }
 
-    /// 接线守卫：kill_tree 的进程组杀必须先过护栏。
+    /// 接线守卫：kill_tree 的进程组杀必须先过护栏（测试随函数迁 procs.rs 扫新文件）。
     ///
     /// 少了护栏就是 `kill -9 -{pid}` 无条件执行——pid 转 i32 回绕即
     /// `kill -9 --1`，杀光本用户所有进程。纯函数护栏测不到调用点，
@@ -1382,9 +1048,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn kill_tree_checks_the_group_before_killing_it() {
-        let src =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/py/runtime.rs"))
-                .expect("应能读到自己");
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/py/procs.rs"))
+            .expect("应能读到自己");
         let start = src.find("pub fn kill_tree").expect("应有 kill_tree");
         let rest = &src[start..];
         let end = rest[1..]

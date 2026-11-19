@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 340 个文件、约 15.0 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 342 个文件、约 15.0 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -51,7 +51,7 @@ src-tauri/src/
 │   ├── bot_sessions.rs   BotSession / 会话归属
 │   ├── bot_history.rs (674)   会话聊天记录（断代删除已退役，整段覆盖/追加/upsert/drop/
 │   │                     replace_summary/drop_after 六内核 + 身份两索引迁移）
-│   ├── bot_history/tests.rs (805)   聊天记录层单测（截断审计 / 事务原子性 / 身份数据面锚点 / 接线守卫）
+│   ├── bot_history/tests.rs (803)   聊天记录层单测（截断审计 / 事务原子性 / 身份数据面锚点 / 接线守卫）
 │   ├── migrations.rs     数据库迁移（历史顶层 migration.rs 已并入）
 │   ├── paths.rs          data_dir()/gen_dir()（AI_Gen_Files）
 │   ├── skill_out.rs      技能产物输出
@@ -550,7 +550,7 @@ src-tauri/src/
 ├── bot_web/http.rs        专用 HTTP 工具内核（方法/请求体/自定义头/下载落产物目录；
 │                        凭据引用真值不过模型、响应头凭据类只回名）
 ├── bot_web/tests.rs     联网单测（各搜索后端解析 / URL 闸 / 正文抽取）
-├── bot_py.rs (42) + bot_py/tests.rs + bot_py/exiting_tests.rs + bot_py/platform_tests.rs
+├── bot_py.rs (45) + bot_py/tests.rs + bot_py/exiting_tests.rs + bot_py/platform_tests.rs
 │                        Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
 │                        （rlimit / Job Object）、固定脚本模板（`py/scripts/*.py`：extract/make_docx/xlsx/
 │                        pdf/pptx/harvest_proto/docx_revisions，Rust 侧 include_str! 载入）、
@@ -1225,6 +1225,8 @@ flowchart TD
 - `py/harvest.rs`
 - `py/io.rs`
 - `py/mod.rs`
+- `py/procs.rs`
+- `py/rlimit.rs`
 - `py/runtime.rs`
 - `py/seatbelt.rs`
 - `py/win_job.rs`

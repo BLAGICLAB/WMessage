@@ -11,7 +11,7 @@ fn probe_version_ok(program: &str, args: &[&str]) -> bool {
 }
 
 pub fn probe_version_ok_with(program: &str, args: &[&str], timeout: Duration) -> bool {
-    let mut child = match crate::py::runtime::silent_cmd(program)
+    let mut child = match crate::py::procs::silent_cmd(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -217,7 +217,7 @@ pub fn run_dotnet_revisions(
 /// `npm --version` / `npm root -g` 探测也用它（见 `crate::env_probe`），
 /// 另写一份就多一份超时与杀进程的重复实现。
 pub(crate) fn probe_output_with_timeout(program: &str, args: &[&str]) -> Option<String> {
-    let mut child = crate::py::runtime::silent_cmd(program)
+    let mut child = crate::py::procs::silent_cmd(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

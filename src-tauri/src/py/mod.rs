@@ -2,7 +2,9 @@
 //!
 //! 原 `bot_py.rs`（3694 行）按 SRP 拆为 8 个子模块：
 //! - `env` — Python/dotnet 环境探测 + 缓存
-//! - `runtime` — 子进程执行核心（RunLimits / kill_tree / ChildRegGuard / run_python / silent_cmd）
+//! - `runtime` — 子进程执行核心（RunLimits / run_python / 环境裁剪 / 失败种类）
+//! - `procs` — 进程树管理（silent_cmd / kill_tree / 组存活 / PY_CHILDREN 登记）
+//! - `rlimit` — setrlimit 可用性探测（S20：逐资源探测 + 进程内缓存）
 //! - `io` — 有界 IO 读取 + 线程 join + 截断
 //! - `harvest` — 运行目录产物回收 + 旧 run 清扫
 //! - `audit` — 结构化审计日志
@@ -24,6 +26,8 @@ pub mod env;
 mod gate;
 pub mod harvest;
 pub mod io;
+pub mod procs;
+pub mod rlimit;
 pub mod runtime;
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
