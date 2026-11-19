@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 339 个文件、约 15.0 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 340 个文件、约 15.0 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -49,7 +49,9 @@ src-tauri/src/
 │   ├── db/tasks/owner_graph_tests.rs (345)       归属归一 + 导入导出信封单测
 │   └── db/tasks/import_bounded_tests.rs (23)    导入文件 bounded 读单测
 │   ├── bot_sessions.rs   BotSession / 会话归属
-│   ├── bot_history.rs   会话聊天记录
+│   ├── bot_history.rs (674)   会话聊天记录（断代删除已退役，整段覆盖/追加/upsert/drop/
+│   │                     replace_summary/drop_after 六内核 + 身份两索引迁移）
+│   ├── bot_history/tests.rs (805)   聊天记录层单测（截断审计 / 事务原子性 / 身份数据面锚点 / 接线守卫）
 │   ├── migrations.rs     数据库迁移（历史顶层 migration.rs 已并入）
 │   ├── paths.rs          data_dir()/gen_dir()（AI_Gen_Files）
 │   ├── skill_out.rs      技能产物输出
@@ -1120,6 +1122,7 @@ flowchart TD
 - `db/apps.rs`
 - `db/atomic_write_tests.rs`
 - `db/bot_history.rs`
+- `db/bot_history/tests.rs`
 - `db/bot_sessions.rs`
 - `db/effects.rs`
 - `db/lock.rs`
