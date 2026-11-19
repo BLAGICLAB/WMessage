@@ -340,13 +340,13 @@ fn dsl_outcome_done_carries_summary_string() {
 }
 
 #[test]
-fn dsl_failure_terminated_carries_reason() {
-    // DslFailure::Terminated 携带 reason（用户主动终止场景）
-    let failure = DslFailure::Terminated {
+fn dsl_failure_failed_carries_reason() {
+    // DslFailure::Failed 携带 reason（用户主动终止场景）
+    let failure = DslFailure::Failed {
         reason: "用户 /stop".into(),
     };
     match failure {
-        DslFailure::Terminated { reason } => assert_eq!(reason, "用户 /stop"),
+        DslFailure::Failed { reason } => assert_eq!(reason, "用户 /stop"),
     }
 }
 
@@ -580,7 +580,7 @@ async fn compat_gate_terminates_when_all_steps_call_same_renamed_tool() {
     )
     .await;
     assert!(
-        matches!(result, Err(DslFailure::Terminated { .. })),
+        matches!(result, Err(DslFailure::Failed { .. })),
         "全部主步未知必须提前终止：{result:?}"
     );
     assert_eq!(

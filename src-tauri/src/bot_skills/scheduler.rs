@@ -55,10 +55,11 @@ pub enum DslOutcome {
     },
 }
 
-/// DSL 调度器硬错误（用户主动终止 / 解析失败）—— LLM 不接管，直接报错给用户
+/// DSL 调度器判定失败（用户主动终止 / 解析失败 / 被接管 / 步骤终止）——
+/// LLM 不接管，直接报错给用户
 #[derive(Debug, Clone)]
 pub enum DslFailure {
-    Terminated { reason: String },
+    Failed { reason: String },
 }
 
 /// 已完成步骤摘要（LLM 兜底）：
@@ -227,7 +228,7 @@ pub async fn run_skill_scheduler(
     session_id: Option<&str>,
     stop: Option<&crate::bot_slash::StopGuard>,
 ) -> Result<DslOutcome, DslFailure> {
-    let (meta, body, _) = load_skill_meta(app, name).map_err(|e| DslFailure::Terminated {
+    let (meta, body, _) = load_skill_meta(app, name).map_err(|e| DslFailure::Failed {
         reason: e.to_string(),
     })?;
     // params 从本会话活动 run 取（use_skill 启动时写入；pre-step 路由路径无 run
@@ -309,7 +310,7 @@ where
             // 零步骤出口也必须收尾 run（见 mark_session_run_terminated），
             // 否则 run 泄漏为僵尸 Running，被下一轮的无关确认窗误杀
             super::state::mark_session_run_terminated(app, name, session_id, &e);
-            return Err(DslFailure::Terminated { reason: e });
+            return Err(DslFailure::Failed { reason: e });
         }
     };
     // 回滚段**只在 `rollback: auto` 时才执行**。
@@ -331,7 +332,7 @@ where
         persist_outcome(name, "terminated", Some("DSL 解析为空"), None, None);
         let reason = format!("技能「{name}」无可执行步骤（DSL 解析为空）");
         super::state::mark_session_run_terminated(app, name, session_id, &reason);
-        return Err(DslFailure::Terminated { reason });
+        return Err(DslFailure::Failed { reason });
     }
     // 兼容审计——步骤/回滚引用了未内置的工具。全部未知 → 提前终止
     // （几乎必然是工具改名后未同步的旧技能，逐步失败只会白烧回滚）；部分未知 →
@@ -366,7 +367,7 @@ where
             );
             persist_outcome(name, "terminated", Some(&reason), None, None);
             super::state::mark_session_run_terminated(app, name, session_id, &reason);
-            return Err(DslFailure::Terminated { reason });
+            return Err(DslFailure::Failed { reason });
         }
     }
     crate::bot::audit_log_hook(
@@ -397,7 +398,7 @@ where
                     ),
                 );
                 persist_outcome(name, "terminated", Some(&reason), None, None);
-                return Err(DslFailure::Terminated { reason });
+                return Err(DslFailure::Failed { reason });
             }
             let ts = now_ms();
             match advance_dsl(&run, ts) {
@@ -464,7 +465,7 @@ where
                     );
                     let final_reason = format!("技能「{name}」终止：{reason}");
                     persist_outcome(name, "terminated", Some(&final_reason), None, None);
-                    return Err(DslFailure::Terminated {
+                    return Err(DslFailure::Failed {
                         reason: final_reason,
                     });
                 }

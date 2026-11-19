@@ -94,7 +94,7 @@ pub(super) fn start_skill_with_audit(
 /// - `FallThrough { recovery_hint }`：需要落入「步骤 5」继续走 run_model_loop：
 ///   - interactive 模式 → recovery_hint 为 None（body 由 caller 拼入 system prompt）
 ///   - auto-mode 调度器返回 FailedButRecoverable → recovery_hint 为 Some(...)
-/// - 调度器返回 Terminated → 走 Err(CommandError::Internal)，不进 Outcome
+/// - 调度器返回 DslFailure::Failed → 走 Err(CommandError::DomainRule(skill))，不进 Outcome
 ///
 /// 调用方负责：
 /// - 在调用本函数前完成 pre_step 路由 + bypass switch（pre_routed_skill 已通过 bypass）
@@ -171,7 +171,7 @@ pub(super) async fn apply_skill_route(
                 )),
             })
         }
-        Err(crate::bot_skills::DslFailure::Terminated { reason }) => {
+        Err(crate::bot_skills::DslFailure::Failed { reason }) => {
             Err(skill_terminated_error(reason))
         }
     }

@@ -511,7 +511,7 @@ async fn scheduler_e2e_zero_step_terminated_exits_finish_the_run() {
     )
     .await
     .expect_err("散文体无 Step 块应 Terminated");
-    assert!(matches!(outcome, DslFailure::Terminated { .. }));
+    assert!(matches!(outcome, DslFailure::Failed { .. }));
     assert_eq!(
         test_hook_skill_run_state(&app, "minimax-ppt"),
         Some(SkillState::Terminated),
@@ -539,7 +539,7 @@ async fn scheduler_e2e_zero_step_terminated_exits_finish_the_run() {
     )
     .await
     .expect_err("重复序号应解析失败 Terminated");
-    assert!(matches!(outcome, DslFailure::Terminated { .. }));
+    assert!(matches!(outcome, DslFailure::Failed { .. }));
     assert_eq!(
         test_hook_skill_run_state(&app, "minimax-ppt"),
         Some(SkillState::Terminated),
@@ -568,7 +568,7 @@ async fn scheduler_e2e_zero_step_terminated_exits_finish_the_run() {
     )
     .await
     .expect_err("全未知工具应 Terminated");
-    assert!(matches!(outcome, DslFailure::Terminated { .. }));
+    assert!(matches!(outcome, DslFailure::Failed { .. }));
     assert_eq!(
         test_hook_skill_run_state(&app, "minimax-ppt"),
         Some(SkillState::Terminated),
@@ -620,7 +620,7 @@ async fn scheduler_e2e_bails_out_when_another_skill_takes_over() {
     .await;
 
     match outcome {
-        Err(DslFailure::Terminated { reason }) => {
+        Err(DslFailure::Failed { reason }) => {
             assert!(reason.contains("接管"), "reason 应说明被接管：{reason}");
         }
         other => panic!("期望 Terminated（被接管），got {other:?}"),
