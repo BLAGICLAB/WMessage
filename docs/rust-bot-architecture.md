@@ -69,7 +69,7 @@ src-tauri/src/
 │   ├── db/effects.rs    通用持久化副作用队列 effect_queue（语义对拍 superagent effects.ts）：
 │   │                     同 kind+key 一行、再入队保队位重置计次、CAS 收尾、成功删行、
 │   │                     kind 健康度统计；派发器在 bot/effects.rs
-│   ├── db/trace.rs (1151)   执行痕迹三表 exec_traces/exec_spans/file_changes（Agent 透明化
+│   ├── db/trace.rs (1138)   执行痕迹三表 exec_traces/exec_spans/file_changes（Agent 透明化
 │   │                     设计 §4.1）：append-only 观测面 + 钳制单源（SPAN_TEXT_MAX 16KB /
 │   │                     MAX_DIFF_LINES）+ 保留期清理 retire_traces_before（僵尸 running 同删）；
 │   │                     保留期边界（TRACE_RETENTION_MIN/MAX_DAYS）与词元统计可查窗口
@@ -87,7 +87,7 @@ src-tauri/src/
 │   ├── db/trace_usage.rs (218)  词元统计聚合面：按日 / 按模型 / 按模型×按日三档
 │   ├── db/trace_session.rs (417) 本会话文件改动面（聊天侧栏「文件」）：清单 / 详情 /
 │   │                     累计 diff（累计口径 vs 逐次降级口径）
-│   ├── db/trace/tests.rs (1448)  痕迹层单测（三表写入 / 保留期 / 词元统计 / 查询面）
+│   ├── db/trace/tests.rs (1434)  痕迹层单测（三表写入 / 保留期 / 词元统计 / 查询面）
 │   ├── db/trace_session/session_file_changes_tests.rs (319) 本会话文件改动单测
 │   ├── db/apps.rs        程序 apps 表 CRUD + app_runs 运行史 + app_versions 版本快照
 │   │                     （滚动保留最近 100 版，见 docs/APPS-DESIGN-2026-10-15.md §5）

@@ -160,20 +160,6 @@ fn span_insert_roundtrip() {
     assert!(spans[0].id < spans[1].id);
 }
 
-/// clamp_text：按字节钳 + UTF-8 边界回退（中文多字节不拦腰）
-#[test]
-fn clamp_text_respects_char_boundary() {
-    let short = "abc";
-    assert_eq!(clamp_text(short, 100), "abc", "未超限原样返回");
-    // 8 字节上限：三个 3 字节汉字只能装下两个
-    let zh = "一二三四";
-    let clamped = clamp_text(zh, 8);
-    assert_eq!(clamped, "一二");
-    assert!(clamped.len() <= 8);
-    // 全 ASCII 精确钳
-    assert_eq!(clamp_text("abcdefghij", 4), "abcd");
-}
-
 /// file_change 往返：before/after 证据链字段全量保真
 #[test]
 fn file_change_roundtrip_with_rollback_evidence() {

@@ -146,7 +146,7 @@ fn clamped_overflow_text(s: &str) -> String {
         s.len()
     );
     let head_budget = crate::db::SPAN_TEXT_MAX.saturating_sub(marker.len());
-    let mut out = crate::db::clamp_text(s, head_budget);
+    let mut out = crate::bot::format::truncate_bytes(s, head_budget);
     out.push_str(&marker);
     out
 }

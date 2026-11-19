@@ -7,7 +7,7 @@
 //! 逐条 insert，收尾由 `trace_finish` 一次 UPDATE 汇总。
 //!
 //! 钳制纪律（与审计 KV 500 字符同思路：本地库也防膨胀）：
-//! - `SPAN_TEXT_MAX`：args/result 单条 16KB（生成侧钳，本模块 `clamp_text` 单源）
+//! - `SPAN_TEXT_MAX`：args/result 单条 16KB（生成侧钳，截断单源在 `bot::format::truncate_bytes`）
 //! - `MAX_DIFF_LINES`：unified diff 行数上限（ 生成侧引用）
 //! - `TRACE_RETENTION_DAYS`：保留期默认 30 天（`retire_traces_before` 由设置页
 //!   手动命令与自动清扫 `spawn_retention_sweep` 两条触发）
@@ -196,7 +196,7 @@ pub struct NewTrace<'a> {
     pub started_at: i64,
 }
 
-/// span 落盘入参；args/result 由调用方经 `clamp_text` 钳后传入（钳没钳本层不拦，
+/// span 落盘入参；args/result 由调用方经 `truncate_bytes` 钳后传入（钳没钳本层不拦，
 /// 超限审计 `trace.span_overflow` 在采集侧——DB 层只保底 `span_insert` 不再钳二次）。
 pub struct NewSpan<'a> {
     pub trace_id: i64,
@@ -243,19 +243,6 @@ pub struct TraceFinish<'a> {
     pub cache_write_tokens: i64,
     pub error: Option<&'a str>,
     pub model: Option<&'a str>,
-}
-
-/// 文本按字节钳制，UTF-8 字符边界回退（多字节中文不能拦腰截断）。
-/// 生成侧统一走本函数，保证「钳后必是合法 String」只有一份实现。
-pub fn clamp_text(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        return s.to_string();
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    s[..end].to_string()
 }
 
 pub(crate) fn trace_row_from(r: &rusqlite::Row) -> rusqlite::Result<TraceRow> {
