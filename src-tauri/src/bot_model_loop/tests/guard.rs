@@ -954,6 +954,26 @@ mod post_turn_layer_tests {
     }
 }
 
+/// 看门狗的 tool_in_flight 翻转挂在 shell emit 出口的事件名字符串比对上——
+/// 事件名若重命名，标记静默失效（停滞判定在长工具执行期误杀）且无行为测试
+/// 会红。守卫钉住两端：core 的事件字面量与 shell 的翻转分支。
+#[test]
+fn tool_in_flight_flip_tracks_event_names() {
+    let core = prod_src();
+    assert!(
+        core.contains("\"bot-tool-running\"") && core.contains("\"bot-tool-done\""),
+        "core 必须以这两个事件名发射（shell 的翻转按名字比对）"
+    );
+    let shell = include_str!("../shell.rs");
+    assert!(
+        shell.contains("if event == \"bot-tool-running\"")
+            && shell.contains("set_subagent_tool_in_flight(session_id, true)")
+            && shell.contains("else if event == \"bot-tool-done\"")
+            && shell.contains("set_subagent_tool_in_flight(session_id, false)"),
+        "shell emit 出口必须按事件名翻转 tool_in_flight——改名必须两侧同步"
+    );
+}
+
 /// bot-tool-running/done 事件的入参/结果必须走 sink 面同源裁剪：
 /// 这两个事件经 turn_record 聚合落 sqlite（bot_history 重启还原）且前端
 /// 直接显示——URL 型工具的凭据段/查询串与结果里的「来源：」行/elicitation

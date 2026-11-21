@@ -328,6 +328,11 @@ pub async fn tool_read_text_file(
     }
     let offset = v["offset"].as_u64().unwrap_or(1).max(1) as usize;
     let limit = (v["limit"].as_u64().unwrap_or(READ_MAX_LINES as u64) as usize).min(READ_MAX_LINES);
+    if limit == 0 {
+        return ToolResult::denied(
+            "limit 最小 1（0 行读不到任何内容）；省略 limit 则按字节预算自动分页",
+        );
+    }
     // 内容已在 read_with_ino_check 里从**核对过的那同一个 fd** 读出（不再按
     // 路径二次 open——二次 open 就是 TOCTOU 窗口）。
     let text = String::from_utf8_lossy(&raw).to_string();

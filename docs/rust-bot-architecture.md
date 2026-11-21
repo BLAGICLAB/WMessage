@@ -182,7 +182,7 @@ src-tauri/src/
 │   │                                    轮内工具结果滑动窗 / 用户意图抽取
 │   ├── bot_model_loop/evidence.rs (324)  证据来源层：从消息抽文本·来源，数字是否可溯源
 │   ├── bot_model_loop/tests.rs (76)     单元测试六桶的入口 + prod_src() 生产代码全景扫描源
-│   ├── bot_model_loop/tests/guard.rs (1367)   幻觉守卫 / 熔断 / 接线类测试
+│   ├── bot_model_loop/tests/guard.rs (1387)   幻觉守卫 / 熔断 / 接线类测试
 │   ├── bot_model_loop/tests/parse.rs (596)   SSE 解析 / 增量累积 / schema 测试
 │   ├── bot_model_loop/tests/config.rs (615) 推理参数 / 思考 / 上下文超限 / 侧调门测试
 │   ├── bot_model_loop/tests/tool_window.rs (233) 轮内工具结果滑动窗测试（裁剪口径 / 护栏 / 桩子）
@@ -216,7 +216,7 @@ src-tauri/src/
 │   │                        数目以 BUILTIN_TOOL_COUNT 为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │   │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
 │   ├── bot/registry/handlers.rs (589)   65 个 call_* 一行转发（ToolCtx + args → 工具实现）
-│   ├── bot/registry/claims.rs (799)     声明判据面：模型「声称做了」的提取与判定
+│   ├── bot/registry/claims.rs (808)     声明判据面：模型「声称做了」的提取与判定
 │   │                        （变更声称 / 执行声称 / 数值 / 文档路径 / 工具点名）
 │   ├── bot/registry/mentioned_tool_names_tests.rs (77)  工具点名整词匹配单测
 │   ├── bot/registry/claimed_executed_tools_tests.rs (63) 执行声称单测
@@ -434,13 +434,13 @@ src-tauri/src/
 ├── bot_slash.rs         StopGuard/StopRegistry（/stop 按执行实例隔离；注册表已迁 app_state::AppState，
 │                        见 §2.1）、危险操作确认弹窗、机器人总开关
 ├── exec_steps.rs        任务卡逐步执行模式：多子任务逐个做、用户确认「继续/重做/停」
-├── bot/subagent_digest.rs (580) 子 agent 摘要与验收判据：build_subagent_digest / subagent_digest_block（父会话注入段）
+├── bot/subagent_digest.rs (585) 子 agent 摘要与验收判据：build_subagent_digest / subagent_digest_block（父会话注入段）
 │                        / mark_digested（已消化记账）+ 机器判据（file_exists / file_nonempty
 │                        走服务端核验，不与模型自报的 met 混算）+ 父会话回报门控
 ├── bot/subagent_repair.rs (1011) 收尾 JSON 的本地修复与结果判定：结构化输出三段修复的第二段（尾逗号 / 截断闭合，
 │                        零 token 零延迟）+ parse_final_json + classify_outcome + 熔断出口恢复链
 │                        recover_fused_exit（剥标记 → 盘上 verdict → 强制交卷轮 → 原会话续跑一次）
-├── bot/subagent_runner.rs (1330) + bot/subagent_runner/reporting.rs (319) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
+├── bot/subagent_runner.rs (1337) + bot/subagent_runner/reporting.rs (319) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
 │                        + panic 隔离 + 任务包装渲染
 ├── bot/subagent_spawn.rs (453) 子 agent 派发：入参校验 / 建行 / 并发闸 SubagentGate（per-session 2 /
 │                        global 3，闸满排队）
@@ -517,24 +517,24 @@ src-tauri/src/
 ├── bot_fs.rs (551)       路径白名单 + perm_mode(ask/yolo) 两档授权闸；
 │                        per-tool 规则表（lookup_tool_rule / tool_rule_for）+ 读闸
 │                        （resolve_with_perm / allowed_dirs）；子模块转出（旧路径 1:1 保持）
-│   ├── bot_fs/edit.rs (671)      文件编辑面：写闸 + 三级匹配内核 + edit_file/write_file
+│   ├── bot_fs/edit.rs (672)      文件编辑面：写闸 + 三级匹配内核 + edit_file/write_file
 │   │                             （N6，Aider 式三级匹配：精确→空白容错→reflection；
 │   │                             写白名单≠读白名单：可写根=AI_Gen_Files+任务卡绑定文件夹+
 │   │                             allowedDirs；白名单外 perm_mode 两分支/覆盖确认含 yolo）
-│   ├── bot_fs/read.rs (750)      读取面：glob / 目录遍历 / 二进制判定 / inode 复核 +
+│   ├── bot_fs/read.rs (755)      读取面：glob / 目录遍历 / 二进制判定 / inode 复核 +
 │   │                             只读工具 read_text_file/grep_files/list_files
 │   ├── bot_fs/receipt.rs (176)   文件变更凭证面：unified diff / sha256 / before 快照 / 回执
 │   ├── bot_fs/tests.rs (845)     读写闸与编辑内核单测
 │   ├── bot_fs/file_change_tests.rs (180) 变更凭证单测
 │   ├── bot_fs/read_path_single_open_tests.rs (70) 读路径只开一次 fd 的源码守卫
 │   └── bot_fs/tool_rule_tests.rs (48)      per-tool 规则表单测
-├── bot_archive.rs (1055) + bot_archive/tests.rs   归档工具 unpack_archive/pack_archive：zip / tar / tar.gz 的解包与打包
+├── bot_archive.rs (1076) + bot_archive/tests.rs   归档工具 unpack_archive/pack_archive：zip / tar / tar.gz 的解包与打包
 │                        （纯 Rust：zip + tar + flate2，不依赖本机 Python）；压缩包是外部
 │                        输入——条目名带 .. / 绝对路径 / 盘符 / 软链一律跳过并列出，单文件
 │                        64MB、整包 256MB、条目 5000 条上限（超限报「疑似压缩炸弹」），放大比
 │                        200:1 封顶；已存在的文件不覆盖（跳过并列出）；解包只认源在读白名单、
 │                        落点在写白名单
-├── bot_manage_file.rs (535) 文件复制/移动/删除 manage_file：copy 复制（源保留）/
+├── bot_manage_file.rs (537) 文件复制/移动/删除 manage_file：copy 复制（源保留）/
 │                        move 移动（同卷 rename、跨卷复制后源入回收站）/ delete 删除
 │                        （进系统回收站，删前弹窗确认、60s 无响应默认拒）；源走读
 │                        白名单、目标走写白名单；目标已存在一律不覆盖；目录树里的

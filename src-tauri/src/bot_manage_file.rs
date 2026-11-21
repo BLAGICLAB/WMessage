@@ -298,7 +298,9 @@ fn copy_tree_inner(
                 audit,
             )?;
             if *bytes > MAX_TREE_BYTES {
-                return Err(format!("复制总字节超过上限 {MAX_TREE_BYTES}，已中止"));
+                return Err(format!(
+                    "复制总字节超过上限 {MAX_TREE_BYTES}，已中止（已复制 {entries} 项留在目标目录，需自行清理或删除）"
+                ));
             }
         }
         // 目录权限随源走（create_dir_all 给的是 umask 默认值）

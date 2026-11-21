@@ -170,6 +170,11 @@ pub(crate) fn build_subagent_digest(
             }
         }
     }
+    // 扫描窗打满 = 窗外还有更早的行（既不进候选也不被 absorb）：
+    // 说一句，免得父 agent 以为清单是全量
+    if rows.len() >= DIGEST_SCAN_LIMIT {
+        items.push_str("\n（另有更早的已结束任务不在本次扫描窗口内，未列出）");
+    }
 
     if listed == 0 && running == 0 {
         return None;

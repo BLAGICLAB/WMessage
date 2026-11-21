@@ -259,6 +259,20 @@ pub(crate) fn try_apply_edit(
             }
         };
         let count = re.find_iter(content).count();
+        if count == 0 {
+            let head: Vec<&str> = content.lines().take(3).collect();
+            let head_show = if head.is_empty() {
+                "（空文件）".to_string()
+            } else {
+                head.join("\n")
+            };
+            return Err((
+                EditErrorKind::NotFound,
+                format!("regex 模式在文件中 0 处匹配。文件开头：\n{head_show}"),
+            ));
+        }
+        // 全文替换只算一次：此前体积校验算一遍、取结果再算一遍，
+        // 1MB 大替换白付一倍正则引擎时间
         let applied = re.replace_all(content, new).into_owned();
         // 输出体积护栏：与读侧 EDIT_MAX_FILE_BYTES 同一量级；1MB 输入若替换扩张
         // 出数倍会塞爆 write 路径 + 后续 checkpoint 快照
@@ -272,19 +286,6 @@ pub(crate) fn try_apply_edit(
                 ),
             ));
         }
-        if count == 0 {
-            let head: Vec<&str> = content.lines().take(3).collect();
-            let head_show = if head.is_empty() {
-                "（空文件）".to_string()
-            } else {
-                head.join("\n")
-            };
-            return Err((
-                EditErrorKind::NotFound,
-                format!("regex 模式在文件中 0 处匹配。文件开头：\n{head_show}"),
-            ));
-        }
-        let applied = re.replace_all(content, new).into_owned();
         if applied.is_empty() && !content.is_empty() {
             return Err((
                 EditErrorKind::NotFound,

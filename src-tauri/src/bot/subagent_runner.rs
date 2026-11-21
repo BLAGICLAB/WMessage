@@ -1148,6 +1148,7 @@ fn spawn_cancel_watcher(
     stalled: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> AbortOnDrop {
     let watcher_app = app.clone();
+    let watcher_db_path = crate::db::data_dir(app).join("wmessage.db");
     let watcher_stop = stop.token();
     let watcher_sid = subagent_id.to_string();
     let watcher_progress = last_progress_ms.clone();
@@ -1179,13 +1180,19 @@ fn spawn_cancel_watcher(
                 return;
             }
             let sid = watcher_sid.clone();
-            // 只读轮询：直接开连接，不持 DB_WRITE_LOCK（防多子 agent 写锁互饿）
-            let watcher_app2 = watcher_app.clone();
+            // 只读轮询用轻连接（每 2s 一次，open_db 全量路径含建目录 + PRAGMA
+            // + 全套 DDL 迁移——与排队闸 acquire_gate_slot 同一条优化口径；
+            // 单行 SELECT 只查行状态，不持 DB_WRITE_LOCK 防多子 agent 写锁互饿）
+            let watcher_path = watcher_db_path.clone();
             // 查询期瞬时错误（DB 忙/锁竞争）按「未取消」处理——误停健康 run
-            // 比晚两秒发现真取消伤得多；真取消由下一 tick 复查兜住，与排队
+            //比晚两秒发现真取消伤得多；真取消由下一 tick 复查兜住，与排队
             // 路径「DB 读失败不误判取消」同一容错方向。
             let aborted = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
-                let conn = crate::db::open_db(&watcher_app2)?;
+                let conn = rusqlite::Connection::open(&watcher_path)
+                    .inspect(|c| {
+                        let _ = c.busy_timeout(std::time::Duration::from_secs(2));
+                    })
+                    .map_err(|e| e.to_string())?;
                 Ok(crate::db::load_subagent(&conn, &sid)
                     .ok()
                     .flatten()

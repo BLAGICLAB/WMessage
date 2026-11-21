@@ -733,6 +733,17 @@ fn pack_tar(
                     .map_err(|e| std::io::Error::other(format!("tar 写入失败：{e}")))?;
                 total = total.saturating_add(n);
                 count += 1;
+                // 边写边判（与 pack_zip 同口径）：整包写完才判会先写出
+                // 2GB+ 的包再报错，白付一次全量盘写
+                if total > limits.max_total_bytes {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "打包总量超过 {}GB 上限，已中止",
+                            limits.max_total_bytes / 1024 / 1024 / 1024
+                        ),
+                    ));
+                }
             }
             let enc = builder
                 .into_inner()
@@ -750,6 +761,16 @@ fn pack_tar(
                     .map_err(|e| std::io::Error::other(format!("tar 写入失败：{e}")))?;
                 total = total.saturating_add(n);
                 count += 1;
+                // 边写边判（与 pack_zip 同口径）
+                if total > limits.max_total_bytes {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "打包总量超过 {}GB 上限，已中止",
+                            limits.max_total_bytes / 1024 / 1024 / 1024
+                        ),
+                    ));
+                }
             }
             builder
                 .finish()

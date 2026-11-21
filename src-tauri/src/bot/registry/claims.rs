@@ -43,20 +43,29 @@ pub fn claims_mutation(text: &str) -> bool {
     // 阶段 2：「已」后 8 字窗口包含任一 pattern（strip 前缀「已」后）
     // 原 bot_model_loop.rs VERBS 表不含「已」前缀（「删除」不是「已删除」），
     // 故 window 检查也需剥去 pattern 的前缀「已」才能覆盖「已...移除」类变体。
-    for (i, &c) in chars.iter().enumerate() {
-        if c != '已' {
-            continue;
-        }
-        let w_end = (i + 1 + 8).min(chars.len());
-        let window = &chars[i + 1..w_end];
-        for p in &patterns {
-            let stripped = p.strip_prefix('已').unwrap_or(p);
-            for (ws, we) in find_occurrences(window, stripped) {
-                // 窗口内位置换算回原文位置再判豁免
-                let abs_s = i + 1 + ws;
-                let abs_e = i + 1 + we;
-                if !claim_exempt(&chars, abs_s, abs_e) {
-                    return true;
+    // 预筛：任何 pattern（剥「已」前缀后）都不在全文出现 → 阶段 2 零命中，
+    // 跳过逐「已」字 × 模式的窗口扫描（长终稿 × 37 变更模式是 O(n×m)）
+    let candidates: Vec<&str> = patterns
+        .iter()
+        .filter_map(|p| p.strip_prefix('已'))
+        .collect();
+    let stage2_possible = !candidates.is_empty() && candidates.iter().any(|c| text.contains(c));
+    if stage2_possible {
+        for (i, &c) in chars.iter().enumerate() {
+            if c != '已' {
+                continue;
+            }
+            let w_end = (i + 1 + 8).min(chars.len());
+            let window = &chars[i + 1..w_end];
+            for p in &patterns {
+                let stripped = p.strip_prefix('已').unwrap_or(p);
+                for (ws, we) in find_occurrences(window, stripped) {
+                    // 窗口内位置换算回原文位置再判豁免
+                    let abs_s = i + 1 + ws;
+                    let abs_e = i + 1 + we;
+                    if !claim_exempt(&chars, abs_s, abs_e) {
+                        return true;
+                    }
                 }
             }
         }
