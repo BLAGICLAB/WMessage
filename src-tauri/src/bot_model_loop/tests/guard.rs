@@ -440,28 +440,34 @@ mod hallucination_guard_tests {
 
     #[test]
     fn cap_tool_output_small_cap_degrades_tail() {
-        // cap < 5×6K：尾部保留退化为 cap/5，头部仍占大头
+        // cap 装不下说明行（预扣上界 128 > cap）：budget 退化为 0，内容一字不剩，
+        // 输出就是说明行本身——「cap 是 cap」的诚实形态
         let text = "A".repeat(1_000);
         let out = cap_tool_output(&text, 100);
-        // 说明行从 cap 预扣后 budget = 4：头部 4 字节、尾部 0——cap 小到
-        // 装不下说明行时内容几乎不剩，这是「cap 是 cap」的诚实形态
-        let budget = 100 - super::super::output::CAP_TOOL_NOTE_LEN_UPPER;
-        let tail_keep = 6_000.min(budget / 5);
-        let head_keep = budget - tail_keep;
-        assert_eq!(head_keep, 4, "预扣后头部预算");
-        assert_eq!(tail_keep, 0, "budget/5 退化到 0");
-        assert!(out.starts_with(&"A".repeat(4)), "头应保留 4：{out}");
         assert!(out.contains("已按回灌上限 100 字节截断"));
+        assert!(!out.contains('A'), "说明行装不下时内容全无：{out}");
+        // 中档 cap：预扣说明行后头部占大头，尾部退化为 budget/5
+        let cap = 200;
+        let budget = cap - super::super::output::CAP_TOOL_NOTE_LEN_UPPER; // 72
+        let tail_keep = 6_000.min(budget / 5).min(1_000 / 2); // 14
+        let head_keep = budget - tail_keep; // 58
+        let out2 = cap_tool_output(&text, cap);
+        assert!(out2.contains("已按回灌上限 200 字节截断"));
+        assert!(
+            out2.starts_with(&"A".repeat(head_keep)),
+            "头部按预扣后预算保留 {head_keep} 字节：{out2}"
+        );
     }
 
     #[test]
     fn cap_tool_output_counts_bytes_not_chars() {
-        // 中文 3 字节/字：50 个汉字 = 150 字节，cap 120 扣除说明行后 budget 24：
-        // 头部 20 字节回退边界 = 6 个汉字、尾部 4 字节前进边界 = 1 个汉字
+        // 中文 3 字节/字：50 个汉字 = 150 字节，cap 145 预扣说明行后 budget 17：
+        // 头部 14 字节回退边界 = 4 个汉字、尾部 3 字节前进边界 = 1 个汉字。
+        // 若按字符数扣，头部会是 14 个汉字 = 42 字节，远超预算。
         let text = "中".repeat(50);
-        let out = cap_tool_output(&text, 120);
+        let out = cap_tool_output(&text, 145);
         assert!(out.contains("原文 150 字节"));
-        assert!(out.starts_with(&"中".repeat(6)), "头部应保留 6 个汉字");
+        assert!(out.starts_with(&"中".repeat(4)), "头部应保留 4 个汉字");
         assert!(out.ends_with("中"), "尾部应保留 1 个汉字");
     }
 

@@ -166,7 +166,8 @@ pub(crate) fn preview_with_pointer(text: &str, notice: &str, cap_bytes: usize) -
 
 /// 兜底截断说明行的字节长度上界（最坏数字位数估算）：
 /// 预扣进 cap，兜底输出才真正不超 cap（preview_with_pointer 同纪律）。
-pub(crate) const CAP_TOOL_NOTE_LEN_UPPER: usize = 96;
+/// 实测说明行 103（cap=3 万组）~112 字节（8 位数最坏）——上界按 128 留足。
+pub(crate) const CAP_TOOL_NOTE_LEN_UPPER: usize = 128;
 
 /// 截断到 cap 字节：头 (cap-tail) + 截断说明 + 尾 tail。不超 cap 原样返回。
 /// 纯函数便于单测；调用方（薄壳 execute_tool）负责审计留痕。
