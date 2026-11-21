@@ -63,6 +63,9 @@ pub(crate) use self::context::{
     shed_oldest_history, tool_result_chars, user_intent_of, TOOL_WINDOW_KEEP_RECENT,
     TOOL_WINDOW_TRIGGER_CHARS,
 };
+/// 仅供测试消费（digest 头前缀锚点断言）：生产路径不用注入前缀族清单本身。
+#[cfg(test)]
+pub(crate) use self::evidence::INJECTED_MSG_PREFIXES;
 pub(crate) use self::evidence::{context_sources, evidence_output, number_sourced, ToolEvidence};
 pub(crate) use self::finalize::{
     decide_selfcheck, finalize_exit, finalize_selfcheck, FinalizeOutcome, SelfcheckDecision,

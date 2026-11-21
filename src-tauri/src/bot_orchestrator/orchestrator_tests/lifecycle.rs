@@ -599,9 +599,12 @@ fn digest_is_injected_at_the_end_of_message_assembly() {
         "回报段必须夹在历史消息与模型循环之间（现 history_end={history_end} \
              digest={at} loop={runs_loop}）"
     );
+    // role=user 不是 system：协议转换会把 role=system 提到顶层 system 字段，
+    // 子 agent 自产的 summary 不能拿 system 级权重。头文案以【系统提示】开头
+    // （evidence 注入前缀族），整条回报随之逐出证据池。
     assert!(
-        chat[at..].contains("\"role\": \"system\""),
-        "回报段作为 system 消息追加"
+        chat[at..].contains("\"role\": \"user\""),
+        "回报段作为 user 消息追加（system 会被协议转换提到顶层 system 字段）"
     );
 }
 /// 接线守卫：汇报轮（子 agent 终态触发的续轮）必须与用户轮同闸开放提问。

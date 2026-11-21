@@ -691,7 +691,12 @@ pub(super) async fn bot_chat_guarded(
     }
     let digest = crate::bot_orchestrator::subagent_digest_block(&app, session_id.as_deref()).await;
     if let Some(d) = &digest {
-        msgs.push(serde_json::json!({"role": "system", "content": d.text}));
+        // role=user 不是 system：Anthropic 协议转换会把数组里所有 role=system 的
+        // 消息提到顶层 system 字段（与系统指令同级）——子 agent 自产的 summary
+        // 是不可信数据，不能拿 system 级权重。头文案以【系统提示】开头，
+        // evidence 的注入前缀族据此把整条回报逐出证据池（模型自产内容不得自证）。
+        // 连续 user 由协议转换层合并，Anthropic 交替约束不破。
+        msgs.push(serde_json::json!({"role": "user", "content": d.text}));
     }
     // Failure 分支可达——模型循环 Err（LLM 5xx/流断/头超时等）也落 trace
     //（此前只在 Ok 收尾处 hook，失败轨迹全丢，trace 的 Failure 采样规则不可达）。
