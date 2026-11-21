@@ -401,6 +401,27 @@ fn archive_tools_are_registered_as_mutating() {
     }
 }
 
+/// pack 输出已存在必须过覆盖确认（与 write_file 同口径）：File::create
+/// 截断写，若不拦就静默毁掉已有包——unpack 不覆盖、manage_file 目标存在拒、
+/// 文档产物自动加 (n)，全家族唯独 pack 曾是裸覆盖。
+#[test]
+fn pack_archive_confirms_before_overwriting_existing_output() {
+    let src = include_str!("../bot_archive.rs");
+    let body = src
+        .split("pub(crate) async fn tool_pack_archive")
+        .nth(1)
+        .expect("tool_pack_archive 应存在");
+    let confirm = body
+        .find("ask_user_confirm(")
+        .expect("pack 输出已存在必须走 ask_user_confirm 覆盖确认");
+    let pack_call = body.find("Limits::pack()").expect("打包执行点应存在");
+    assert!(
+        confirm < pack_call,
+        "覆盖确认必须在打包执行之前（确认发生在 File::create 截断之前）"
+    );
+    assert!(body.contains("覆盖未获确认"), "被拒不覆盖且响亮回文");
+}
+
 /// 档位归属：research 是只读档（不装归档工具），coder / general 装。
 #[test]
 fn archive_tools_land_in_coder_and_general_profiles_only() {

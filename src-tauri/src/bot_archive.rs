@@ -931,6 +931,30 @@ pub(crate) async fn tool_pack_archive(
         None => default_pack_path(app, &canonical, explicit),
     };
     let format = explicit.unwrap_or_else(|| format_from_path(&out));
+    // 输出已存在 = File::create 截断覆盖：与 write_file 覆盖确认同口径——
+    // 不可逆且任何档（含 yolo）都单独确认一次；白名单外路径在 resolve_writable
+    // 已按 ask 弹过窗，此处不重复确认。unpack/manage_file/文档产物全家族
+    // 都不覆盖已有输出，pack 是唯一例外，必须过确认。
+    let out_for_check = out.clone();
+    let out_exists =
+        crate::py::document::spawn_blocking_map(move || Ok::<_, String>(out_for_check.is_file()))
+            .await
+            .unwrap_or(false);
+    if out_exists {
+        let approved = crate::bot_slash::ask_user_confirm(
+            app,
+            "pack_archive",
+            &format!("覆盖已存在的打包输出：{}", out.display()),
+            interactive,
+            session_id,
+        )
+        .await;
+        if !approved {
+            return ToolResult::denied(
+                "覆盖未获确认，已有文件保持原样。请换一个 outputPath，或改用 unpack 查看已有包内容",
+            );
+        }
+    }
     let src_for_task = canonical.clone();
     let out_for_task = out.clone();
     let res = crate::py::document::spawn_blocking_map(move || -> Result<PackOutcome, String> {

@@ -166,7 +166,7 @@ pub const SCHEMA_UNPACK_ARCHIVE: &str = r##"{"type":"function","function":{"name
   },"required":["path"]}}}"##;
 pub const SCHEMA_PACK_ARCHIVE: &str = r##"{"type":"function","function":{"name":"pack_archive","description":"把目录或文件打包成压缩包（zip / tar.gz）：目录会连同目录名一起打包（zip -r 口径），软链跳过不跟随也不写入链接本身；输出到 AI_Gen_Files 或指定路径。打包完成按「已生成」计入产物，向用户报告时必须附上完整路径","parameters":{"type":"object","properties":{
     "sourcePath":{"type":"string","description":"要打包的目录或文件（须在读白名单内）"},
-    "outputPath":{"type":"string","description":"输出压缩包路径（须在可写目录内，白名单外会弹确认）；不给则 AI_Gen_Files/<源名>.zip"},
+    "outputPath":{"type":"string","description":"输出压缩包路径（须在可写目录内，白名单外会弹确认；目标已存在会单独请求覆盖确认，未确认不覆盖）；不给则 AI_Gen_Files/<源名>.zip"},
     "format":{"type":"string","enum":["zip","tar.gz"],"description":"压缩格式（可选）：不给按输出路径后缀判定（.tar.gz / .tgz → tar.gz，否则 zip）"}
   },"required":["sourcePath"]}}}"##;
 pub const SCHEMA_MANAGE_FILE: &str = r##"{"type":"function","function":{"name":"manage_file","description":"文件复制 / 移动 / 删除。copy 复制（源保留）、move 移动（源消失，同卷直接重命名、跨卷复制后源入回收站）、delete 删除（进系统回收站，删前弹窗请用户确认，60s 无响应默认拒绝）。源路径须在读白名单内（桌面/下载/文档 + 任务卡绑定文件夹 + 设置页 allowedDirs），目标路径须在可写目录内（AI_Gen_Files + 任务卡绑定文件夹 + allowedDirs，白名单外弹确认）；目标已存在一律不覆盖；目录树里的符号链接既不跟随也不复制。copy/move 的目标按「已生成」计入产物，报告时必须附上完整目标路径","parameters":{"type":"object","properties":{
