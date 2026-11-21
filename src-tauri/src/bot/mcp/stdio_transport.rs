@@ -105,20 +105,24 @@ impl<R> LineCappedReader<R> {
                 self.line_used += 1;
             } else {
                 self.dropping = true;
+                // 截断的是 JSON-RPC 消息 → 对应请求永远等不到应答，只能等
+                // 超时；改走失败路径让错误立刻暴露。噪声行维持跳过语义
+                //（会话不断）。每行独立判 looks_like_jsonrpc——reported 只
+                // 门控 eprintln 刷屏，不门控判定：先前截到一条噪声行把
+                // reported 置位后，后续被截的待应答消息必须照常置
+                // truncated_message，否则调用方干等到超时（恰是 c18c295d
+                // 要根治的「永远等不到应答」场景换了个马甲）
+                if looks_like_jsonrpc(&self.prefix) {
+                    self.truncated_message = true;
+                    self.pending.clear();
+                }
                 if !self.reported {
                     self.reported = true;
-                    // 截断的是 JSON-RPC 消息 → 对应请求永远等不到应答，
-                    // 只能等超时；改走失败路径让错误立刻暴露。噪声行维持
-                    // 跳过语义（会话不断）。
-                    if looks_like_jsonrpc(&self.prefix) {
-                        self.truncated_message = true;
-                        self.pending.clear();
-                    }
                     eprintln!(
                         "[mcp] 服务器输出超长行（>{} 字节）已截断——{}",
                         self.cap,
                         if self.truncated_message {
-                            "该行是待应答消息，读侧按失败处理（请缩小返回体）"
+                            "该行是等待应答消息，读侧按失败处理（请缩小返回体）"
                         } else {
                             "该行被跳过，后续消息照常处理"
                         }

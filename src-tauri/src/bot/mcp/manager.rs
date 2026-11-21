@@ -1328,6 +1328,14 @@ impl McpManager {
     /// = 连接已被重建（新代），本次失败属陈旧代，不得覆盖新槽。
     fn mark_down(&self, id: &str, fp: u64, error: String) {
         let mut slots = self.slots();
+        // 槽位不存在（用户禁用/删除触发 apply_config 摘槽，在途调用随后
+        // TransportClosed 失败走到这里）：插回只会复活状态残影——面板对
+        // 已禁用服务器显示 "down"，与 c18c295d 修掉的 discover 侧 Idle
+        // 复活同族。已有槽（Connected 同代 / Down 刷错误 / Connecting
+        // 翻失败）照常落 Down。
+        if !slots.contains_key(id) {
+            return;
+        }
         if let Some(Slot::Connected { fingerprint, .. }) = slots.get(id) {
             if *fingerprint != fp {
                 return;

@@ -789,3 +789,23 @@ async fn discovery_and_call_share_the_per_server_gate() {
     assert_eq!(mgr.tools_of("e2e-race2").len(), 1);
     mgr.shutdown().await;
 }
+
+/// stdio 分支与 HTTP 分支同形：allow_elicitation=true 时必须注入 elicit
+/// 桥接 handler——78992ee1 修的就是「HTTP 有注入、stdio 漏注入」的双分支
+/// 不对称，当时无锚点测试；两分支再漂移（重构只改一处）必须有用例变红。
+#[test]
+fn stdio_branch_injects_elicit_handler_when_allowed() {
+    let src = include_str!("../manager.rs");
+    let body = src
+        .split("async fn spawn_service")
+        .nth(1)
+        .expect("spawn_service 应存在");
+    let gate = body
+        .find("cfg.allow_elicitation()")
+        .expect("elicitation 开关判定应存在");
+    let inject = body.find("ElicitBridge {").expect("桥接构造应存在");
+    assert!(
+        gate < inject && inject - gate < 400,
+        "桥接注入必须由 allow_elicitation 门控且紧跟其后（双分支不对称回归防线）"
+    );
+}

@@ -521,9 +521,28 @@ fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<()
             reason: format!("技能「{}」{}，已强制终止", run.name, run.end_reason),
         });
     }
-    // 动作记录（回滚清单来源）：只记有副作用的工具，跳过只读查询
-    // （：list_tasks/search_tasks 合并为 query_tasks）
-    const READONLY: [&str; 3] = ["query_tasks", "use_skill", "web_search"];
+    // 动作记录（回滚清单来源）：只记有副作用的工具，跳过纯读查询——
+    // 读过的文件被当成「已执行动作」列进回滚建议，是语义噪音。与
+    // REPEAT_GATE_EXEMPT_TOOLS 的纯读子集同口径；use_skill 不在此列：
+    // dispatch 根本不会把它送进步骤钩子（name != "use_skill" 才进）。
+    const READONLY: [&str; 16] = [
+        "query_tasks",
+        "query_single_task",
+        "read_text_file",
+        "grep_files",
+        "list_files",
+        "extract_document",
+        "ast_inspect",
+        "lookup_receipt",
+        "recall_facts",
+        "search_skills",
+        "apps_list",
+        "list_reminders",
+        "get_current_time",
+        "web_search",
+        "fetch_url",
+        "list_windows",
+    ];
     if !READONLY.contains(&tool) {
         let brief = crate::bot::log_sanitize::truncate_chars(args, 120, true).replace('\n', " ");
         run.actions.push(format!("{tool} | {brief}"));
