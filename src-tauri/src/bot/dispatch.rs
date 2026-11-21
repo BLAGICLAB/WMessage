@@ -52,6 +52,18 @@ pub(crate) fn audit_args_for_log(name: &str, args: &str) -> String {
     }
 }
 
+/// bot-tool-done 事件（前端入参详情 + turn_record 落库）的入参口径：
+/// URL 型工具照旧走 sink 同源裁剪（查询串/凭据段不进持久化面），其余工具
+/// 500 字截断——与审计面（audit_args_for_log）同口径，UI 展开与重启还原
+/// 面不再被压到 80 字（前端按 500 字裁剪渲染，「展开可看入参」契约靠它）。
+/// running 事件的实时预览维持 sink_args_preview 的 80 字不动。
+pub(crate) fn sink_args_full(name: &str, args: &str) -> String {
+    match name {
+        "http_request" | "fetch_url" => sink_args_preview(name, args),
+        _ => crate::bot::truncate_for_log(args, 500),
+    }
+}
+
 /// 子 agent 动作流（右侧栏实时可见性）：dispatch 在 call / return 两个相位
 /// 各旁路一条 UI 事件，前端按 toolCallId 合并成一行。事件即焚不落库——
 /// 历史回看走详情面板的结果与 digest，不另存流。

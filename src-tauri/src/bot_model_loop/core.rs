@@ -1085,8 +1085,10 @@ where
                 "id": id, "name": name,
                 // sink 面同源裁剪：本事件经 turn_record 聚合落 sqlite（bot_history
                 // 重启还原）且前端直接显示——原始入参里的 URL 凭据段/查询串、
-                // 结果文本里的「来源：」行/elicitation 回声都不得进持久化面
-                "args": crate::bot::dispatch::sink_args_preview(name, args),
+                // 结果文本里的「来源：」行/elicitation 回声都不得进持久化面。
+                // args 走 sink_args_full（URL 型裁剪、其余 500 字）：前端「展开
+                // 可看入参」按 500 字渲染，压到 80 字等于展示面持久退化
+                "args": crate::bot::dispatch::sink_args_full(name, args),
                 "result": crate::bot::dispatch::sink_result_text(
                     name,
                     &result.chars().take(2000).collect::<String>(),

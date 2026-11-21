@@ -978,12 +978,14 @@ fn tool_in_flight_flip_tracks_event_names() {
 /// 这两个事件经 turn_record 聚合落 sqlite（bot_history 重启还原）且前端
 /// 直接显示——URL 型工具的凭据段/查询串与结果里的「来源：」行/elicitation
 /// 回声不得进持久化面（bot.log 审计行早已同口径，这是最后一块落库面）。
+/// done 的 args 走 sink_args_full（URL 型裁剪、其余 500 字）：前端「展开
+/// 可看入参」按 500 字渲染，不能被压到 80 字；running 的实时预览维持 80 字。
 #[test]
 fn tool_events_route_args_and_result_through_sink() {
     let core = prod_src();
     assert!(
-        core.contains("\"args\": crate::bot::dispatch::sink_args_preview(name, args)"),
-        "bot-tool-done 的 args 必须走 sink_args_preview（落库面收口）"
+        core.contains("\"args\": crate::bot::dispatch::sink_args_full(name, args)"),
+        "bot-tool-done 的 args 必须走 sink_args_full（URL 型裁剪，其余 500 字）"
     );
     assert!(
         core.contains("\"result\": crate::bot::dispatch::sink_result_text("),
@@ -993,6 +995,28 @@ fn tool_events_route_args_and_result_through_sink() {
         core.contains("\"args_preview\": crate::bot::dispatch::sink_args_preview(name, args)"),
         "bot-tool-running 的 args_preview 同口径（打断时以 running 行形态落库）"
     );
+}
+
+/// sink_args_full 与审计面同口径：URL 型工具裁剪（查询串/凭据段不进
+/// 持久化面），其余工具 500 字截断——与 audit_args_for_log 行为一致。
+#[test]
+fn sink_args_full_keeps_url_redaction_and_500_char_detail() {
+    let url_args = r#"{"url":"https://example.com/path?token=secret123"}"#;
+    let url_out = crate::bot::dispatch::sink_args_full("http_request", url_args);
+    assert!(
+        !url_out.contains("secret123"),
+        "URL 凭据段不得进持久化面：{url_out}"
+    );
+    let long = "x".repeat(600);
+    let out = crate::bot::dispatch::sink_args_full("run_python", &long);
+    assert_eq!(
+        out.chars().count(),
+        501,
+        "非 URL 工具 500 字 + 省略号：{out}"
+    );
+    assert!(out.ends_with('…'));
+    let short = crate::bot::dispatch::sink_args_full("run_python", "print(1)");
+    assert_eq!(short, "print(1)", "短参数原样保留");
 }
 
 /// 熔断阶梯：三段式（90% 软告警 → 95% 收尾窗 → 收尾轮数用尽硬停）。
