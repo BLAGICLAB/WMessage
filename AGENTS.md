@@ -13,6 +13,7 @@
 - `docs/agent-audit-2026-10-19.md` — Agent 内核审计的发现清单、已修状态与未修待办
 - `docs/agent-audit-2026-10-21.md` — Agent 全量多角度审计报告（Skill/MCP/工具/服务/子 agent/痕迹/契约/门禁七链；1 P0 + 15 P1 + 7 P2，修复按 §六 优先级推进）
 - `docs/agent-audit-2026-11-21.md` — Agent 四盲区审计与补强报告（输入面/Prompt Injection、崩溃一致性、留存与增长、22 笔回审；0 阻断 / 4 高 / 8 中 / 10 低，修复 10 笔全落地，登记项与挂账台账在 §五；SOP 已收编 K/L/M 三维——下次审计按 A~M 十三维跑）
+- `docs/OUTSTANDING-LEDGER-2026-11-21.md` — **挂账总账（唯一台账）**：往期所有轮次遗留事项收拢于此，分待拍板/待修/待实机/文档账实四组逐条带出处；每轮跑完把闭环项挪 §三（须带证据）、新挂账记 §二——新挂账只记这里，各报告原文以本表为准
 - `docs/realmachine-regression-test.md` — 实机变异测试方案：34 项双平台场景卡 + 9 项 Windows 专章（提示词 + 判据 + 变异注入复验），覆盖 2026-10-19 ~ 10-22 这批改动的跨模块接缝；探针 `scripts/regression-probe.sh`（unix）/ `.ps1`（Windows）
 - `docs/realmachine-rerun-2026-10-22.md` — 复验手册：换 exe → 先跑修过的那 7 项 → 再跑 S 序列剩余项（含跑法、分段顺序、结果回填口径）
 - `docs/realmachine-mutation-test-2026-10-23.md` — 实机变异测试方案：39 项双平台场景卡 + 3 项 Windows 专章，覆盖 2026-10-23 这批 68 个提交（提示词 + 判据 + 变异注入锚点）；实机发现清单在附录 D（D-1 自窗口崩溃 + D-2 聚焦失效 + D-3 密码框敏感闸 + D-4 深度钳制，均已修并实机复验）；已纳入 `audit_doc_claims.py` 对拍门禁
@@ -50,7 +51,7 @@
 - `docs/MSG-IDENTITY-PERSISTENCE-DESIGN-2026-11-06.md` — 聊天消息身份落库改造方案（**已作废 2026-11-06，被 BACKEND-TRUTH 方案取代**）：快照混合方案的现状事实、数据面、出生点清单、turn_seq 联动规则与后续梯队登记表仍被新方案引用
 - `docs/BACKEND-TRUTH-PERSISTENCE-DESIGN-2026-11-06.md` — 聊天持久化真源化方案（**实施中，批 1–4 已落地**，B 阶段收官：汇报竞态在写权层面不可再构造）：Claude Code 式「持久层唯一事实、前端投影」——后端独占写权（用户行/回合终稿落库 + drop/replace_summary 定向操作），前端改为 load 一次 + `bot-msg-upserted/dropped` 事件投影，`bot_history_save` 断代删除；根治汇报轮 stale 快照竞态、busy 孤立用户消息、多窗口一致（只做扇出就绪）；数据面继承身份方案（msg_id/ord/created_at 首插/两索引），回合终稿聚合（thinking/tools/fileChanges）是新代码面；拍板 T1–T4、六批串行 28 条锚点、风险与不做清单在文
 - `docs/AGENT-GAP-CLOSURE-DESIGN-2026-11-07.md` — Agent 差距收编方案（**已实施 2026-11-07**，D-1～D-7 全做）：大厂对比调研（Claude Code / Codex / Gemini CLI / Cursor / Cline / OpenHands）产出七项——checkpoint 回合级快照回滚（快照层已有，扩覆盖面 + 三态恢复 + 清扫）/ 用户指令文件 `instructions.md` 进 system / 工具分组按需挂载（`activate_tools`，复议 10-25 旧拍板的轻量版）/ 分类器兜底（灰度，2026-11-08 起挂 ask 档）/ eval 一键脚本 / MCP elicitation 接 ask 卡 / MCP OAuth；七批串行 + 每批锚点测试 + 不做清单与实施内待拍板四项在文
-- `docs/STREAM-BREAK-RECOVERY-AND-WINDOWS-RUNTIME-FIX-2026-11-14.md` — Windows 流式断流「内部错误」修复方案（**方案，未实施**）：实机日志诊断出的三层叠加——传输层响应体截断（reqwest `Kind::Decode`，真因被 `e.to_string()` 丢掉）／重发判据被思考增量毒化（`emitted_any` 恒真，`llm.stream_retry` 在开思考时是死代码）／读侧失败 blanket `Internal`（`recoverable=false`，用户只见「内部错误」）；含 7 个修复项 F-1～F-7 + 6 批切分 + 9 条锚点 + 5 项待拍板；附带定位 Windows 专属缺陷：`onnxruntime.dll` **在安装目录里但缺 MSVC 运行库**（PE 导入表要 VCRUNTIME140/MSVCP140 系）→ ort `expect` panic → 全局 Mutex 中毒 → 记忆子系统整进程失效，方案给「真加载自检（`LoadLibraryExW` 取 Win32 错误码）+ `catch_unwind` + 永久降级」三道防线
+- `docs/STREAM-BREAK-RECOVERY-AND-WINDOWS-RUNTIME-FIX-2026-11-14.md` — Windows 流式断流「内部错误」修复方案（**已实施**：0cefe322..169a660b 六批 2026-11-14 落地，实机 M197/M199/M230 已验；剩 Windows 侧复验并入 Windows 总缺口）：实机日志诊断出的三层叠加——传输层响应体截断（reqwest `Kind::Decode`，真因被 `e.to_string()` 丢掉）／重发判据被思考增量毒化（`emitted_any` 恒真，`llm.stream_retry` 在开思考时是死代码）／读侧失败 blanket `Internal`（`recoverable=false`，用户只见「内部错误」）；含 7 个修复项 F-1～F-7 + 6 批切分 + 9 条锚点 + 5 项待拍板；附带定位 Windows 专属缺陷：`onnxruntime.dll` **在安装目录里但缺 MSVC 运行库**（PE 导入表要 VCRUNTIME140/MSVCP140 系）→ ort `expect` panic → 全局 Mutex 中毒 → 记忆子系统整进程失效，方案给「真加载自检（`LoadLibraryExW` 取 Win32 错误码）+ `catch_unwind` + 永久降级」三道防线
 
 ## 命令
 
