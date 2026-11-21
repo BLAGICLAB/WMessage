@@ -179,3 +179,30 @@ fn deleting_a_session_cancels_its_live_subagents() {
 
     fs::remove_dir_all(&dir).ok();
 }
+
+/// work_items 随会话级联删除：work_items 全仓无删除路径、无解除命令，
+/// 不级联则 failed 行在「需要人处理」聚合面永久报警且用户无从消除——
+/// subagents 已按「随删即 ack」处理，work_items 是同一聚合面里唯一没有
+/// ack 的一源，删除会话就是用户的终止动作。
+#[test]
+fn deleting_a_session_cascades_work_items() {
+    let (dir, conn) = setup_bhs_db();
+    conn.execute(
+        "INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 1000, 0)",
+        [],
+    )
+    .unwrap();
+    let _g = crate::db::lock_db_write();
+    crate::db::work_items::upsert_for_session(&conn, "s1", "chat", Some("做 X"), None).unwrap();
+    let mut conn = conn;
+    bot_session_delete_inner(&mut conn, "s1").unwrap();
+    let left: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM work_items WHERE session_id = 's1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(left, 0, "work_items 必须随会话删除（否则聚合面永久报警）");
+    fs::remove_dir_all(&dir).ok();
+}

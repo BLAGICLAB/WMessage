@@ -21,6 +21,8 @@ mod pragmas;
 mod session;
 #[cfg(test)]
 mod upsert;
+#[cfg(test)]
+mod work_items;
 
 // ── 共用辅助 ──
 fn setup_tasks_db() -> (std::path::PathBuf, rusqlite::Connection) {
@@ -82,6 +84,9 @@ fn setup_bhs_db() -> (std::path::PathBuf, rusqlite::Connection) {
         .unwrap();
     // 会话删除会顺带清子 agent 终态行，夹具得带上这张表（单源 DDL）
     conn.execute_batch(subagents::SUBAGENTS_DDL).unwrap();
+    // 删除级联与启动清扫的合成失败行都写 bot_messages，夹具带上这张表（单源 DDL）
+    conn.execute_batch(crate::db::work_items::WORK_ITEMS_DDL)
+        .unwrap();
     (dir, conn)
 }
 

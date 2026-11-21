@@ -227,14 +227,65 @@ pub fn set_acceptance(
 /// 待答行一并收：ask 等待器在内存里，重启后那个等待已无意义，留着会永远挂在
 /// 「后台待办」。清扫只在启动时跑（tick 不收待答——提问等待可达 24h 属合法长挂）。
 /// 与僵尸子 agent 清扫同口径（只认事实）。
-pub fn sweep_all_working(conn: &rusqlite::Connection) -> Result<usize, String> {
-    conn.execute(
-        "UPDATE work_items SET stage = ?2, \
-           error = COALESCE(error, '进程重启，执行现场已不存在'), updated_at = ?3 \
-         WHERE stage = ?1 OR stage = 'awaiting_answer'",
-        rusqlite::params![STAGE_WORKING, STAGE_FAILED, super::now_ms()],
+///
+/// 翻态与合成失败行同事务：进程内失败路径会落 turn_status=failed 的 assistant
+/// 行，崩溃路径没有——用户行已落库、终稿行没来得及写，重启后聊天面会永久
+/// 悬空一条用户消息（聚合面有 failed 信号、聊天面对不上）。每个受影响会话
+/// 补一条合成失败行把叙事接上。
+pub fn sweep_all_working(conn: &mut rusqlite::Connection) -> Result<usize, String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let sessions: Vec<String> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT DISTINCT session_id FROM work_items \
+             WHERE stage = ?1 OR stage = 'awaiting_answer'",
+            )
+            .map_err(|e| e.to_string())?;
+        // 先落本地变量再出块：块尾表达式的临时值会活到外层语句结束，
+        // 压过 stmt 的 drop 点（E0597）
+        let rows = stmt
+            .query_map(rusqlite::params![STAGE_WORKING], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+    let n = tx
+        .execute(
+            "UPDATE work_items SET stage = ?2, \
+               error = COALESCE(error, '进程重启，执行现场已不存在'), updated_at = ?3 \
+             WHERE stage = ?1 OR stage = 'awaiting_answer'",
+            rusqlite::params![STAGE_WORKING, STAGE_FAILED, super::now_ms()],
+        )
+        .map_err(|e| e.to_string())?;
+    for sid in &sessions {
+        insert_synthetic_failure_row(&tx, sid)?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(n)
+}
+
+/// 崩溃后聊天面的合成失败行：与进程内失败行同形态（assistant +
+/// turn_status=failed，前端按失败轮渲染并给出重试入口），内容一句话说明
+/// 中断。无 thinking/tools/trace——执行现场随进程消失，本来就没有。
+/// 只 INSERT 不推进 sessions.updated_at：这不是真实活跃，排序不应被拨针。
+fn insert_synthetic_failure_row(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+) -> Result<(), String> {
+    tx.execute(
+        "INSERT INTO bot_messages (session_id, msg_id, ord, role, content, refs, thinking, tools, turn_status, trace_id, file_changes, created_at) VALUES (?1, ?2, (SELECT COALESCE(MAX(ord), -1) + 1 FROM bot_messages WHERE session_id = ?1), ?3, ?4, NULL, NULL, NULL, ?5, NULL, NULL, ?6)",
+        rusqlite::params![
+            session_id,
+            crate::db::bot_history::new_bot_msg_id(),
+            "assistant",
+            "⚠️ 进程中断，本轮未完成——重启时系统按中断收尾（可重发消息重试）",
+            "failed",
+            super::now_ms(),
+        ],
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// tick 重估：working 行超过 stale_ms 无更新（轮死残留，正常轮收尾必写一次）
@@ -456,6 +507,9 @@ mod tests {
     fn mem_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(WORK_ITEMS_DDL).unwrap();
+        // 启动清扫会写合成失败行，内存夹具带上消息表（单源 DDL）
+        conn.execute_batch(crate::db::bot_history::BOT_MESSAGES_DDL)
+            .unwrap();
         conn
     }
 
@@ -523,11 +577,11 @@ mod tests {
 
     #[test]
     fn sweeps_cover_restart_and_stale_turns() {
-        let conn = mem_conn();
+        let mut conn = mem_conn();
         let _g = crate::db::lock_db_write();
         upsert_for_session(&conn, "s1", "chat", Some("目标"), None).unwrap();
-        // 启动清扫：working → failed
-        assert_eq!(sweep_all_working(&conn).unwrap(), 1);
+        // 启动清扫：working → failed（附合成失败行，此处只断行数）
+        assert_eq!(sweep_all_working(&mut conn).unwrap(), 1);
         assert_eq!(row(&conn, "s1").stage, STAGE_FAILED);
         // 新一轮把它唤醒回 working，再走陈旧清扫（老行按 cutoff 判）
         upsert_for_session(&conn, "s1", "chat", None, None).unwrap();
@@ -577,7 +631,7 @@ mod tests {
 
     #[test]
     fn startup_sweep_collects_awaiting_answer_too() {
-        let conn = mem_conn();
+        let mut conn = mem_conn();
         let _g = crate::db::lock_db_write();
         upsert_for_session(&conn, "s1", "chat", Some("长轮"), None).unwrap();
         upsert_for_session(&conn, "s2", "chat", Some("提问"), None).unwrap();
@@ -585,7 +639,7 @@ mod tests {
         set_stage(&conn, "s2", STAGE_AWAITING_ANSWER, None).unwrap();
         finish(&conn, "s3", true, None, None).unwrap();
         // 待答行一并收：ask 等待器在内存里，重启后等待已无意义
-        assert_eq!(sweep_all_working(&conn).unwrap(), 2);
+        assert_eq!(sweep_all_working(&mut conn).unwrap(), 2);
         assert_eq!(row(&conn, "s1").stage, STAGE_FAILED);
         assert_eq!(row(&conn, "s2").stage, STAGE_FAILED);
         assert!(

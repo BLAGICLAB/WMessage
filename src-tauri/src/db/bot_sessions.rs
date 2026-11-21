@@ -208,6 +208,13 @@ pub fn bot_session_delete_inner(conn: &mut rusqlite::Connection, id: &str) -> Co
         .map_err(|e| CommandError::DbError(e.to_string()))?;
     tx.execute("DELETE FROM bot_messages WHERE session_id = ?1", [id])
         .map_err(|e| CommandError::DbError(e.to_string()))?;
+    // work_items 随会话走：work_items 全仓无 DELETE、无解除命令，failed 行
+    // （含启动清扫收成的）会在「需要人处理」聚合面永久报警且用户无从消除。
+    // subagents 已按「随删即 ack」处理（只清终态行），work_items 是同一聚合
+    // 面三源里唯一没有 ack 的——删除会话是用户的终止动作，报警随行终止。
+    // UNIQUE(session_id)，每会话至多一行，无需按终态区分。
+    tx.execute("DELETE FROM work_items WHERE session_id = ?1", [id])
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
     // 子 agent 行随会话走：subagents 无外键，不清就成永久孤儿（会话都没了，
     // list_subagents 再也不会查它）。只清终态行——在途行的 runner 还要靠它
     // 收尾，删了会让 finalize 找不到行；这类行只能等下次启动的僵尸清扫收掉

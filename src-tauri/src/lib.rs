@@ -624,9 +624,9 @@ pub fn run() {
                 let audit_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let res = tauri::async_runtime::spawn_blocking(move || {
-                        let conn = crate::db::open_db(&handle)?;
+                        let mut conn = crate::db::open_db(&handle)?;
                         let _g = crate::db::lock_db_write();
-                        let work = crate::db::work_items::sweep_all_working(&conn)?;
+                        let work = crate::db::work_items::sweep_all_working(&mut conn)?;
                         let traces = crate::db::trace::sweep_stale_running_traces(&conn)?;
                         Ok(work + traces)
                     })
