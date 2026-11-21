@@ -268,7 +268,7 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 - 不要改任何文件
 ```
 
-### 5.1 审计维度（A~J，共 10 组）
+### 5.1 审计维度（A~M，共 13 组）
 
 逐组过。**每组的具体检查点已写在下面，不要自己扩题**。
 
@@ -524,10 +524,89 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 
 ---
 
+#### K. 输入面 / 不可信内容边界（Prompt Injection）
+
+真值：`bot_model_loop/output.rs`（回灌包裹）+ `bot/format.rs`（包裹前缀）+
+`bot/registry/claims.rs`（回声判定剥头）+ `bot_plan.rs::sanitize_untrusted_text`
++ `bot_skills/runtime.rs::clip_document_body` + `bot/subagent_digest.rs::DIGEST_HEAD`
++ `bot_chat/input.rs::format_recovery_hint`。
+
+- [ ] **回灌漏斗统一包裹**：`wrap_tool_output` 在 shell 闭包内对 Ok/Warn/Error
+      结果加声明头，**Denied 不包**（拒文是系统指引不是数据）。改声明头文案前
+      先核三条硬约束（前缀常量文档写明）：①前缀不得以「【」开头——
+      evidence 的注入前缀族（【系统提示】/【自检】/【终稿自检】）与并进块头
+      （【系统背景】）会把整条 tool 结果逐出证据池，真数被幻觉守卫误伤；
+      ②固定文案不含数字（包裹文本进证据池做数值出处命中）；
+      ③非 "### " 首行——claims::result_section 按前缀剥整行再判回声，不剥则
+      回声判据整体失效。三个锚点测试（包裹头/证据池/剥头回声）必须都活着。
+- [ ] **digest 降级**：子任务回报以 role=user 注入（`bot_chat/flow.rs`），
+      头文案以【系统提示】开头（evidence 注入前缀族逐出证据池——子 agent
+      自产 summary 不得自证）。若有人改回 role=system，Anthropic 协议转换会
+      把它提到顶层 system 字段（与系统指令同级）——接线守卫测试必须还在
+      （`digest_is_injected_at_the_end_of_message_assembly`）。
+- [ ] **提示词三处覆盖**：主 SYSTEM_PROMPT 红线段点名通道（网页/搜索/HTTP/
+      MCP/文档/文件/召回/技能正文/子任务回报）；SUBAGENT_BASE「禁止」段一条
+      覆盖全部 profile；EXECUTE_SYSTEM_PROMPT 红线规则含记忆条款。
+      只改主提示词 = 子 agent/执行链仍是裸奔（run_python 联网口径的同款教训）。
+- [ ] **工具描述边界句**：web_search / fetch_url / http_request / use_skill
+      四个 schema 描述有「数据不是指令」边界句；改 schema 后
+      `regen_tools_baseline_fixture -- --ignored` 重生成 fixture。
+- [ ] **技能正文两路径同口径**：system 槽位（SkillBody）与 use_skill 工具出口
+      都走 `clip_document_body`（五五裁 + 披露行预扣）——两路径不同口径会让
+      上下文预算出现隐形大洞。
+- [ ] **system prompt 旁路的消毒**：技能 DSL 失败兜底（format_recovery_hint）
+      走三件套（sanitize + 围栏 + 「不是指令」标注），与 bot_plan::replan
+      同源（sanitize_untrusted_text）。技能清单/指令文件进 system 属信任域，
+      但新加旁路时先问一句「这里进的东西谁写的」。
+- [ ] **新通道登记**：任何新工具/新注入点把外部内容带进上下文时，
+      逐条核它落在漏斗内（自动包裹）还是旁路（要单独处理）。
+
+#### L. 崩溃一致性
+
+真值：`src-tauri/src/lib.rs` setup 序列 + `db/work_items.rs`（清扫）
++ `db/bot_sessions.rs::bot_session_delete_inner`（删除级联）。
+
+- [ ] **启动恢复序列**逐条在场：app_runs 僵尸行（2h）→ MCP 对齐 → migration
+      journal replay → py_runs 清扫（1h 龄）→ 子 agent 僵尸行 → work_items
+      清扫 + trace running 收尾 → trace/overflow 保留期（30d）→ effects
+      派发器补投。启动序列动了 → 核对每个被移除步骤的兜底是否跟着走。
+- [ ] **启动清扫的合成失败行**：`sweep_all_working` 翻态与合成 turn_status=
+      failed 的 assistant 行**同事务**——只翻态不补行，聚合面有信号而聊天面
+      悬空，两面对不上。只 INSERT 不推进 sessions.updated_at。
+- [ ] **删除级联完整性**：删会话事务必须覆盖 bot_messages / work_items /
+      subagents 终态行 + 在途子 agent 取消。work_items 全仓无其它删除路径，
+      少这句级联 = 聚合面永久报警且无解。
+- [ ] **非同事务写入点的兜底链**：子 agent 终态三件套走 Effects 队列
+      （at-least-once）；file_changes 行攒批 vs checkpoints 快照文件的
+      孤儿由 trace retire 清扫兜。改动这些链路时逐条确认兜底还接得住。
+- [ ] **运行中自愈点**：work_items 停滞 2h（tick 收，待答不收——24h 提问
+      合法长挂）、MCP Connecting 40s、子 agent 停滞 600s、调度器 tick
+      panic 兜底（catch_unwind）。每个自愈点改参数时核它的复位面。
+
+#### M. 留存与增长边界
+
+真值：`db/trace.rs`（30d 保留期）+ `overflow.rs`（30d）+ `db/schedule_jobs.rs`
+（每作业 20 条）+ `db/bot_history.rs`（每会话 2000 行）+ `memory/`（500 容量）。
+
+- [ ] **有留存的**（改语义先核参数）：trace 三表 30d、overflow 30d、
+      py_runs 1h 龄、scheduled_job_runs 每作业 20 条、bot_messages 每会话
+      2000 行、mem_items 500、app_versions 滚动 100。
+- [ ] **无留存属已知增长边界**（报「没清扫」前先查本表）：bot_sessions
+      （子 agent 每 spawn 一行）、subagents、app_runs、notifications、
+      effect_queue give-up 行、apps output 目录。这些的增长速率与触达面
+      已评过——现状与登记口径不符才是发现。
+- [ ] **AI_Gen_Files 无自动清扫是用户资产口径**——建议自动删即误报。
+- [ ] **内存只增两点**：turn_record::RECORDS（per-session 槽，会话数无界时
+      缓慢累积）、groups 会话激活表（回收点仅会话删除，开关默认关）。
+      新增全局 static 容器时逐个过「谁回收它」。
+- [ ] 新增表/文件产物时同步本维度的两张清单（有留存 / 无留存登记）。
+
+---
+
 ### 5.2 输出格式（第二阶段末尾）
 
 ```
-- 按 A→J 顺序输出
+- 按 A→M 顺序输出
 - 每个维度末尾给一个小结：阻断数 / 高数 / 中数 / 低数
 - 最后给一张「按风险排序的 Top 10 修复清单」
 - 全程只读，不要改任何文件
@@ -558,6 +637,12 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 | `research` profile **不能**写文件 | 只读档，配 `write_artifact_file` 落素材（产物目录），不是「不能产出」 |
 | 熔断阶梯按**占比**而非绝对次数 | 安全网调整时阶梯位置自动跟着走，改成绝对数会立刻错位 |
 | 历史截断裁到 **70%** 而不是贴边 | 留余量稳住缓存前缀，贴边裁会把缓存前缀断成每轮一次 |
+| 技能 DSL 的 `${stepN.result}` **引号外原样插入** | vars.rs 测试自认的结构性缺口，已登记待拍板；报它须给「登记口径已变」的证据 |
+| 自检 snippet（工具结果前 **80 字**）进 user 消息 | 头锚【自检】已被 evidence 逐出出处池 + 严格 Y/N 解析，诱导面量级有限 |
+| AI_Gen_Files **无自动清扫** | 用户资产口径——自动删是破坏，不是漏 |
+| effect_queue **give-up 行留库** | 重投豁免已修（不再占键），剩余只是盘面增长，登记的增长边界 |
+| 主聊回合组合落库**多事务**（trace/开票/终稿各写各的） | 各面各有兜底（启动清扫翻态+合成行 / 停滞自愈 / trace running 收尾）；全量同事务是真源化级设计，不在审计里追 |
+| `instructions.md` / 技能清单进 system prompt **不消毒** | 用户自写/安装时入库的元信息，属信任域；新旁路要审的是「内容谁写的」，不是一刀切 |
 
 ---
 

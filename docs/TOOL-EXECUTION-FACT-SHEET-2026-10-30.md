@@ -56,6 +56,12 @@
    pre_tool 钩子拒绝 / allowed-tools 集合外 / 规则 deny / **规则 ask 分支对子 agent 直接拒** /
    确认被拒 / skill 熔断 / 子 agent 白名单外 / arguments 非法 JSON。工具本体的拒绝不在这
    8 处计数里。
+3. **回灌统一包裹（闸序之后的最后一站）**：执行过的工具（Ok/Warn/Error）结果在
+   模型循环薄壳的漏斗内统一加数据声明头（`bot_model_loop::output::wrap_tool_output`，
+   前缀 `bot::format::TOOL_OUTPUT_ENVELOPE_PREFIX`）；Denied 不包（拒文是系统指引）。
+   trace 存档在包裹前发生——凭证召回拿到的是原文；claims 的回声判定先剥声明头。
+   新增能带外部内容进上下文的工具/旁路时，先核它落在漏斗内（自动包裹）还是旁路
+   （要单独处理，见 SOP K 维度）。
 
 ## 三、事实表 A：69 个工具逐条
 

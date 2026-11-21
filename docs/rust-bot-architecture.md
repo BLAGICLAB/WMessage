@@ -176,13 +176,13 @@ src-tauri/src/
 │   ├── bot_model_loop/repeat_gate.rs (163) 工具重复调用闸：同参连击指纹计数 / 第 3 次拦截拒文 /
 │   │                                    可提问语境转问（ask 卡）降级链 / 豁免表（纯读轮询）
 │   ├── bot_model_loop/types.rs (352)    共享类型：ModelLoopDeps / 请求状态机 / 流结构 / 数据类
-│   ├── bot_model_loop/output.rs (235)   工具结果回灌体积漏斗：per-tool 预算与全局 cap 取小、
+│   ├── bot_model_loop/output.rs (236)   工具结果回灌体积漏斗：per-tool 预算与全局 cap 取小、
 │   │                                    超限转存溢出文件 + 只回灌节选与指针
 │   ├── bot_model_loop/context.rs (260)  上下文瘦身层：超限判定 / 历史裁剪 / 索引重排修正 /
 │   │                                    轮内工具结果滑动窗 / 用户意图抽取
 │   ├── bot_model_loop/evidence.rs (324)  证据来源层：从消息抽文本·来源，数字是否可溯源
 │   ├── bot_model_loop/tests.rs (76)     单元测试六桶的入口 + prod_src() 生产代码全景扫描源
-│   ├── bot_model_loop/tests/guard.rs (1411)   幻觉守卫 / 熔断 / 接线类测试
+│   ├── bot_model_loop/tests/guard.rs (1417)   幻觉守卫 / 熔断 / 接线类测试
 │   ├── bot_model_loop/tests/parse.rs (596)   SSE 解析 / 增量累积 / schema 测试
 │   ├── bot_model_loop/tests/config.rs (615) 推理参数 / 思考 / 上下文超限 / 侧调门测试
 │   ├── bot_model_loop/tests/tool_window.rs (233) 轮内工具结果滑动窗测试（裁剪口径 / 护栏 / 桩子）
