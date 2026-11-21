@@ -19,7 +19,7 @@ async fn core_execution_claim_without_any_tool_call_is_pushed_back() {
     let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let deps = deps_capturing_logs(&h, &logs);
     // exec_never：整场不该有任何工具被执行；真被调会 panic
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -61,7 +61,7 @@ async fn core_execution_claim_passes_after_a_tool_actually_ran() {
     let deps = h.deps();
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -92,7 +92,7 @@ async fn core_honest_refusal_without_tool_call_ends_immediately() {
 
     let h = CoreHarness::new();
     let deps = h.deps();
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -135,7 +135,7 @@ async fn core_step_narrated_execution_fabrication_is_pushed_back() {
     let exec = |_n: String, _a: String, _t: ToolCallTrace| async {
         ToolResult::ok("ModuleNotFoundError", Vec::new())
     };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -186,7 +186,7 @@ async fn core_all_failed_tools_report_distinct_remedy() {
     let exec = |_n: String, _a: String, _t: ToolCallTrace| async {
         ToolResult::error("ZeroDivisionError: division by zero", Vec::new())
     };
-    let (_text, _) = run_model_loop_core(
+    let (_text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -216,7 +216,7 @@ async fn core_code_explanation_without_tool_call_is_not_pushed_back() {
 
     let h = CoreHarness::new();
     let deps = h.deps();
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -261,7 +261,7 @@ async fn core_receipt_table_blocks_claiming_an_unrun_tool() {
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -307,7 +307,7 @@ async fn core_receipt_table_survives_cross_round_truthful_report() {
     let deps = h.deps();
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -337,7 +337,7 @@ async fn core_advice_mentioning_tool_name_is_not_a_claim() {
 
     let h = CoreHarness::new();
     let deps = h.deps();
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -372,7 +372,7 @@ async fn core_first_person_execution_narration_without_receipt_is_blocked() {
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -413,7 +413,7 @@ async fn core_subagent_fabrication_is_blocked_via_alias() {
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -456,7 +456,7 @@ async fn core_subagent_receipts_credit_lets_truthful_report_through() {
     let deps = h.deps();
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -498,7 +498,7 @@ async fn core_second_fabrication_is_marked_not_silently_passed() {
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -542,7 +542,7 @@ async fn core_truthful_rewrite_after_rework_carries_no_notice() {
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -592,7 +592,7 @@ async fn core_truthful_retraction_of_file_claim_carries_no_notice() {
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -656,7 +656,7 @@ async fn core_generated_doc_with_receipt_is_not_blocked() {
         let receipt = receipt.clone();
         async move { ToolResult::ok("已生成 PPT 演示文稿", Vec::new()).with_file_change(receipt) }
     };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -706,7 +706,7 @@ async fn core_claimed_doc_without_receipt_is_blocked() {
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -753,7 +753,7 @@ async fn core_named_tool_claimed_success_without_receipt_is_blocked() {
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -799,7 +799,7 @@ async fn core_honest_failure_report_is_not_treated_as_fabrication() {
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -835,7 +835,7 @@ async fn core_advice_mentioning_tool_name_with_claim_word_elsewhere_is_not_a_cla
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -871,7 +871,7 @@ async fn core_cross_question_restatement_of_succeeded_tool_passes() {
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -911,7 +911,7 @@ async fn core_named_tool_claimed_success_though_call_failed_is_blocked() {
     // 调用返回失败：只有「调用过」，没有「成功过」
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::error("boom", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -966,7 +966,7 @@ async fn core_unverifiable_writer_exemption_is_per_question() {
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -1016,7 +1016,7 @@ async fn core_unverifiable_writer_exemption_does_not_leak_into_next_question() {
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -1058,7 +1058,7 @@ async fn core_result_value_without_source_is_blocked() {
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -1094,7 +1094,7 @@ async fn core_result_value_with_source_is_not_blocked() {
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("5050", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -1141,7 +1141,7 @@ async fn core_echo_call_cannot_back_a_conclusion() {
             Vec::new(),
         )
     };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -1198,7 +1198,7 @@ async fn core_echo_call_alongside_real_lookup_is_not_blocked() {
             )
         }
     };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -1239,7 +1239,7 @@ async fn core_honest_failure_report_is_not_blocked_by_value_criterion() {
     let deps = deps_capturing_logs(&h, &logs);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,

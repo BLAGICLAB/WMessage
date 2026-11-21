@@ -66,7 +66,7 @@ pub async fn run_model_loop_core<X, XP, R, RP>(
     deps: &ModelLoopDeps<'_>,
     execute_tool: X,
     replan: R,
-) -> Result<(String, Vec<TaskRef>), CommandError>
+) -> Result<(String, Vec<TaskRef>, Vec<serde_json::Value>), CommandError>
 where
     X: Fn(String, String, crate::bot::ToolCallTrace) -> XP,
     XP: std::future::Future<Output = crate::bot::registry::ToolResult>,
@@ -214,7 +214,7 @@ where
     // 状态发射必漏一处，而漏掉的那处正好表现为「UI 提前显示完成」。
     // 内层跑完由外层统一判定出口类别，出口只有一处可漏。
     let mut body_outcome: Option<&'static str> = None;
-    let body: Result<(String, Vec<TaskRef>), CommandError> = async {
+    let body: Result<(String, Vec<TaskRef>, Vec<serde_json::Value>), CommandError> = async {
         for round in 0..max_rounds {
             // 轮前准备：预算硬压（msgs 字符分级）+ 轮龄降密度（老工具结果降档）。
             compact_before_round(
@@ -227,7 +227,7 @@ where
             );
             if stop.stopped() {
                 let hint = skill_finish(false, "用户停止");
-                return Ok((format!("⏹ 已停止{hint}"), collected_refs));
+                return Ok((format!("⏹ 已停止{hint}"), collected_refs, msgs));
             }
             // 状态机推进决策：集中 Skill 推进逻辑
             // 未来横切关注点（审批/沙箱/上下文压缩）只动 advance_skill，主循环不重构
@@ -245,9 +245,10 @@ where
                                 "⏸ 上一个操作正在等待你的确认——请先处理确认弹窗，再继续对话。"
                                     .into(),
                                 collected_refs,
+                                msgs,
                             ));
                         }
-                        return Ok((last_streamed.clone(), collected_refs));
+                        return Ok((last_streamed.clone(), collected_refs, msgs));
                     }
                     AdvanceAction::Finish => {
                         let _hint = skill_finish(true, "");
@@ -262,6 +263,7 @@ where
                                 &written_paths,
                             ),
                             collected_refs,
+                            msgs,
                         ));
                     }
                     AdvanceAction::Fail(reason) => {
@@ -277,6 +279,7 @@ where
                                 &written_paths,
                             ),
                             collected_refs,
+                            msgs,
                         ));
                     }
                     AdvanceAction::Terminate(reason) => {
@@ -292,6 +295,7 @@ where
                                 &written_paths,
                             ),
                             collected_refs,
+                            msgs,
                         ));
                     }
                 }
@@ -329,7 +333,7 @@ where
                         Ok(RequestOutcome::Response(r)) => r,
                         Ok(RequestOutcome::Stopped) => {
                             let hint = skill_finish(false, "用户停止");
-                            return Ok((format!("⏹ 已停止{hint}"), collected_refs));
+                            return Ok((format!("⏹ 已停止{hint}"), collected_refs, msgs));
                         }
                         Err(e) => return Err(e),
                     };
@@ -364,7 +368,7 @@ where
                             );
                             if stop.stopped() {
                                 let hint = skill_finish(false, "用户停止");
-                                return Ok((format!("⏹ 已停止{hint}"), collected_refs));
+                                return Ok((format!("⏹ 已停止{hint}"), collected_refs, msgs));
                             }
                             // 重发前清场：本轮已出的思考增量从气泡与落库事实里撤走
                             //（思考是追加渲染的，不清场用户会看到两段思考拼在一起）。
@@ -407,7 +411,7 @@ where
                             );
                             if stop.stopped() {
                                 let hint = skill_finish(false, "用户停止");
-                                return Ok((format!("⏹ 已停止{hint}"), collected_refs));
+                                return Ok((format!("⏹ 已停止{hint}"), collected_refs, msgs));
                             }
                             // 重发前清场（同读侧：思考是追加渲染，先撤已出的思考）
                             emit("bot-turn-restart", serde_json::json!({}));
@@ -430,6 +434,7 @@ where
                 return Ok((
                     format!("{}\n\n⏹ 已停止{hint}", rs.final_text),
                     collected_refs,
+                    msgs,
                 ));
             }
             let mut final_text = rs.final_text;
@@ -490,7 +495,7 @@ where
                     }
                     FinalizeOutcome::Proceed => {}
                     FinalizeOutcome::Stopped(msg) => {
-                        return Ok((msg, collected_refs));
+                        return Ok((msg, collected_refs, msgs));
                     }
                 }
                 let _ = skill_finish(true, "");
@@ -536,7 +541,7 @@ where
                         );
                     }
                 }
-                return Ok((answer, collected_refs));
+                return Ok((answer, collected_refs, msgs));
             }
 
             match dispatch_round(
@@ -585,15 +590,15 @@ where
             {
                 DispatchOutcome::Continue => {}
                 DispatchOutcome::Stopped(msg) => {
-                    return Ok((msg, collected_refs));
+                    return Ok((msg, collected_refs, msgs));
                 }
                 DispatchOutcome::Fused(msg) => {
                     body_outcome = Some("tool_fuse");
-                    return Ok((msg, collected_refs));
+                    return Ok((msg, collected_refs, msgs));
                 }
                 DispatchOutcome::Submitted(msg) => {
                     body_outcome = Some("submitted");
-                    return Ok((msg, collected_refs));
+                    return Ok((msg, collected_refs, msgs));
                 }
             }
             // 轮末软警告：轮数提醒一次（见 inject_soft_warnings）。
@@ -658,12 +663,16 @@ where
         Ok((
             rounds_fuse_exit(deps, &last_streamed, max_rounds),
             collected_refs,
+            msgs,
         ))
     }
     .await;
     // task_refs 去重在唯一的出口收口：主出口 / 早退（停止、熔断、技能收尾）
     // 十几条 return 路径都从这过，单点去重不再有「早退返回重复引用」的旁路。
-    let body = body.map(|(msg, refs)| (msg, merge_task_refs_dedup(refs)));
+    // 最终消息栈随循环返回：熔断恢复链（交卷轮 / 续跑轮 / sidecar）要的是
+    // 循环里真实累积的对话，不是入口快照——循环内部追加的 assistant/tool
+    // 消息只活在这份栈里，不带出去就全部丢失。
+    let body = body.map(|(msg, refs, final_msgs)| (msg, merge_task_refs_dedup(refs), final_msgs));
     // 回合状态收口：出口 → 状态。settling 在正文定稿后、收尾自检之前发，
     // 它是「说完了但还在动」这个场景唯一的存在方式——没有它，前端只能把
     // 「正文说完」当「本轮结束」，随后那段收尾（终稿自检：侧调 ≤60s 或

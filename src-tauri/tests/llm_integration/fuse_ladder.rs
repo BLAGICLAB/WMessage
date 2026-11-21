@@ -50,7 +50,7 @@ async fn core_denied_tool_calls_do_not_count_toward_fuse() {
     let mut deps = h.deps();
     deps.fuse_cap_override = Some(2);
 
-    let (text, _refs) = run_model_loop_core(
+    let (text, _refs, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         20,
@@ -142,7 +142,7 @@ async fn core_wrap_up_window_denies_reads_allows_writes_then_stops_by_rounds() {
     let mut deps = h.deps();
     deps.fuse_cap_override = Some(4);
 
-    let (text, _refs) = run_model_loop_core(
+    let (text, _refs, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         20,
@@ -250,7 +250,7 @@ async fn core_rounds_wrap_up_window_denies_reads_before_tool_budget() {
     let mut deps = h.deps();
     deps.fuse_cap_override = Some(100);
 
-    let (text, _refs) = run_model_loop_core(
+    let (text, _refs, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         8,

@@ -338,13 +338,13 @@ pub(super) async fn run_task_in_chat_impl(
             .await;
             // LoopTrace 统计进 trace 汇总槽（轮数/工具数/tokens → exec_traces 行）
             let captured = match &outcome {
-                Ok((_, _, trace)) => Some(trace.clone()),
+                Ok((_, _, _, trace)) => Some(trace.clone()),
                 Err(_) => failed_for_run.lock().ok().and_then(|g| g.clone()),
             };
             if let (Some(trace), Ok(mut c)) = (captured, hook_for_run.lock()) {
                 c.stats = Some(trace);
             }
-            outcome.map(|(text, refs, _)| (text, refs))
+            outcome.map(|(text, refs, final_msgs, _)| (text, refs, final_msgs))
         },
     )
     .await
@@ -369,7 +369,8 @@ pub async fn run_task_in_chat_with<R: tauri::Runtime, Run, Fut>(
 ) -> CommandResult<TaskChatRun>
 where
     Run: FnOnce(tauri::AppHandle<R>, Vec<serde_json::Value>, StopGuard) -> Fut,
-    Fut: std::future::Future<Output = CommandResult<(String, Vec<TaskRef>)>>,
+    Fut:
+        std::future::Future<Output = CommandResult<(String, Vec<TaskRef>, Vec<serde_json::Value>)>>,
 {
     // 开关关闭时明确拒绝
     if !crate::bot_slash::bot_enabled(app) {
@@ -487,7 +488,7 @@ where
     let outcome = run(app.clone(), msgs, stop).await;
     // 执行结束（无论成败）：清除标记，恢复用户头像
     set_bot_assigned(app, &task.id, false).await;
-    let outcome = outcome.map(|(text, refs)| BotChatResult {
+    let outcome = outcome.map(|(text, refs, _final_msgs)| BotChatResult {
         text,
         task_refs: refs,
         busy: false,

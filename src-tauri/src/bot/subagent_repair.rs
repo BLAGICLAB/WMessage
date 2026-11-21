@@ -228,6 +228,7 @@ pub(crate) fn parse_final_json(text: &str) -> Option<serde_json::Value> {
 }
 
 /// 熔断出口恢复结果。
+#[derive(Debug)]
 pub(crate) enum FusedRecovery {
     /// 恢复出可作为收尾正文的文本（已可解析或交给下游补答）：调用方用它替换
     /// 熔断正文，下游 classify 照常走「模型自报终态 / verifier checks 判定」，
@@ -459,7 +460,7 @@ pub(crate) async fn repair_final_json_once(
         crate::bot_model_loop::run_model_loop(app.clone(), msgs, 1, stop, None, None, None, None)
             .await
             .ok()?;
-    let (reply, _refs, _trace) = out;
+    let (reply, _refs, _final_msgs, _trace) = out;
     if parse_final_json(&reply).is_some() {
         crate::bot::audit_log(
             app,
@@ -950,5 +951,61 @@ mod fused_recovery_tests {
         assert_eq!(strip_fuse_marker(FUSED), "已核对 40+ 个数字");
         assert_eq!(strip_fuse_marker(FUSED_TOOL), "进度记录");
         assert_eq!(strip_fuse_marker("无标记正文"), "无标记正文");
+    }
+
+    /// 恢复链拿到的是**循环累积的完整历史**（assistant/tool 消息都在），
+    /// 不是入口快照——交卷轮模型面前的上下文必须包含已完成的工作，
+    /// 否则要么编造收尾 JSON，要么在空历史上重做任务。
+    #[tokio::test]
+    async fn forced_submit_receives_full_accumulated_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let stop = StopGuard::new_for_test();
+        let seen: Arc<Mutex<Vec<Vec<serde_json::Value>>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let history_recorder = move |history: Vec<serde_json::Value>, rounds: usize| -> BoxFut {
+            calls.lock().unwrap().push(rounds);
+            seen2.lock().unwrap().push(history.clone());
+            Box::pin(async move { Some(SUBMIT_JSON.to_string()) })
+        };
+        let mut msgs = base_msgs();
+        // 模拟主循环累积：assistant(tool_calls) + tool 结果（入口快照没有这两条）
+        msgs.push(serde_json::json!({
+            "role": "assistant",
+            "content": serde_json::Value::Null,
+            "tool_calls": [{"id": "call_a", "type": "function",
+                "function": {"name": "read_text_file", "arguments": "{}"}}],
+        }));
+        msgs.push(serde_json::json!({
+            "role": "tool",
+            "tool_call_id": "call_a",
+            "content": "工具真跑过：历史值 42",
+        }));
+        let out = recover_fused_exit(
+            &stop,
+            &mut msgs,
+            FUSED,
+            &ctx_for(dir.path(), 0, SystemTime::now()),
+            history_recorder,
+        )
+        .await;
+        assert!(
+            matches!(
+                out,
+                FusedRecovery::Recovered {
+                    via: "forced_submit",
+                    ..
+                }
+            ),
+            "剥标记失败 → 走交卷轮：{out:?}"
+        );
+        let histories = seen.lock().unwrap().clone();
+        assert!(!histories.is_empty(), "交卷轮应被调用");
+        let joined = serde_json::to_string(&histories[0]).unwrap();
+        assert!(
+            joined.contains("工具真跑过：历史值 42"),
+            "交卷轮收到的历史必须包含 tool 结果：{joined}"
+        );
+        assert!(joined.contains("call_a"), "交卷轮历史应含 tool_calls 身份");
     }
 }

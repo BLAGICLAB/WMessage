@@ -35,7 +35,7 @@ async fn stream_error_retryable_before_any_output_retries_the_round() {
         ToolResult::ok("ok", Vec::new())
     };
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http_anthropic(&server),
         user_msgs(),
         5,
@@ -232,7 +232,7 @@ async fn stream_error_overloaded_is_retryable() {
         ToolResult::ok("ok", Vec::new())
     };
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http_anthropic(&server),
         user_msgs(),
         5,

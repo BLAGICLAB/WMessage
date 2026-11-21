@@ -41,7 +41,7 @@ async fn core_final_selfcheck_y_restores_final_text() {
     let h = CoreHarness::new();
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -109,7 +109,7 @@ async fn core_final_selfcheck_n_appends_warning_and_audits() {
     };
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -164,7 +164,7 @@ async fn core_final_selfcheck_explained_n_appends_warning() {
     let h = CoreHarness::new();
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -221,7 +221,7 @@ async fn core_final_selfcheck_tool_reply_releases_snapshot() {
     let h = CoreHarness::new();
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -266,7 +266,7 @@ async fn core_final_selfcheck_disabled_with_gap_zero() {
     let h = CoreHarness::new();
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -309,7 +309,7 @@ async fn core_final_selfcheck_skips_short_final_text() {
     let h = CoreHarness::new();
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -345,7 +345,7 @@ async fn core_tool_selfcheck_n_switches_strategy_and_continues() {
     let (deps, deltas) = deps_capturing_chat_deltas(&h);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -390,7 +390,7 @@ async fn core_tool_selfcheck_y_continues_to_report() {
     let (deps, deltas) = deps_capturing_chat_deltas(&h);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -430,7 +430,7 @@ async fn core_tool_selfcheck_explanation_treated_as_final_answer() {
     let h = CoreHarness::new();
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -477,7 +477,7 @@ async fn core_late_selfcheck_verdict_is_not_returned_as_answer() {
     let h = CoreHarness::new();
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -515,7 +515,7 @@ async fn core_bare_yn_without_selfcheck_is_kept_as_answer() {
     let h = CoreHarness::new();
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -554,7 +554,7 @@ async fn core_yn_demand_answer_survives_after_selfcheck_consumed() {
         "role": "user",
         "content": "只回答 Y 或 N：这个任务建好了吗？"
     })];
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         msgs,
         10,
@@ -595,7 +595,7 @@ async fn core_late_selfcheck_verdict_retry_is_bounded() {
     let h = CoreHarness::new();
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         10,
@@ -650,7 +650,7 @@ async fn core_late_final_selfcheck_verdict_is_not_returned_as_answer() {
     let h = CoreHarness::new();
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         12,
@@ -697,7 +697,7 @@ async fn core_age_based_rolling_compaction_fires() {
         let long_result = long_result.clone();
         async move { ToolResult::ok(long_result, Vec::new()) }
     };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         12,
@@ -738,7 +738,7 @@ async fn core_final_selfcheck_sidecall_y_no_extra_main_round() {
     let sc = selfcheck_http(&side);
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&main),
         user_msgs(),
         10,
@@ -794,7 +794,7 @@ async fn core_final_selfcheck_sidecall_n_appends_warning() {
     };
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&main),
         user_msgs(),
         10,

@@ -919,7 +919,7 @@ mod post_turn_layer_tests {
             .find("let mut answer = if length_prefix.is_empty()")
             .expect("找不到答案定稿点");
         let ret = production
-            .find("return Ok((answer, collected_refs));")
+            .find("return Ok((answer, collected_refs, msgs));")
             .expect("找不到主出口");
         assert!(
             answer < hook,
@@ -933,7 +933,7 @@ mod post_turn_layer_tests {
             .find("run.failures")
             .expect("run_post_turn 的返回值必须被读（至少 failures 列表）");
         let ret_after_hook = tail
-            .find("return Ok((answer, collected_refs));")
+            .find("return Ok((answer, collected_refs, msgs));")
             .expect("找不到主出口");
         assert!(
             consumed < ret_after_hook,

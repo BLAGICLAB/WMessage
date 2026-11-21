@@ -273,7 +273,7 @@ async fn run_case(case: &EvalCase, http: &LlmHttp, system: &str, usage: &UsageCo
             result
         }
     };
-    let (text, _refs) = run_model_loop_core(
+    let (text, _refs, _final_msgs) = run_model_loop_core(
         http,
         msgs,
         EVAL_MAX_ROUNDS,

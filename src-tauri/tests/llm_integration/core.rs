@@ -34,7 +34,7 @@ data: [DONE]
         }
     };
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,
@@ -336,7 +336,7 @@ async fn core_text_reply_happy_path() {
     server.push_behavior(MockBehavior::TextReply("你好，世界".into()));
     let h = CoreHarness::new();
 
-    let (text, refs) = run_model_loop_core(
+    let (text, refs, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,
@@ -370,7 +370,7 @@ async fn core_injects_reasoning_effort_into_openai_body() {
     http.model = "glm-5.3-flash".into();
     http.reasoning = wmessage_lib::bot::reasoning::ReasoningWire::OpenAiEffort("high".into());
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &http,
         user_msgs(),
         5,
@@ -628,7 +628,7 @@ async fn submit_result_tool_ends_turn_with_canonical_json() {
         on_round: &|_| {},
         ..h.deps()
     };
-    let (text, _refs) = run_model_loop_core(
+    let (text, _refs, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,
@@ -681,7 +681,7 @@ async fn core_tool_call_round_trip_executes_and_continues() {
         }
     };
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,
@@ -851,7 +851,7 @@ async fn core_http_429_retried_once_then_success() {
     server.push_behavior(MockBehavior::TextReply("重试后成功".into()));
     let h = CoreHarness::new();
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,
@@ -1015,7 +1015,7 @@ async fn core_sse_unparsable_chunk_logged_but_stream_survives() {
     ));
     let h = CoreHarness::new();
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,
@@ -1051,7 +1051,7 @@ async fn core_sse_clean_stream_has_no_unparsable_audit() {
     ));
     let h = CoreHarness::new();
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,
@@ -1084,7 +1084,7 @@ async fn core_openai_error_envelope_midstream_counted_as_bad_chunk() {
     ));
     let h = CoreHarness::new();
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,
@@ -1128,7 +1128,7 @@ async fn core_context_overflow_sheds_history_and_retries() {
         serde_json::json!({"role": "user", "content": "本轮问题"}),
     ];
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         msgs,
         5,
@@ -1273,7 +1273,7 @@ async fn core_stream_options_rejection_degrades_and_resends_once() {
     server.push_behavior(MockBehavior::TextReply("降级后的正常回复".into()));
     let h = CoreHarness::new();
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,
@@ -1312,7 +1312,7 @@ async fn core_truncated_stream_text_only_warns_but_returns() {
     ));
     let h = CoreHarness::new();
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,
@@ -1475,7 +1475,7 @@ async fn core_huge_unterminated_sse_line_is_truncated_and_session_survives() {
     let h = CoreHarness::new();
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,
@@ -1488,4 +1488,55 @@ async fn core_huge_unterminated_sse_line_is_truncated_and_session_survives() {
     .await
     .expect("超长 SSE 行不该打断会话");
     assert_eq!(text, "超长行之后照常回复");
+}
+
+/// 循环出口必须带回**循环里累积的**最终消息栈：熔断恢复链（强制交卷轮 /
+/// 续跑轮 / sidecar 跨进程续跑）以它为唯一原料。若出口只带回入口快照，
+/// 恢复轮面前就是空历史——模型对已完成的工作一无所知，要么编造收尾
+/// JSON，要么原地重做。回归钉三点：①工具轮的 assistant(tool_calls) 与
+/// tool 结果都在栈里；②轮数熔断出口（恢复链的真实入口）同样带回全栈；
+/// ③tool 结果内容可检索。
+#[tokio::test]
+async fn model_loop_exit_returns_accumulated_history() {
+    let server = MockLlmServer::start();
+    let one_call = r#"data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-chat","choices":[{"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_hist","type":"function","function":{"name":"read_text_file","arguments":"{}"}}]},"index":0,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-chat","choices":[{"delta":{},"index":0,"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#;
+    server.push_behavior(MockBehavior::RawSse(one_call.to_string()));
+    let h = CoreHarness::new();
+    let exec = move |_name: String, _args: String, _trace: ToolCallTrace| async move {
+        ToolResult::ok("工具真跑过：历史值 42", Vec::new())
+    };
+    // max_rounds=1：工具轮跑完即落轮数熔断出口——正是恢复链被触发的形态
+    let (text, _, final_msgs) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        1,
+        &h.stop,
+        None,
+        &h.deps(),
+        &exec,
+        noop_replan,
+    )
+    .await
+    .expect("工具轮 + 熔断出口应 Ok");
+    assert!(text.contains("⏹ 已熔断（轮数上限）"), "一轮即熔断：{text}");
+    let roles: Vec<&str> = final_msgs
+        .iter()
+        .filter_map(|m| m["role"].as_str())
+        .collect();
+    assert!(
+        roles.contains(&"assistant") && roles.contains(&"tool"),
+        "累积栈应含 assistant(tool_calls) 与 tool 结果：{roles:?}"
+    );
+    let joined = serde_json::to_string(&final_msgs).unwrap();
+    assert!(
+        joined.contains("工具真跑过：历史值 42"),
+        "tool 结果必须进最终栈：{joined}"
+    );
+    assert!(joined.contains("call_hist"), "tool_calls 身份必须进最终栈");
 }

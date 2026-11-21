@@ -151,7 +151,7 @@ pub async fn run_model_loop(
     // 实测一次跑满 50 轮撞熔断的 255 秒执行，trace 里 turns=0/tools=0/tokens=0。
     // 想要失败轨迹也落库的调用方（trace 管道）传 Some 即可。
     failed_trace_out: Option<&std::sync::Arc<std::sync::Mutex<Option<LoopTrace>>>>,
-) -> Result<(String, Vec<TaskRef>, LoopTrace), CommandError> {
+) -> Result<(String, Vec<TaskRef>, Vec<serde_json::Value>, LoopTrace), CommandError> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
     // 请求装配前厂商可用性守卫：全局 active 条目带厂商且未通过连接测试 → 响亮拦截，不带未验证 key 出门换 401。
     // 「设为当前使用」入口已挡未验证厂商，这里兜存量坏指针 / 测试失败撤绿 /
@@ -635,7 +635,7 @@ pub async fn run_model_loop(
         model: Some(http.model.clone()),
     };
     match out {
-        Ok(v) => Ok((v.0, v.1, loop_trace)),
+        Ok(v) => Ok((v.0, v.1, v.2, loop_trace)),
         Err(e) => {
             if let Some(slot) = failed_trace_out {
                 if let Ok(mut g) = slot.lock() {

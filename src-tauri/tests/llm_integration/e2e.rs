@@ -91,7 +91,7 @@ async fn t1_model_loop_delivers_query_and_edit_tool_calls() {
         }
     };
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         6,
@@ -226,7 +226,7 @@ async fn n5_tool_image_appended_as_user_message() {
         async move { ToolResult::ok_with_images(format!("已截屏：{p}"), Vec::new(), vec![p]) }
     };
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         4,

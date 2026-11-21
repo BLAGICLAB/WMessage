@@ -816,7 +816,7 @@ pub(super) async fn bot_chat_guarded(
     // 失败时从 failed_trace 句柄取回——Err 路径没有返回值可带明细。
     {
         let captured = match &loop_result {
-            Ok((_, _, lt)) => Some(lt.clone()),
+            Ok((_, _, _, lt)) => Some(lt.clone()),
             Err(_) => failed_trace.lock().ok().and_then(|g| g.clone()),
         };
         if let (Some(lt), Ok(mut c)) = (captured, trace_capture.lock()) {
@@ -855,7 +855,7 @@ pub(super) async fn bot_chat_guarded(
             });
         }
     }
-    let (text, refs, _loop_trace) = match loop_result {
+    let (text, refs, _final_msgs, _loop_trace) = match loop_result {
         Ok(v) => v,
         Err(e) => {
             return Err(e);

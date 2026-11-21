@@ -273,9 +273,6 @@ pub(crate) async fn run_subagent(
     // 收尾 JSON 解析失败时**补答一次**（结构化输出三段修复的第 3 段）：产出
     // 完整、机检全过，只因最后一段不是 JSON 就判 failed，是完成率最大的单项
     // 黑洞。
-    // 熔断出口前留一份完整对话历史副本：恢复链要带着历史发交卷轮 / 续跑轮，
-    // 恢复失败时它就是 sidecar 的内容（熔断残留只钳 800 字，全量历史只在这里）。
-    let recovery_msgs = msgs.clone();
     // 盘上交付件的 mtime 下限：本轮开跑前落盘的 verif*.json 一律不算（跨会话
     // 旧报告冒充防线，与模型循环薄壳里 B 的探测同一个口径、各自取各自的开跑时刻）
     let started_at = std::time::SystemTime::now();
@@ -285,7 +282,6 @@ pub(crate) async fn run_subagent(
         &row.id,
         &artifact_dir,
         msgs,
-        recovery_msgs,
         max_rounds,
         // 配置档的采样温度（f32 → f64 无损）。这是 yaml `temperature:` 字段的
         // 唯一消费者；None 时用模型条目的 temperature。
@@ -725,7 +721,6 @@ async fn execute_with_recovery(
     row_id: &str,
     artifact_dir: &std::path::Path,
     msgs: Vec<serde_json::Value>,
-    recovery_msgs: Vec<serde_json::Value>,
     max_rounds: usize,
     temperature: Option<f64>,
     required_checks: usize,
@@ -747,7 +742,9 @@ async fn execute_with_recovery(
         None,
     )
     .await?;
-    let (text, refs, trace) = first;
+    // 第三元是循环出口的最终消息栈：循环里累积的 assistant/tool 消息只有这份
+    // 是全的——恢复链（交卷轮/续跑轮）与 sidecar 都以它为原料。
+    let (text, refs, final_msgs, trace) = first;
     if text.contains(crate::bot_model_loop::FUSE_MARKER)
         || text.contains(crate::bot_model_loop::ROUNDS_FUSE_MARKER)
     {
@@ -770,10 +767,10 @@ async fn execute_with_recovery(
                 )
                 .await
                 .ok()
-                .map(|(t, _, _)| t)
+                .map(|(t, _, _, _)| t)
             }
         };
-        let mut recovery_msgs = recovery_msgs;
+        let mut recovery_msgs = final_msgs;
         let outcome = crate::bot::subagent_repair::recover_fused_exit(
             stop,
             &mut recovery_msgs,

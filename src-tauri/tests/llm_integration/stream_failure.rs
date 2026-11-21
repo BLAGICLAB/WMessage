@@ -26,7 +26,7 @@ async fn stream_failure_before_any_output_retries_the_round() {
         ToolResult::ok("ok", Vec::new())
     };
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,
@@ -175,7 +175,7 @@ async fn stream_failure_audit_carries_diagnostic_fields() {
     let exec = |_name: String, _args: String, _trace: ToolCallTrace| async {
         ToolResult::ok("ok", Vec::new())
     };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,
@@ -232,7 +232,7 @@ async fn thinking_only_stream_failure_retries_the_round() {
         ToolResult::ok("ok", Vec::new())
     };
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,
@@ -279,7 +279,7 @@ async fn restart_event_emitted_before_stream_retry() {
     let exec = |_name: String, _args: String, _trace: ToolCallTrace| async {
         ToolResult::ok("ok", Vec::new())
     };
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         5,

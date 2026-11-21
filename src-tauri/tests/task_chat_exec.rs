@@ -273,7 +273,7 @@ async fn duplicate_trigger_rejected_by_exec_guard() {
             move |_app, _msgs, _stop| async move {
                 let _ = entered_tx.send(());
                 let _ = release_rx.await;
-                Ok(("done".to_string(), Vec::new()))
+                Ok(("done".to_string(), Vec::new(), Vec::new()))
             },
         )
         .await
@@ -287,7 +287,9 @@ async fn duplicate_trigger_rejected_by_exec_guard() {
         TaskExecOrigin::Scheduled,
         None,
         3,
-        move |_app, _msgs, _stop| async move { Ok(("不应执行到这里".to_string(), Vec::new())) },
+        move |_app, _msgs, _stop| async move {
+            Ok(("不应执行到这里".to_string(), Vec::new(), Vec::new()))
+        },
     )
     .await;
     let err = match second {

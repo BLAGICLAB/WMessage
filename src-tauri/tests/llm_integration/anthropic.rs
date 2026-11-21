@@ -57,7 +57,7 @@ async fn core_anthropic_sse_unparsable_chunk_logged() {
     ));
     let h = CoreHarness::new();
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http_anthropic(&server),
         user_msgs(),
         5,
@@ -103,7 +103,7 @@ async fn core_anthropic_context_overflow_resends_anthropic_shaped_body() {
         serde_json::json!({"role": "user", "content": "本轮问题"}),
     ];
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http_anthropic(&server),
         msgs,
         5,
@@ -157,7 +157,7 @@ async fn core_anthropic_text_reply_happy_path() {
     server.push_behavior(MockBehavior::AnthropicTextReply("你好，Claude".into()));
     let h = CoreHarness::new();
 
-    let (text, refs) = run_model_loop_core(
+    let (text, refs, _) = run_model_loop_core(
         &core_http_anthropic(&server),
         user_msgs(),
         5,
@@ -230,7 +230,7 @@ async fn core_anthropic_tool_call_round_trip_executes_and_continues() {
         }
     };
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http_anthropic(&server),
         user_msgs(),
         5,
@@ -354,7 +354,7 @@ async fn core_anthropic_text_block_first_tool_use_remapped_no_ghost() {
         }
     };
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http_anthropic(&server),
         user_msgs(),
         5,
@@ -434,7 +434,7 @@ async fn core_anthropic_length_truncation_auto_continues() {
     ));
     let h = CoreHarness::new();
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http_anthropic(&server),
         user_msgs(),
         5,
@@ -473,7 +473,7 @@ async fn core_anthropic_length_truncation_continuation_is_bounded() {
     }
     let h = CoreHarness::new();
 
-    let (text, _) = run_model_loop_core(
+    let (text, _, _) = run_model_loop_core(
         &core_http_anthropic(&server),
         user_msgs(),
         5,
