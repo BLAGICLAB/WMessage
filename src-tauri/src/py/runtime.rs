@@ -406,7 +406,7 @@ pub fn run_python_ungated(
 /// 的可见范围。改白名单：只带运行 Python 必需的系统变量（见 py_env_allowed）；
 /// WM_* 业务变量由调用方在裁剪后显式补。编码基线原先只在 Windows 的
 /// silent_cmd 里设，裁剪后统一显式补，不依赖宿主 shell 恰好带没带。
-fn apply_child_env(cmd: &mut Command) {
+pub(crate) fn apply_child_env(cmd: &mut Command) {
     cmd.env_clear();
     for (k, v) in std::env::vars_os() {
         if k.to_str().is_some_and(crate::bot::procs::child_env_allowed) {
@@ -607,16 +607,29 @@ pub fn run_python_at(
     let (tx, rx) = mpsc::channel();
     let tx_out = tx.clone();
     let stop_out = stop.cloned();
+    // reader 线程的读取中断错误回传槽：join 后由主线程走 audit（eprintln
+    // 在 GUI 下无人收，留痕意图落空）
+    let out_read_err: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let err_read_err: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let out_err_slot = out_read_err.clone();
+    let err_err_slot = err_read_err.clone();
     let out_handle = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let mut truncated = false;
         if let Some(s) = child_stdout {
-            let (b, tr) = crate::py::io::read_capped_drain(
+            let (b, tr, e) = crate::py::io::read_capped_drain(
                 crate::py::io::StopReader::new(s, stop_out),
                 OUTPUT_CAP + 1024,
             );
             buf = b;
             truncated = tr;
+            if let Some(e) = e {
+                if let Ok(mut slot) = out_err_slot.lock() {
+                    *slot = Some(e.to_string());
+                }
+            }
         }
         let _ = tx_out.send(("out", buf, truncated));
     });
@@ -626,12 +639,17 @@ pub fn run_python_at(
         let mut buf = Vec::new();
         let mut truncated = false;
         if let Some(s) = child_stderr {
-            let (b, tr) = crate::py::io::read_capped_drain(
+            let (b, tr, e) = crate::py::io::read_capped_drain(
                 crate::py::io::StopReader::new(s, stop_err),
                 OUTPUT_CAP + 1024,
             );
             buf = b;
             truncated = tr;
+            if let Some(e) = e {
+                if let Ok(mut slot) = err_err_slot.lock() {
+                    *slot = Some(e.to_string());
+                }
+            }
         }
         let _ = tx_err.send(("err", buf, truncated));
     });
@@ -645,7 +663,12 @@ pub fn run_python_at(
             Err(e) => {
                 cleanup_after_fail(&mut child, &limits);
                 audit(&format!("run_python err | kind=wait_fail | {e}"));
-                crate::py::io::join_reader_threads(out_handle, err_handle, audit);
+                crate::py::io::join_reader_threads(
+                    out_handle,
+                    err_handle,
+                    (&out_read_err, &err_read_err),
+                    audit,
+                );
                 return Err(RunFail {
                     kind: PyFailKind::Runtime,
                     msg: format!("等待子进程状态失败：{e}{}", retained_note(dir)),
@@ -659,7 +682,12 @@ pub fn run_python_at(
                 "run_python err | kind=timeout | timeout_secs={}",
                 timeout.as_secs()
             ));
-            crate::py::io::join_reader_threads(out_handle, err_handle, audit);
+            crate::py::io::join_reader_threads(
+                out_handle,
+                err_handle,
+                (&out_read_err, &err_read_err),
+                audit,
+            );
             return Err(RunFail {
                 kind: PyFailKind::Timeout,
                 msg: format!(
@@ -673,7 +701,12 @@ pub fn run_python_at(
         if stop.is_some_and(|s| s.stopped()) {
             cleanup_after_fail(&mut child, &limits);
             audit("run_python err | kind=stopped");
-            crate::py::io::join_reader_threads(out_handle, err_handle, audit);
+            crate::py::io::join_reader_threads(
+                out_handle,
+                err_handle,
+                (&out_read_err, &err_read_err),
+                audit,
+            );
             return Err(RunFail {
                 kind: PyFailKind::Stopped,
                 msg: format!("已停止{}", retained_note(dir)),
@@ -690,7 +723,12 @@ pub fn run_python_at(
         audit("run_python warn | kind=drain_timeout | 孙进程占用管道已强杀进程组");
         stderr.push_str("\n（输出收集超时：孙进程占用管道，已强杀进程组）");
     }
-    crate::py::io::join_reader_threads(out_handle, err_handle, audit);
+    crate::py::io::join_reader_threads(
+        out_handle,
+        err_handle,
+        (&out_read_err, &err_read_err),
+        audit,
+    );
     if truncated {
         audit(&format!(
             "run_python warn | kind=output_truncated | cap={OUTPUT_CAP}"

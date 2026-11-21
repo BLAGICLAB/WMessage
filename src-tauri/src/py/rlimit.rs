@@ -139,6 +139,10 @@ pub fn run_setrlimit_probe(py: &str) -> SetrlimitSupport {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    // 探测面与执行面同口径：环境走白名单裁剪——宿主环境若被注入
+    // PYTHONPATH/sitecustomize，探测 python 会先执行注入代码，可把
+    // 「探测失败」伪造成「可用」
+    crate::py::runtime::apply_child_env(&mut cmd);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {

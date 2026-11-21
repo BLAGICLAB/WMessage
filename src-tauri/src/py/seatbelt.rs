@@ -14,6 +14,7 @@
 
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 /// 最小 profile：其余操作全放行（沙箱里跑 python 要 fork/exec/file 等），
 /// 网络操作前缀通配全拒。
@@ -45,44 +46,100 @@ static SEATBELT_PROBE: OnceLock<SeatbeltState> = OnceLock::new();
 
 /// 探测主体（无缓存，测试直打）：sandbox-exec 跑探测脚本，判定输出。
 pub(crate) fn seatbelt_probe_uncached(py: &str) -> SeatbeltState {
-    let out = match Command::new("sandbox-exec")
-        .arg("-p")
+    let mut cmd = Command::new("sandbox-exec");
+    cmd.arg("-p")
         .arg(SEATBELT_PROFILE)
         .arg(py)
         .arg("-c")
         .arg(SEATBELT_PROBE_SCRIPT)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-    {
-        Ok(o) => o,
+        .stderr(Stdio::null());
+    // 探测面与执行面同口径：环境走白名单裁剪——宿主环境若被注入
+    // PYTHONPATH/sitecustomize，探测 python 会先执行注入代码，可把
+    // 「闸失效」伪造成「生效」
+    crate::py::runtime::apply_child_env(&mut cmd);
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
         Err(e) => {
             return SeatbeltState::Unavailable(format!("sandbox-exec 无法启动：{e}"));
         }
     };
-    if !out.status.success() {
+    // deadline 与 rlimit 探测同口径（10s 强杀）：探测在 gate 许可持有期内
+    // 调用且不接受 stop 令牌，无界阻塞会占死许可并使本次 run_python 永不返回。
+    // 超时按 Unavailable（fail-closed 方向）。
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break Some(st),
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return SeatbeltState::Unavailable(
+                    "seatbelt 探测子进程超时（10s）已强杀，闸状态无法证明".to_string(),
+                );
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(e) => {
+                return SeatbeltState::Unavailable(format!("探测子进程 wait 失败：{e}"));
+            }
+        }
+    };
+    let Some(status) = status else {
+        return SeatbeltState::Unavailable("探测子进程状态未知，闸状态无法证明".to_string());
+    };
+    if !status.success() {
         return SeatbeltState::Unavailable(format!(
             "sandbox-exec 探测失败（退出码 {:?}；profile 语法被拒或二进制不可用）",
-            out.status.code()
+            status.code()
         ));
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    if stdout.contains("SB_ERR 1") {
-        // EPERM = 闸生效的唯一证明形态
-        SeatbeltState::Available
-    } else if stdout.contains("SB_CONNECT_OK") {
-        SeatbeltState::Unavailable("沙箱内 socket 连接竟然成功——网络闸未生效".to_string())
-    } else if stdout.contains("SB_ERR 61") {
-        SeatbeltState::Unavailable(
-            "沙箱内 socket 到了内核（ECONNREFUSED 而非 EPERM）——deny network* 未拦截".to_string(),
-        )
-    } else {
-        SeatbeltState::Unavailable(format!(
-            "沙箱探测输出未识别（闸状态无法证明）：{}",
-            stdout.trim()
-        ))
+    let stdout_bytes = child_stdout_or_empty(&mut child);
+    let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
+    judge_probe_output(&stdout)
+}
+
+fn child_stdout_or_empty(child: &mut std::process::Child) -> Vec<u8> {
+    let mut buf = Vec::new();
+    if let Some(mut s) = child.stdout.take() {
+        let _ = std::io::Read::read_to_end(&mut s, &mut buf);
     }
+    buf
+}
+
+/// 探测输出判定（纯函数，测试直打）。
+///
+/// errno 精确解析：EPERM=1 是闸生效的唯一证明形态。子串
+/// `contains("SB_ERR 1")` 会把 errno 10-19/100-199 全吞进 Available 分支
+/// （闸失效被误判成生效 = fail-open），必须 == 1 才算生效。
+fn judge_probe_output(stdout: &str) -> SeatbeltState {
+    if let Some(errno) = parse_sb_errno(stdout) {
+        return match errno {
+            1 => SeatbeltState::Available,
+            61 => SeatbeltState::Unavailable(
+                "沙箱内 socket 到了内核（ECONNREFUSED 而非 EPERM）——deny network* 未拦截"
+                    .to_string(),
+            ),
+            other => SeatbeltState::Unavailable(format!(
+                "沙箱探测输出未识别（闸状态无法证明）：SB_ERR {other}"
+            )),
+        };
+    }
+    if stdout.contains("SB_CONNECT_OK") {
+        return SeatbeltState::Unavailable("沙箱内 socket 连接竟然成功——网络闸未生效".to_string());
+    }
+    SeatbeltState::Unavailable(format!(
+        "沙箱探测输出未识别（闸状态无法证明）：{}",
+        stdout.trim()
+    ))
+}
+
+/// 逐行找 `SB_ERR <整数>`（取第一条可解析的）。
+fn parse_sb_errno(stdout: &str) -> Option<i32> {
+    stdout.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("SB_ERR ")?.trim();
+        rest.parse::<i32>().ok()
+    })
 }
 
 /// 带缓存探测。首次结果 audit 留痕；Unavailable 由调用方拒跑。
@@ -131,6 +188,45 @@ mod tests {
             !SEATBELT_PROFILE.contains("allow network"),
             "不得给任何网络放行条款"
         );
+    }
+
+    /// errno 精确判：只有 EPERM(1) 算闸生效——子串 contains("SB_ERR 1")
+    /// 会把 errno 12/13/100 全吞进 Available 分支（fail-open）。
+    #[test]
+    fn judge_requires_exactly_eperm_errno() {
+        assert_eq!(judge_probe_output("SB_ERR 1\n"), SeatbeltState::Available);
+        assert!(matches!(
+            judge_probe_output("SB_ERR 12\n"),
+            SeatbeltState::Unavailable(_)
+        ));
+        assert!(matches!(
+            judge_probe_output("SB_ERR 13\n"),
+            SeatbeltState::Unavailable(_)
+        ));
+        assert!(matches!(
+            judge_probe_output("SB_ERR 100\n"),
+            SeatbeltState::Unavailable(_)
+        ));
+        assert!(matches!(
+            judge_probe_output("SB_CONNECT_OK"),
+            SeatbeltState::Unavailable(_)
+        ));
+        assert!(matches!(
+            judge_probe_output("SB_ERR 61\n"),
+            SeatbeltState::Unavailable(_)
+        ));
+        assert!(matches!(
+            judge_probe_output("完全没识别的输出"),
+            SeatbeltState::Unavailable(_)
+        ));
+        assert!(matches!(
+            judge_probe_output("SB_ERR 不是数字\n"),
+            SeatbeltState::Unavailable(_)
+        ));
+        assert!(matches!(
+            judge_probe_output(""),
+            SeatbeltState::Unavailable(_)
+        ));
     }
 
     /// 锚点：真实跑一遍探测——闸内 socket 必须被内核拒（EPERM）才算闸生效。

@@ -46,7 +46,7 @@ fn drain_output_times_out_when_grandchild_holds_pipe() {
 #[test]
 fn read_capped_drain_under_cap_not_truncated() {
     let data = b"short output".to_vec();
-    let (buf, truncated) = read_capped_drain(std::io::Cursor::new(data.clone()), 1024);
+    let (buf, truncated, _read_err) = read_capped_drain(std::io::Cursor::new(data.clone()), 1024);
     assert!(!truncated);
     assert_eq!(buf, data);
 }
@@ -76,7 +76,7 @@ fn read_capped_drain_over_cap_truncates_and_drains() {
         inner: std::io::Cursor::new(data),
         total: total.clone(),
     };
-    let (buf, truncated) = read_capped_drain(reader, cap);
+    let (buf, truncated, _read_err) = read_capped_drain(reader, cap);
     assert!(truncated);
     assert_eq!(buf.len(), cap);
     assert_eq!(
@@ -109,7 +109,7 @@ fn stop_reader_returns_partial_when_stopped() {
     let guard = crate::bot_slash::StopGuard::new(&guard_test_handle(), false, None);
     let token = guard.token();
     // 未停止：完整读取，行为与裸 read_capped_drain 一致
-    let (buf, tr) = read_capped_drain(
+    let (buf, tr, _read_err) = read_capped_drain(
         StopReader::new(std::io::Cursor::new(data.clone()), Some(token.clone())),
         1024 * 1024,
     );
@@ -117,7 +117,7 @@ fn stop_reader_returns_partial_when_stopped() {
     assert_eq!(buf, data);
     // 已停止：第一次 read 即 EOF，提前返回部分（此处为空）数据，不盲等
     guard.force_stop();
-    let (buf, tr) = read_capped_drain(
+    let (buf, tr, _read_err) = read_capped_drain(
         StopReader::new(std::io::Cursor::new(data), Some(token)),
         1024 * 1024,
     );
@@ -130,8 +130,11 @@ fn join_reader_threads_finished_no_audit() {
     // 正常场景：reader 已完成 → 秒 join，无审计
     let h1 = std::thread::spawn(|| {});
     let h2 = std::thread::spawn(|| {});
+    let no_err = std::sync::Mutex::new(None);
     let mut lines: Vec<String> = Vec::new();
-    join_reader_threads(h1, h2, &mut |l: &str| lines.push(l.to_string()));
+    join_reader_threads(h1, h2, (&no_err, &no_err), &mut |l: &str| {
+        lines.push(l.to_string())
+    });
     assert!(lines.is_empty(), "正常退出不应记审计: {lines:?}");
 }
 
@@ -140,9 +143,12 @@ fn join_reader_threads_stuck_detaches_with_audit() {
     // 卡死场景：stdout reader 永不退出 → 超时 detach + ERROR 审计，不得永久挂住
     let h1 = std::thread::spawn(|| std::thread::sleep(Duration::from_secs(30)));
     let h2 = std::thread::spawn(|| {});
+    let no_err = std::sync::Mutex::new(None);
     let mut lines: Vec<String> = Vec::new();
     let start = Instant::now();
-    join_reader_threads(h1, h2, &mut |l: &str| lines.push(l.to_string()));
+    join_reader_threads(h1, h2, (&no_err, &no_err), &mut |l: &str| {
+        lines.push(l.to_string())
+    });
     assert!(
         start.elapsed() < READER_JOIN_TIMEOUT + Duration::from_secs(2),
         "卡死 reader 不得拖住收尾：{:?}",

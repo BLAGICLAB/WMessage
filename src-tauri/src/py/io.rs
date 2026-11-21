@@ -6,20 +6,19 @@ use std::time::{Duration, Instant};
 use crate::bot::StopToken;
 use crate::py::runtime::OUTPUT_CAP;
 
-pub fn read_capped_drain<R: Read>(src: R, cap: usize) -> (Vec<u8>, bool) {
+/// 返回（buf, truncated, 读取中断错误）。读取中断（子进程被杀/管道断裂）时
+/// buf 可能不满且 truncated 探测不到——错误随线程结果回传，由持有 audit
+/// 闭包的主线程留痕，避免「假完整」输出静默（eprintln 在 GUI 下无人收）。
+pub fn read_capped_drain<R: Read>(src: R, cap: usize) -> (Vec<u8>, bool, Option<std::io::Error>) {
     let mut probe = src.take(cap as u64 + 1);
     let mut buf = Vec::new();
-    // 读中断（子进程被杀/管道断裂）时 buf 可能不满且 truncated 探测不到——
-    // 留痕不静默，避免「假完整」输出
-    if let Err(e) = probe.read_to_end(&mut buf) {
-        eprintln!("[py::io] read_capped_drain 读取中断（输出可能不完整）：{e}");
-    }
+    let read_err = probe.read_to_end(&mut buf).err();
     let truncated = buf.len() > cap;
     if truncated {
         buf.truncate(cap);
         let _ = std::io::copy(&mut probe.into_inner(), &mut std::io::sink());
     }
-    (buf, truncated)
+    (buf, truncated, read_err)
 }
 
 pub struct StopReader<R> {
@@ -75,13 +74,21 @@ pub fn drain_output(
 
 pub const READER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// reader 线程 join（超时 detach 留痕），并留痕读取中断错误。
 pub fn join_reader_threads(
     out_handle: std::thread::JoinHandle<()>,
     err_handle: std::thread::JoinHandle<()>,
+    read_errors: (
+        &std::sync::Mutex<Option<String>>,
+        &std::sync::Mutex<Option<String>>,
+    ),
     audit: &mut dyn FnMut(&str),
 ) {
     let deadline = Instant::now() + READER_JOIN_TIMEOUT;
-    for (kind, h) in [("stdout", out_handle), ("stderr", err_handle)] {
+    for (kind, h, err_slot) in [
+        ("stdout", out_handle, read_errors.0),
+        ("stderr", err_handle, read_errors.1),
+    ] {
         loop {
             if h.is_finished() {
                 let _ = h.join();
@@ -94,6 +101,13 @@ pub fn join_reader_threads(
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
+        }
+        if let Ok(g) = err_slot.lock() {
+            if let Some(e) = g.as_ref() {
+                audit(&format!(
+                    "run_python warn | kind=read_interrupted | reader={kind} | 输出读取中断（可能不完整）：{e}"
+                ));
+            }
         }
     }
 }
