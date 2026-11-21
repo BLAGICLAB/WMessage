@@ -385,7 +385,7 @@ src-tauri/src/
 │   ├── bot/tools/trace.rs (247)    凭证召回面：按 tool_call_id/span_id/trace_id 调回历史工具结果（只读、零新表）
 │   ├── bot/tools/http.rs (669)     专用 HTTP 工具面：http_request（方法/请求体/自定义头/下载落产物目录；
 │   │                                目的地闸每跳都判、凭据引用真值不过模型、args_preview 裁 method+host）
-│   ├── bot/tools/plan.rs (163)      计划面：update_plan 整表替换写会话内计划状态 + 广播 bot-plan 事件
+│   ├── bot/tools/plan.rs (164)      计划面：update_plan 整表替换写会话内计划状态 + 广播 bot-plan 事件
 │   ├── bot/tools/task_files_arg_tests.rs (180)     files 参数解析与安全校验单测
 │   ├── bot/tools/query_tasks_tests.rs (153)        查询族纯函数单测
 │   ├── bot/tools/n3_toolpolish_tests.rs (79)       N3 工具升级纯函数单测
@@ -424,7 +424,7 @@ src-tauri/src/
 ├── bot_scheduler/sched_guard_tests.rs   SchedGuard 防重入单测
 ├── bot_scheduler/plan_window_tests.rs   计划窗口单测
 ├── bot_scheduler/preview_gate_tests.rs  预演档闸单测（闸只拦到点触发，手动「立即执行」不拦）
-├── bot_reminders.rs (623) 机器人提醒 schedule_reminder/list_reminders/cancel_reminder：
+├── bot_reminders.rs (621) 机器人提醒 schedule_reminder/list_reminders/cancel_reminder：
 │                        到点发系统通知（只说话，不建卡不执行内容）；when 支持绝对时间 /
 │                        今天 HH:MM / 相对 +30m；repeat none/daily/weekly/monthly；
 │                        定时串与触发点计算复用 bot_scheduler（occurrence_after），
@@ -440,13 +440,13 @@ src-tauri/src/
 ├── bot/subagent_repair.rs (1011) 收尾 JSON 的本地修复与结果判定：结构化输出三段修复的第二段（尾逗号 / 截断闭合，
 │                        零 token 零延迟）+ parse_final_json + classify_outcome + 熔断出口恢复链
 │                        recover_fused_exit（剥标记 → 盘上 verdict → 强制交卷轮 → 原会话续跑一次）
-├── bot/subagent_runner.rs (1320) + bot/subagent_runner/reporting.rs (319) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
+├── bot/subagent_runner.rs (1330) + bot/subagent_runner/reporting.rs (319) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
 │                        + panic 隔离 + 任务包装渲染
 ├── bot/subagent_spawn.rs (453) 子 agent 派发：入参校验 / 建行 / 并发闸 SubagentGate（per-session 2 /
 │                        global 3，闸满排队）
 ├── bot/subagent_tools.rs (619) 子 agent 的五个 LLM 工具：tool_spawn_subagent / tool_check_subagent /
 │                        tool_cancel_subagent / tool_write_artifact_file / tool_read_own_card
-├── bot_orchestrator.rs (755) 子 Agent 编排器门面（方案 B，SUBA 设计 2026-09-27）：类型与生命周期
+├── bot_orchestrator.rs (757) 子 Agent 编排器门面（方案 B，SUBA 设计 2026-09-27）：类型与生命周期
 │                        核心 + 子模块 re-export；受管子 agent 的
 │                        spawn/check/cancel 生命周期状态机 + 无任务卡（子 agent 不再建卡，行上
 │                        只存 parent_session_id 指向派发会话，遗留可空 task_id 不再写入）+ acceptance
