@@ -891,3 +891,23 @@ fn auto_skill_dies_on_first_tool_failure() {
         "auto 模式必须一步判死，否则 DSL 回滚静默失效"
     );
 }
+
+/// 出口自钳：不超限原样返回；超限时输出（含披露行）不超 cap，且披露行在场。
+/// use_skill 工具出口与 system 槽位（SkillBody）共用同一函数，两路径同值同形态。
+#[test]
+fn clip_document_body_respects_cap_and_disclosure() {
+    let disclosure = "…（技能文档超过 131072 字节，中段已裁——用 references 按需读取）…";
+    let short = "中".repeat(1000);
+    assert!(
+        clip_document_body(&short, disclosure).is_none(),
+        "不超限不裁"
+    );
+    let long = "x".repeat(crate::bot::constants::TOOL_OUTPUT_BYTES + 1000);
+    let out = clip_document_body(&long, disclosure).expect("超限必裁");
+    assert!(
+        out.len() <= crate::bot::constants::TOOL_OUTPUT_BYTES,
+        "输出（含披露行）不得超 cap：实际 {}",
+        out.len()
+    );
+    assert!(out.contains(disclosure), "披露行必须在场");
+}

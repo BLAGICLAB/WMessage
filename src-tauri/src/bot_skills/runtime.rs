@@ -352,6 +352,29 @@ pub fn start_skill(
 }
 
 /// 技能文档头（use_skill 返回首行）：模式与约束一眼可读。
+/// 超长文档正文的出口自钳（use_skill 工具出口与 system 槽位 SkillBody 共用）：
+/// 头尾五五裁，中段丢弃；披露行（含两侧换行）的字节从 cap 预扣，输出才真正
+/// 不超 cap。不超限返回 None（调用方原样用）。
+///
+/// 两条路径必须同值同形态：同一份正文走 use_skill 工具与走 system 槽位的裁法
+/// 不一致，「工具路径被裁、system 路径裸奔」的分叉会让上下文预算出现隐形大洞。
+/// 纯函数便于单测。
+pub fn clip_document_body(text: &str, disclosure: &str) -> Option<String> {
+    let cap = crate::bot::constants::TOOL_OUTPUT_BYTES;
+    if text.len() <= cap {
+        return None;
+    }
+    let reserve = disclosure.len().saturating_add(2).min(cap);
+    let half = cap.saturating_sub(reserve) / 2;
+    let head_end = crate::bot::format::byte_head_end(text, half);
+    let tail_start = crate::bot::format::byte_tail_start(text, half).max(head_end);
+    Some(format!(
+        "{}\n{disclosure}\n{}",
+        &text[..head_end],
+        &text[tail_start..]
+    ))
+}
+
 /// 「最多 N 步」只对 auto 印——步数闸与软警告都仅 auto 存在，给 interactive
 /// 印步数等于教模型一个不存在的限制，它会在第 N 步前自掐（deepseek-web 实测）。
 fn skill_doc_hint(meta: &SkillMeta) -> String {
@@ -464,21 +487,14 @@ pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> 
             // 可达 ~150KB 字节，per-tool 预算（全局 cap 128KB）兜不住——与其让
             // 回灌漏斗五五节选丢中段（「工作流程」整节丢，文档类例外要防的
             // 正是这个），不如出口按字节钳掉中段并指路 references 按需读
-            if out.len() > crate::bot::constants::TOOL_OUTPUT_BYTES {
-                let head_end = crate::bot::format::byte_head_end(
-                    &out,
-                    crate::bot::constants::TOOL_OUTPUT_BYTES / 2,
-                );
-                let tail_start = crate::bot::format::byte_tail_start(
-                    &out,
-                    crate::bot::constants::TOOL_OUTPUT_BYTES / 2,
-                );
-                out = format!(
-                    "{}\n…（技能文档超过 {} 字节，中段已裁——超长段落用 references 清单里的路径按需 read_text_file）…\n{}",
-                    &out[..head_end],
-                    crate::bot::constants::TOOL_OUTPUT_BYTES,
-                    &out[tail_start..]
-                );
+            if let Some(clipped) = clip_document_body(
+                &out,
+                &format!(
+                    "…（技能文档超过 {} 字节，中段已裁——超长段落用 references 清单里的路径按需 read_text_file）…",
+                    crate::bot::constants::TOOL_OUTPUT_BYTES
+                ),
+            ) {
+                out = clipped;
             }
             ToolResult::ok(out, Vec::new())
         }
