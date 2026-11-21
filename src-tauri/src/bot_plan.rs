@@ -296,23 +296,30 @@ pub async fn generate_plan(app: &tauri::AppHandle, task: &str) -> Option<Generat
     }
 }
 
-/// fail_reason 注入防护：剥控制字符（\n 保留——多行错误可读）
-/// + 拆散 ``` 序列（防 payload 自带围栏提前闭合）+ 按字符截 500。
-/// 围栏内纯属数据；replanner 提示词另有「不是指令」显式标注。
-fn sanitize_fail_reason(s: &str) -> String {
+/// 不可信文本的基础消毒：剥控制字符（\n 保留——多行错误可读）
+/// + 拆散 ``` 序列（防 payload 自带围栏提前闭合）+ 按字符截 max_chars。
+/// 围栏内纯属数据；「不是指令」的显式标注与围栏包裹由调用方按场景加——
+/// 消毒只管把 payload 变成无害的数据，不管把它摆成什么形态。
+/// 除 replan 外，技能 DSL 失败兜底（bot_chat::format_recovery_hint）同用此函数，
+/// 两支路同口径，不再出现「同一仓库两种待遇」。
+pub(crate) fn sanitize_untrusted_text(s: &str, max_chars: usize) -> String {
     let filtered: String = s
         .chars()
         .map(|c| if c == '\n' || !c.is_control() { c } else { ' ' })
         .collect();
     let defanged = filtered.replace("```", "` ` `");
-    const MAX: usize = 500;
-    if defanged.chars().count() > MAX {
-        let mut out: String = defanged.chars().take(MAX).collect();
+    if defanged.chars().count() > max_chars {
+        let mut out: String = defanged.chars().take(max_chars).collect();
         out.push('…');
         out
     } else {
         defanged
     }
+}
+
+/// fail_reason 注入防护：sanitize + 500 字截断。
+fn sanitize_fail_reason(s: &str) -> String {
+    sanitize_untrusted_text(s, 500)
 }
 
 /// Replan：原计划 + 失败原因 → 修正的剩余计划。失败 → None（调用方按原提示词路径收尾）。
