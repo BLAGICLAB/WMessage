@@ -295,4 +295,47 @@ mod tests {
             offenders.join("\n")
         );
     }
+
+    /// 提示词里硬编码的常量绑定数字与 constants.rs 对拍：字符串字面量里的
+    /// 数字是 audit_constants_single_source（按标识符匹配）的盲区——改常量
+    /// 不改提示词，模型被告知的行为与实际闸行为不符。改任一侧时此测试
+    /// 变红，提示同步义务。
+    #[test]
+    fn prompt_numbers_match_constants() {
+        assert_eq!(
+            crate::bot::constants::REPEAT_GATE_MAX_IDENTICAL,
+            3,
+            "死循环闸第 3 次拦截（提示词三处 + repeat_gate）"
+        );
+        assert_eq!(
+            crate::bot::constants::MAX_ROUNDS,
+            200,
+            "任务卡执行最多 200 轮（主提示词 + 安全网）"
+        );
+        assert_eq!(
+            crate::bot::constants::WRAP_UP_ROUNDS,
+            3,
+            "收尾窗剩余 3 轮（子 agent 提示词）"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("连续第 3 次"),
+            "主提示词的重复闸次数与 REPEAT_GATE_MAX_IDENTICAL 绑定"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("最多 200 轮"),
+            "主提示词的执行轮数与 MAX_ROUNDS 绑定"
+        );
+        assert!(
+            EXECUTE_SYSTEM_PROMPT.contains("连续第 3 次"),
+            "任务卡执行提示词同口径"
+        );
+        assert!(
+            SUBAGENT_BASE.contains("剩余 3 轮"),
+            "子 agent 提示词的收尾窗轮数与 WRAP_UP_ROUNDS 绑定"
+        );
+        assert!(
+            SUBAGENT_BASE.contains("连发到第 3 次"),
+            "子 agent 提示词的重复闸次数同口径"
+        );
+    }
 }

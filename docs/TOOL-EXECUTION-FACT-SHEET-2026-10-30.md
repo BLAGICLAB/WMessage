@@ -66,7 +66,7 @@
 
 | 工具 | 跑位 | 数据边界 | 闸 | 强制层 |
 |---|---|---|---|---|
-| `query_tasks` / `query_single_task` | 宿主进程内 | 读本机 DB | 子 agent 白名单（只读档可用） | 无 |
+| `query_tasks` / `query_single_task` | 宿主进程内 | 读本机 DB | 不在任何子 agent profile 白名单（主 agent 专属；子 agent 靠 read_own_card 读自己的任务卡） | 无 |
 | `create_task` / `complete_task` / `edit_task` / `add_subtask` / `toggle_subtask` / `remove_subtask` / `link_file_to_task` | 宿主进程内 | 写本机 DB | **主状态写全部不在子 agent 白名单**（dispatch 1.6 兜底） | 无 |
 | `delete_task` | 宿主进程内 | 移回收站，可恢复 | 删前弹确认，60s 无响应默认拒（`SPEC.md:303`） | 无 |
 
@@ -92,7 +92,7 @@
 
 | 工具 | 跑位 | 数据边界 | 闸 | 强制层 |
 |---|---|---|---|---|
-| `create_word` / `create_word_revisions` / `create_excel` / `create_ppt` / `create_pdf` | 宿主进程内 | 产物落 AI_Gen_Files | 修订模式写副本不覆盖原文件；Excel 全部可算值用公式 | 无 |
+| `create_word` / `create_word_revisions` / `create_excel` / `create_ppt` / `create_pdf` | 宿主进程内 | 产物落 AI_Gen_Files | 修订模式写副本不覆盖原文件；Excel = 开头按文本保存（公式注入防护，schema 承诺与实现同口径） | 无 |
 
 ### G5 联网（2 个现有）
 
@@ -163,7 +163,7 @@
 | 工具 | 跑位 | 数据边界 | 闸 | 强制层 |
 |---|---|---|---|---|
 | `apps_list` | 宿主进程内 | 读程序登记表 | — | 无 |
-| `apps_create` / `apps_update_files` | 宿主进程内（写脚本） | 写程序目录 | 同一 Python 开关（`apps/commands.rs:64`） | 无 |
+| `apps_create` / `apps_update_files` | 宿主进程内（写脚本） | 写程序目录 | 写路径无 Python 开关闸（写 .py 不执行）；开关闸挂执行面 `apps_run`（`apps/commands.rs:64`） | 无 |
 
 ## 四、事实表 B：py 沙箱的能力矩阵
 

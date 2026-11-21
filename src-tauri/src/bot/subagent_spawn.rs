@@ -119,8 +119,9 @@ pub(crate) fn spawn_subagent_locked(
     // 预算，同一份活干两遍。
     //
     // 只在有父会话时去重：跨会话的同目标派发是不同用户意图，不该互相吞掉。
-    // 已终态的不参与去重——「再跑一次」是重试语义。stage / 配置档在键内：
-    // 同目标不同配置是不同意图，静默合并等于模型视角丢了一个意图。
+    // 已终态的不参与去重——「再跑一次」是重试语义。stage / 配置档 /
+    // 上下文摘要在键内：同目标不同这三样是不同意图，静默合并等于模型视角
+    // 丢了一个意图。
     if let Some(parent_sid) = req.parent_session_id.as_deref() {
         let live = crate::db::find_live_subagent_by_request(
             conn,
@@ -131,6 +132,12 @@ pub(crate) fn spawn_subagent_locked(
             req.model_profile.as_deref(),
             req.stage.as_ref().map(|s| s.as_str()),
             req.onion.as_ref().map(|o| o.config.as_str()),
+            // 与写行同口径：trim + 空串归 None。context_summary 在键内——
+            // 目标与验收逐字全同、上下文摘要不同是不同意图
+            req.context_summary
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
         )
         .map_err(CommandError::DbError)?;
         if let Some(existing) = live {

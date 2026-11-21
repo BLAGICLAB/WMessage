@@ -283,7 +283,8 @@ pub fn set_spawn_config(
     .map_err(|e| e.to_string())
 }
 
-/// usage 记账：模型循环累计的 token 用量写进行。终态落库时随状态更新同一事务/// 调用；值来自 LoopTrace 的原子累计，不新增埋点。
+/// usage 记账：模型循环累计的 token 用量写进行。终态落库时随状态更新同一事务
+/// 调用；值来自 LoopTrace 的原子累计，不新增埋点。
 pub fn update_subagent_usage(
     conn: &rusqlite::Connection,
     id: &str,
@@ -375,7 +376,7 @@ const SQL_SELECT_LIVE_BY_REQUEST: &str =
      trace_id, acceptance_json, context_summary, result_json, error, \
      created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE parent_session_id = ?1 \
      AND profile = ?2 AND objective = ?3 AND acceptance_json = ?4 AND model IS ?5 \
-     AND spawn_stage IS ?6 AND spawn_onion IS ?7 \
+     AND spawn_stage IS ?6 AND spawn_onion IS ?7 AND context_summary IS ?8 \
      AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1";
 
 fn row_to_subagent(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubagentRow> {
@@ -522,10 +523,13 @@ pub fn load_subagents_by_parent(
 
 /// 按「同一份派发请求」找还活着的子 agent 行（spawn 幂等去重的查表口）。
 ///
-/// 请求口径 = 父会话 + 档位 + 目标 + 验收标准 + 指定模型 + stage + 配置档：
-/// 全同即视为同一次派发。`acceptance_json` 与 `objective` 都取行里的原样
-/// 字符串（写行时就是这么存的），比较是逐字节的——目标差一个字就不是同一
-/// 次派发；stage / 配置档 NULL 安全比较（IS），未带配置的老行不与新配置派发合并。
+/// 请求口径 = 父会话 + 档位 + 目标 + 验收标准 + 指定模型 + stage + 配置档
+/// + 上下文摘要：全同即视为同一次派发。`acceptance_json` 与 `objective` 都取
+/// 行里的原样字符串（写行时就是这么存的），比较是逐字节的——目标差一个字
+/// 就不是同一次派发；stage / 配置档 / 上下文摘要 NULL 安全比较（IS），未带
+/// 配置的老行不与新配置派发合并。context_summary 进键的理由与 stage/onion
+/// 同源：目标与验收逐字全同、上下文摘要不同 = 模型视角不同的两次意图，
+/// 静默合并等于第二份背景材料被丢弃。
 ///
 /// 只认活着的行（queued / running）：已终态的允许重派。
 pub fn find_live_subagent_by_request(
@@ -537,6 +541,7 @@ pub fn find_live_subagent_by_request(
     model: Option<&str>,
     stage: Option<&str>,
     onion: Option<&str>,
+    context_summary: Option<&str>,
 ) -> Result<Option<SubagentRow>, String> {
     conn.query_row(
         SQL_SELECT_LIVE_BY_REQUEST,
@@ -547,7 +552,8 @@ pub fn find_live_subagent_by_request(
             acceptance_json,
             model,
             stage,
-            onion
+            onion,
+            context_summary
         ],
         row_to_subagent,
     )

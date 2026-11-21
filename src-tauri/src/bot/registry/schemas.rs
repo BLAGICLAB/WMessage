@@ -105,7 +105,7 @@ pub const SCHEMA_CREATE_WORD_REVISIONS: &str = r##"{"type":"function","function"
     "title":{"type":"string","description":"文档标题，可选"},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["revised"]}}}"##;
-pub const SCHEMA_CREATE_EXCEL: &str = r##"{"type":"function","function":{"name":"create_excel","description":"生成 Excel 到 AI_Gen_Files（单元格以 = 开头会写入原生公式如 =SUM(A1:A10)）。生成是否成功以本工具返回为准：返回 Err 就是没生成，不得向用户声称已生成；成功时必须把返回的完整路径告知用户","parameters":{"type":"object","properties":{
+pub const SCHEMA_CREATE_EXCEL: &str = r##"{"type":"function","function":{"name":"create_excel","description":"生成 Excel 到 AI_Gen_Files（单元格以 = 开头按文本原样保存，不执行公式——这是公式注入防护：打开文件不会触发外链或执行；需要「看起来像公式」的说明文字直接写文本即可，模型向用户转述时不得声称文件里有可计算公式）。生成是否成功以本工具返回为准：返回 Err 就是没生成，不得向用户声称已生成；成功时必须把返回的完整路径告知用户","parameters":{"type":"object","properties":{
     "sheets":{"type":"array","items":{"type":"object","properties":{
       "name":{"type":"string"},
       "rows":{"type":"array","items":{"type":"array","items":{"type":"string"}}}}},

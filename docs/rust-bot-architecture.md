@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 344 个文件、约 15.1 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 344 个文件、约 15.2 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -252,7 +252,7 @@ src-tauri/src/
 │   ├── bot/mcp/mod.rs   模块声明
 │   ├── bot/mcp/config.rs        McpServerConfig/校验（stdio 启动器白名单、URL 公网闸、
 │   │                            normalize/timeout 钳制）+ 工具命名 mcp_tool_name/tool_prefix
-│   ├── bot/mcp/manager.rs (1407)  McpManager（OnceLock 单例）：**按需启停**（静默待命 /
+│   ├── bot/mcp/manager.rs (1415)  McpManager（OnceLock 单例）：**按需启停**（静默待命 /
 │   │                            调用期拉起 / 调用完回收；ensure_connected/call_tool/retire）、
 │   │                            指纹懒重连、stderr 环形缓冲、spawn 白名单字面量构造、
 │   │                            子进程资源采样（5s TTL 缓存，口径同 bot/procs：
@@ -379,13 +379,13 @@ src-tauri/src/
 │   └── audit.rs         audit_log
 ├── bot/tools.rs (99)      工具实现门面：23 个 tool_* 逐项转出（crate::bot::tools::X 旧路径 1:1 保持）
 │   ├── bot/tools/task.rs (1110)   任务面：查询族（view/过滤/渲染/query）+ 管理族（增删改/子任务/绑文件）
-│   ├── bot/tools/doc.rs (889)     文档面：提取文档 / Word·Excel·PPT·PDF 生成 / 联网搜索 / 抓页 / 自由 Python
+│   ├── bot/tools/doc.rs (892)     文档面：提取文档 / Word·Excel·PPT·PDF 生成 / 联网搜索 / 抓页 / 自由 Python
 │   ├── bot/tools/service.rs (270) 受管服务面：start/stop/list 长驻进程 + 集成测试钩子
 │   ├── bot/tools/common.rs (153)  公共杂项面：时间工具 / files 参数解析与安全校验 / 审计补充 kv / 改库广播
 │   ├── bot/tools/trace.rs (247)    凭证召回面：按 tool_call_id/span_id/trace_id 调回历史工具结果（只读、零新表）
 │   ├── bot/tools/http.rs (669)     专用 HTTP 工具面：http_request（方法/请求体/自定义头/下载落产物目录；
 │   │                                目的地闸每跳都判、凭据引用真值不过模型、args_preview 裁 method+host）
-│   ├── bot/tools/plan.rs (155)      计划面：update_plan 整表替换写会话内计划状态 + 广播 bot-plan 事件
+│   ├── bot/tools/plan.rs (163)      计划面：update_plan 整表替换写会话内计划状态 + 广播 bot-plan 事件
 │   ├── bot/tools/task_files_arg_tests.rs (180)     files 参数解析与安全校验单测
 │   ├── bot/tools/query_tasks_tests.rs (153)        查询族纯函数单测
 │   ├── bot/tools/n3_toolpolish_tests.rs (79)       N3 工具升级纯函数单测
@@ -424,7 +424,7 @@ src-tauri/src/
 ├── bot_scheduler/sched_guard_tests.rs   SchedGuard 防重入单测
 ├── bot_scheduler/plan_window_tests.rs   计划窗口单测
 ├── bot_scheduler/preview_gate_tests.rs  预演档闸单测（闸只拦到点触发，手动「立即执行」不拦）
-├── bot_reminders.rs (616) 机器人提醒 schedule_reminder/list_reminders/cancel_reminder：
+├── bot_reminders.rs (623) 机器人提醒 schedule_reminder/list_reminders/cancel_reminder：
 │                        到点发系统通知（只说话，不建卡不执行内容）；when 支持绝对时间 /
 │                        今天 HH:MM / 相对 +30m；repeat none/daily/weekly/monthly；
 │                        定时串与触发点计算复用 bot_scheduler（occurrence_after），
@@ -440,13 +440,13 @@ src-tauri/src/
 ├── bot/subagent_repair.rs (1011) 收尾 JSON 的本地修复与结果判定：结构化输出三段修复的第二段（尾逗号 / 截断闭合，
 │                        零 token 零延迟）+ parse_final_json + classify_outcome + 熔断出口恢复链
 │                        recover_fused_exit（剥标记 → 盘上 verdict → 强制交卷轮 → 原会话续跑一次）
-├── bot/subagent_runner.rs (1312) + bot/subagent_runner/reporting.rs (319) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
+├── bot/subagent_runner.rs (1320) + bot/subagent_runner/reporting.rs (319) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
 │                        + panic 隔离 + 任务包装渲染
-├── bot/subagent_spawn.rs (446) 子 agent 派发：入参校验 / 建行 / 并发闸 SubagentGate（per-session 2 /
+├── bot/subagent_spawn.rs (453) 子 agent 派发：入参校验 / 建行 / 并发闸 SubagentGate（per-session 2 /
 │                        global 3，闸满排队）
 ├── bot/subagent_tools.rs (619) 子 agent 的五个 LLM 工具：tool_spawn_subagent / tool_check_subagent /
 │                        tool_cancel_subagent / tool_write_artifact_file / tool_read_own_card
-├── bot_orchestrator.rs (754) 子 Agent 编排器门面（方案 B，SUBA 设计 2026-09-27）：类型与生命周期
+├── bot_orchestrator.rs (755) 子 Agent 编排器门面（方案 B，SUBA 设计 2026-09-27）：类型与生命周期
 │                        核心 + 子模块 re-export；受管子 agent 的
 │                        spawn/check/cancel 生命周期状态机 + 无任务卡（子 agent 不再建卡，行上
 │                        只存 parent_session_id 指向派发会话，遗留可空 task_id 不再写入）+ acceptance
@@ -464,7 +464,7 @@ src-tauri/src/
 │       │                          wait 策略 / 摘要注入位置
 │       ├── orchestrator_tests/outcome.rs (640) 收尾契约与摘要：机器判据 / digest 幂等 / 汇报轮顺序 /
 │       │                          包装渲染
-│       └── orchestrator_tests/spawn.rs (1236) 派发与并发闸：建行 / 幂等 / 队列位次
+│       └── orchestrator_tests/spawn.rs (1256) 派发与并发闸：建行 / 幂等 / 队列位次
 ├── bot_artifacts.rs     产物登记：link_file_to_task → 收尾按 TaskExecOrigin 分流 →
 │                        落「通知中心」artifact_bind 消息（原 artifact-batch-ready 挂件弹窗已下线）→
 │                        通知页勾选 → confirm_artifact_batch 落库 + notif_resolve_artifact 回写

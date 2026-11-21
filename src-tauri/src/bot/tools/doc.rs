@@ -73,9 +73,12 @@ async fn extract_path_check(
         }
     }
     // 2) 任务卡绑定文件（多文件绑定：files 列表 + 旧字段兜底走 effective_files）
+    // 回收站任务不进白名单（防「删卡不解权」残留授权）——与 bot_fs
+    // allowed_dirs/writable_dirs 的 deleted_at 过滤同口径
     if let Ok(tasks) = crate::db::db_load(app.clone()).await {
         let bound: Vec<String> = tasks
             .iter()
+            .filter(|t| t.deleted_at.is_none())
             .flat_map(|t| t.effective_files())
             .map(|f| f.path)
             .collect();

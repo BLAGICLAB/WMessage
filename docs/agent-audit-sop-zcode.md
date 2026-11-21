@@ -113,6 +113,7 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 | `FINAL_SELFCHECK_ROUND_GAP_DEFAULT` | `8` | 终稿自检的轮次间隔（轮） |
 | `FINAL_SELFCHECK_ROUND_GAP_CAP` | `100` | 终稿自检轮次间隔上限 |
 | `VERIFIER_RETRY_MAX_CAP` | `2` | Verifier 审计失败后的修复重试预算上限（默认 1） |
+| `VERIFIER_RETRY_MAX_DEFAULT` | `1` | verifier 修复重试预算默认值（bot-config 未配置时；消费点 bot/params.rs 别名） |
 | `SEARCH_MAX_RESULTS_CAP` | `10` | 联网搜索单次返回条数上限（硬顶） |
 | `SEARCH_MAX_RESULTS_MIN` | `1` | 联网搜索单次返回条数下限 |
 | `SEARCH_MAX_RESULTS_DEFAULT` | `6` | 联网搜索未声明条数时的默认值 |

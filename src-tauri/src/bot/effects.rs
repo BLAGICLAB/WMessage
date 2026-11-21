@@ -45,6 +45,12 @@ struct KindConfig {
     max_attempts: i64,
 }
 
+/// 派发待办清理方（启动清扫的 queued 豁免判定）用的重试上限：与
+/// config_of 同源——give-up 的行不该再被当成「有待办」豁免收尾。
+pub(crate) fn max_attempts_for(kind: &str) -> i64 {
+    config_of(kind).map(|c| c.max_attempts).unwrap_or(i64::MAX)
+}
+
 fn config_of(kind: &str) -> Option<KindConfig> {
     match kind {
         KIND_NOTIFY => Some(KindConfig {

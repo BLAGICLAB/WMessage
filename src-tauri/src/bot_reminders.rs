@@ -288,20 +288,25 @@ pub async fn tool_cancel_reminder(app: &AppHandle, args: &str) -> ToolResult {
     }
     let app2 = app.clone();
     let id_for_db = id.clone();
-    let res = tauri::async_runtime::spawn_blocking(
-        move || -> Result<(bool, Option<Reminder>), String> {
-            let _g = crate::db::lock_db_write();
-            let conn = crate::db::open_db(&app2)?;
-            let row = crate::db::reminders::load_reminder(&conn, &id_for_db)?;
-            let deleted = crate::db::reminders::delete_reminder(&conn, &id_for_db)?;
-            Ok((deleted, row))
-        },
-    )
+    let res = tauri::async_runtime::spawn_blocking(move || -> Result<Option<Reminder>, String> {
+        let _g = crate::db::lock_db_write();
+        let conn = crate::db::open_db(&app2)?;
+        let row = crate::db::reminders::load_reminder(&conn, &id_for_db)?;
+        // load None = 行不存在：统一按「没找到」回。旧的 (true, None)
+        // 分支删行却不广播不留审计，是假成功死分支。
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let deleted = crate::db::reminders::delete_reminder(&conn, &id_for_db)?;
+        if !deleted {
+            return Ok(None);
+        }
+        Ok(Some(row))
+    })
     .await
     .unwrap_or_else(|e| Err(format!("提醒取消线程失败：{e}")));
     match res {
-        Ok((true, None)) => ToolResult::ok(format!("已取消提醒（id: {id}）"), Vec::new()),
-        Ok((true, Some(row))) => {
+        Ok(Some(row)) => {
             crate::bot::audit_log(
                 app,
                 &format!(
@@ -316,7 +321,7 @@ pub async fn tool_cancel_reminder(app: &AppHandle, args: &str) -> ToolResult {
                 Vec::new(),
             )
         }
-        Ok((false, _)) => ToolResult::denied(format!(
+        Ok(None) => ToolResult::denied(format!(
             "没有找到 id 为 {id} 的提醒（用 list_reminders 查现有提醒）"
         )),
         Err(e) => ToolResult::error(format!("取消提醒失败：{e}"), Vec::new()),

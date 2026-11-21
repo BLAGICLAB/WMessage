@@ -123,10 +123,18 @@ pub(crate) fn fetch_due(
 }
 
 /// 指定 kind+key 是否有待派发行（僵尸清扫豁免判断等场景用）
-pub(crate) fn pending(conn: &rusqlite::Connection, kind: &str, key: &str) -> Result<bool, String> {
+pub(crate) fn pending(
+    conn: &rusqlite::Connection,
+    kind: &str,
+    key: &str,
+    max_attempts: i64,
+) -> Result<bool, String> {
+    // 只认还有重试余量的行：give-up（attempts 耗尽只写审计、行留库）的
+    // 待办不该把对应业务行永久豁免收尾——否则 queued 行永不终态、
+    // spawn 幂等键被永久占住（同目标重派永远拿 deduped 回执）
     conn.query_row(
-        "SELECT 1 FROM effect_queue WHERE kind = ?1 AND key = ?2 LIMIT 1",
-        [kind, key],
+        "SELECT 1 FROM effect_queue WHERE kind = ?1 AND key = ?2 AND attempts < ?3 LIMIT 1",
+        rusqlite::params![kind, key, max_attempts],
         |_| Ok(()),
     )
     .optional()
@@ -346,14 +354,17 @@ mod tests {
     fn pending_reports_presence_for_exempt_check() {
         let conn = mem_conn();
         let _g = crate::db::lock_db_write();
-        assert!(!pending(&conn, "notify", "k").unwrap());
+        assert!(!pending(&conn, "notify", "k", 5).unwrap());
         enqueue(&conn, "notify", "k", "{}", 50).unwrap();
-        assert!(pending(&conn, "notify", "k").unwrap(), "待派发行应命中");
+        assert!(pending(&conn, "notify", "k", 5).unwrap(), "待派发行应命中");
         assert!(
-            !pending(&conn, "notify", "other").unwrap(),
+            !pending(&conn, "notify", "other", 5).unwrap(),
             "不同 key 不命中"
         );
-        assert!(!pending(&conn, "other", "k").unwrap(), "不同 kind 不命中");
+        assert!(
+            !pending(&conn, "other", "k", 5).unwrap(),
+            "不同 kind 不命中"
+        );
     }
 
     #[test]

@@ -229,6 +229,8 @@ pub const FINAL_SELFCHECK_ROUND_GAP_CAP: u32 = 100;
 ///
 /// 超过这个次数还失败的任务属硬阻塞，如实汇报比继续烧 token 更省。
 pub const VERIFIER_RETRY_MAX_CAP: u32 = 2;
+/// verifier 拒绝后的修复重试预算默认（bot-config 未配置 `verifier_retry_max` 时）。
+pub const VERIFIER_RETRY_MAX_DEFAULT: u32 = 1;
 
 /// 联网搜索单次返回条数上限（硬顶）。
 pub const SEARCH_MAX_RESULTS_CAP: u32 = 10;

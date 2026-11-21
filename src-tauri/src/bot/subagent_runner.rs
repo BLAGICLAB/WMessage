@@ -100,8 +100,26 @@ pub(crate) async fn run_subagent(
         Ok(r) => r,
         Err(e) => {
             // 加载失败也要落终态，防 ghost queued 行永挂；parent 会话未知（行
-            // 没读到），发不带归属的收尾事件——前端只重拉不弹提示
-            abort_and_finish(&app, &subagent_id, None, &e.message(), &e.message()).await;
+            // 没读到），发不带归属的收尾事件——前端只重拉不弹提示。
+            // 此刻行必为 queued（runner 是该行的首轮执行，gate 尚未翻 Running），
+            // finalize 状态机会把 queued 的 Failed 改投 Cancelled——事件也发
+            // Cancelled，前端弹窗与重拉后的库行才一致
+            let _ = enqueue_terminal_write(
+                &app,
+                &subagent_id,
+                SubagentStatus::Failed,
+                now_ms(),
+                &e.message(),
+            )
+            .await;
+            crate::bot::audit_log(
+                &app,
+                &format!(
+                    "subagent_runner_abort | id: {subagent_id} | err: {}",
+                    e.message()
+                ),
+            );
+            emit_subagent_finished(&app, &subagent_id, None, SubagentStatus::Cancelled, "");
             return;
         }
     };

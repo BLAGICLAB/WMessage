@@ -38,7 +38,8 @@ pub(crate) fn clamp_search_max_results(n: u32) -> u32 {
 
 /// verifier 拒绝后的修复重试预算：未配置时的默认次数与上限。
 /// `verifier_retry_max` 是保留的 bot-config.json 手改键（无 UI）。
-pub const DEFAULT_VERIFIER_RETRY_MAX: u32 = 1;
+/// 默认值与上限都在 constants.rs 单一真相源（DEFAULT_MAX_TOKENS 同款别名模式）。
+pub const DEFAULT_VERIFIER_RETRY_MAX: u32 = crate::bot::constants::VERIFIER_RETRY_MAX_DEFAULT;
 
 pub(crate) fn clamp_verifier_retry_max(n: u32) -> u32 {
     n.clamp(0, crate::bot::constants::VERIFIER_RETRY_MAX_CAP)

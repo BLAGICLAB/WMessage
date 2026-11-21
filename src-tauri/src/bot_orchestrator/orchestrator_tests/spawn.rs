@@ -185,6 +185,26 @@ fn spawn_with_a_different_onion_is_not_deduped() {
     assert_eq!(o1.as_deref(), Some("probe"));
     assert_eq!(o2.as_deref(), Some("writereditor"));
 }
+/// 上下文摘要在幂等键内：目标与验收逐字全同、上下文摘要不同是不同意图
+/// ——静默合并等于第二份背景材料被丢弃，回执还报 deduped。
+#[test]
+fn spawn_with_a_different_context_summary_is_not_deduped() {
+    let mut conn = test_conn();
+    let _g = crate::db::lock_db_write();
+    let mut first_req = req(None);
+    first_req.context_summary = Some("背景 A：报告按季度口径".into());
+    let first = spawn_subagent_locked(&mut conn, &first_req, 5_000).unwrap();
+    assert!(!first.deduped);
+    let mut other = req(None);
+    other.context_summary = Some("背景 B：报告按年度口径".into());
+    let second = spawn_subagent_locked(&mut conn, &other, 6_000).unwrap();
+    assert!(
+        !second.deduped,
+        "同目标不同上下文摘要是不同意图，不得静默合并"
+    );
+    assert_ne!(second.subagent_id, first.subagent_id);
+}
+
 /// 没有父会话（拿不到会话 id 的调用路径）时不去重：宁可多建一行，
 /// 也不要把别人的活吞掉。
 #[test]

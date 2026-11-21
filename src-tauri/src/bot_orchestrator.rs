@@ -641,6 +641,9 @@ pub fn sweep_zombie_subagents(app: &AppHandle) {
                         &conn,
                         crate::bot::effects::KIND_SUBAGENT_DISPATCH,
                         &crate::bot::effects::subagent_dispatch_key(&id),
+                        crate::bot::effects::max_attempts_for(
+                            crate::bot::effects::KIND_SUBAGENT_DISPATCH,
+                        ),
                     )
                     .unwrap_or(true);
                     if has_pending {

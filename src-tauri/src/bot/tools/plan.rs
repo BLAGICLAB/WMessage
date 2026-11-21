@@ -31,8 +31,17 @@ pub(crate) async fn tool_update_plan<R: tauri::Runtime>(
         updated_at: crate::db::now_ms(),
     };
     crate::bot::plan_state::set_plan(session_id, snapshot);
-    let view = crate::bot::plan_state::plan_view(session_id)
-        .expect("刚写入的计划必然能读回：set_plan 之后同一会话表内取");
+    // set_plan 返回后立即重读；None 只可能是容量淘汰竞态（64 会话满载
+    // 同毫秒平局淘汰刚插入条目）——兜底按「计划已写入但快照读不回」如实
+    // 渲染，不 panic
+    let view = crate::bot::plan_state::plan_view(session_id).unwrap_or_else(|| {
+        crate::bot::plan_state::PlanView {
+            steps: Vec::new(),
+            explanation: None,
+            updated_at: crate::db::now_ms(),
+            turn_started_at: None,
+        }
+    });
     // 走统一出口：分配序号 + 写会话缓冲 + 广播，sessionId 由前端按会话过滤。
     crate::bot::stream_log::emit_recorded(
         app,
