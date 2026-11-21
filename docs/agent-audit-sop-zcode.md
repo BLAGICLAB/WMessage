@@ -75,7 +75,7 @@ python3 tests-audit/audit_no_eval.py           # 独立守卫脚本（pytest 用
 | `CONTEXT_CHARS_HARD_CAP` | `200_000` | 单次请求 msgs 总字符硬顶（压缩阶梯的基数） |
 | `TOOL_WINDOW_TRIGGER_CHARS` | `24_000` | 轮内工具结果滑动窗触发阈值（累计超它开始裁） |
 | `TOOL_WINDOW_KEEP_RECENT` | `6` | 滑动窗保留的最近工具结果条数 |
-| `EVIDENCE_OUTPUT_CHARS` | `64 * 1024` | 证据（Receipt）单条输出上限（字符） |
+| `EVIDENCE_OUTPUT_CHARS` | `96 * 1024` | 证据（Receipt）单条输出上限（字符） |
 | `LLM_HEADER_TIMEOUT_SECS` | `60` | LLM 首包超时（秒） |
 | `LLM_MAX_ATTEMPTS` | `3` | LLM 请求总尝试数（首次 + 重试），429/5xx/网络错误重试至此 |
 | `MAX_STREAM_RETRIES` | `1` | 流读取失败后的本轮重发上限；只在没吐过答复内容（正文/工具行）时用 |

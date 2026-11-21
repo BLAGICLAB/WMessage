@@ -21,8 +21,10 @@ const TOOL_OUTPUT_TAIL_KEEP_BYTES: usize = 6_000;
 /// 整节落在丢失的中段，模型不知道流程怎么走，只好自己去 grep 找标题，
 /// 工具用错 → 技能判死 → 整个回合结束。
 ///
-/// 技能正文自身有上限（`bot_skills::state::MAX_SKILL_BODY` = 50KB），
-/// 所以放行不构成无界风险：per-tool 预算给到 65536 已经装得下任何一篇技能正文。
+/// 技能正文自身有上限（`bot_skills::state::MAX_SKILL_BODY` = 51200 **字符**，
+/// 中文可达 ~150KB 字节），per-tool 预算给到全局 cap（128KB 字节）：ASCII/
+/// 轻中文正文一次装下；重中文超长正文由 use_skill 出口按字节自钳并附续读
+/// 披露，不进五五节选（中段丢失正是文档类例外要防的）。
 const DOCUMENT_OUTPUT_TOOLS: [&str; 1] = ["use_skill"];
 
 /// 本次工具结果回灌的实际天花板（字节）：per-tool 预算与全局配置 cap 取小。
@@ -146,6 +148,10 @@ pub(crate) fn preview_with_pointer(text: &str, notice: &str, cap_bytes: usize) -
     )
 }
 
+/// 兜底截断说明行的字节长度上界（最坏数字位数估算）：
+/// 预扣进 cap，兜底输出才真正不超 cap（preview_with_pointer 同纪律）。
+pub(crate) const CAP_TOOL_NOTE_LEN_UPPER: usize = 96;
+
 /// 截断到 cap 字节：头 (cap-tail) + 截断说明 + 尾 tail。不超 cap 原样返回。
 /// 纯函数便于单测；调用方（薄壳 execute_tool）负责审计留痕。
 pub(crate) fn cap_tool_output(text: &str, cap_bytes: usize) -> String {
@@ -153,11 +159,12 @@ pub(crate) fn cap_tool_output(text: &str, cap_bytes: usize) -> String {
     if total <= cap_bytes {
         return text.to_string();
     }
-    // 小 cap 时尾部保留退化为 cap 的 1/5，保证头部至少 4/5
-    let tail_keep = TOOL_OUTPUT_TAIL_KEEP_BYTES
-        .min(cap_bytes / 5)
-        .min(total / 2);
-    let head_keep = cap_bytes - tail_keep;
+    // 说明行自身长度从 cap 预扣（preview_with_pointer 同纪律）：不扣则兜底
+    // 输出恒超 cap 一个说明行。长度上界按最坏数字位数估算。
+    let budget = cap_bytes.saturating_sub(CAP_TOOL_NOTE_LEN_UPPER);
+    // 小 budget 时尾部保留退化为 budget 的 1/5，保证头部至少 4/5
+    let tail_keep = TOOL_OUTPUT_TAIL_KEEP_BYTES.min(budget / 5).min(total / 2);
+    let head_keep = budget - tail_keep;
     let head_end = crate::bot::format::byte_head_end(text, head_keep);
     let tail_start = crate::bot::format::byte_tail_start(text, tail_keep).max(head_end);
     let head_bytes = head_end;

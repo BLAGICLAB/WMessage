@@ -424,9 +424,16 @@ mod hallucination_guard_tests {
         );
         let out = cap_tool_output(&text, 30_000);
         assert!(out.contains("已按回灌上限 30000 字节截断，原文 50000 字节"));
-        // 头部保留 cap - 6K = 24K（原文头 20K 全 H + 中段 4K M）；尾部保留 6K
-        assert!(out.starts_with(&format!("{}{}", "H".repeat(20_000), "M".repeat(4_000))));
-        assert!(out.ends_with(&"T".repeat(6_000)));
+        // 说明行从 cap 预扣：budget = 30000 - 96 = 29904；尾部 min(6000, 5980) = 5980
+        let budget = 30_000 - super::super::output::CAP_TOOL_NOTE_LEN_UPPER;
+        let tail_keep = 6_000.min(budget / 5);
+        let head_keep = budget - tail_keep;
+        assert!(out.starts_with(&format!(
+            "{}{}",
+            "H".repeat(20_000),
+            "M".repeat(head_keep - 20_000)
+        )));
+        assert!(out.ends_with(&"T".repeat(tail_keep)));
         // 中段被替身说明取代（头部只含 4K 个 M，连续 5K M 必来自被替身的中段）
         assert!(!out.contains(&"M".repeat(5_000)));
     }
@@ -436,23 +443,26 @@ mod hallucination_guard_tests {
         // cap < 5×6K：尾部保留退化为 cap/5，头部仍占大头
         let text = "A".repeat(1_000);
         let out = cap_tool_output(&text, 100);
-        assert!(
-            out.starts_with(&"A".repeat(80)),
-            "头应保留 80：{}",
-            &out[..90]
-        );
-        assert!(out.ends_with(&"A".repeat(20)));
+        // 说明行从 cap 预扣后 budget = 4：头部 4 字节、尾部 0——cap 小到
+        // 装不下说明行时内容几乎不剩，这是「cap 是 cap」的诚实形态
+        let budget = 100 - super::super::output::CAP_TOOL_NOTE_LEN_UPPER;
+        let tail_keep = 6_000.min(budget / 5);
+        let head_keep = budget - tail_keep;
+        assert_eq!(head_keep, 4, "预扣后头部预算");
+        assert_eq!(tail_keep, 0, "budget/5 退化到 0");
+        assert!(out.starts_with(&"A".repeat(4)), "头应保留 4：{out}");
         assert!(out.contains("已按回灌上限 100 字节截断"));
     }
 
     #[test]
     fn cap_tool_output_counts_bytes_not_chars() {
-        // 中文 3 字节/字：50 个汉字 = 150 字节，cap 30 字节只够 8 个字
+        // 中文 3 字节/字：50 个汉字 = 150 字节，cap 120 扣除说明行后 budget 24：
+        // 头部 20 字节回退边界 = 6 个汉字、尾部 4 字节前进边界 = 1 个汉字
         let text = "中".repeat(50);
-        let out = cap_tool_output(&text, 30);
+        let out = cap_tool_output(&text, 120);
         assert!(out.contains("原文 150 字节"));
-        assert!(out.starts_with(&"中".repeat(8)), "头部应保留 8 个汉字");
-        assert!(out.ends_with(&"中".repeat(2)), "尾部应保留 2 个汉字");
+        assert!(out.starts_with(&"中".repeat(6)), "头部应保留 6 个汉字");
+        assert!(out.ends_with("中"), "尾部应保留 1 个汉字");
     }
 
     #[test]
@@ -493,9 +503,11 @@ mod hallucination_guard_tests {
     /// 工具用错 → 技能判死 → 整个回合结束。
     #[test]
     fn effective_cap_keeps_document_output_whole() {
-        assert_eq!(effective_output_cap("use_skill", 30_000), 65_536);
+        // per-tool 预算提到全局 cap 常量（字节口径下中文正文可达 ~150KB）
+        let per_tool = crate::bot::constants::TOOL_OUTPUT_BYTES;
+        assert_eq!(effective_output_cap("use_skill", 30_000), per_tool);
         // 即便全局 cap 调得很小，文档类仍按自己的预算走
-        assert_eq!(effective_output_cap("use_skill", 1_000), 65_536);
+        assert_eq!(effective_output_cap("use_skill", 1_000), per_tool);
     }
 
     /// 恰好等于 cap 的输出不得转存：边界是严格大于。等号判成超限会把

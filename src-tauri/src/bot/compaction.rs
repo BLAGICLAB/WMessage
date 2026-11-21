@@ -168,9 +168,13 @@ pub(crate) fn compact_one(
     // 被挪动时的静默回绕——回绕出来的天文数字会写进正文当成"压缩了多少"。
     let middle = total.saturating_sub(head_keep + tail_keep);
     // 先定路径、后写盘：替身不比原文短就整条跳过（sidecar 也不落）——
-    // 指针里的绝对路径可能比省下的字符还长，压了白压还孤儿一个文件
+    // 指针里的绝对路径可能比省下的字符还长，压了白压还孤儿一个文件。
+    // 带标记但提取不到指针时区分两种形态：占位里明写「原文未保留」= 盘上
+    // 真的没有原文，再落盘只是把替身存成新 sidecar、指针承诺落空——跳过；
+    // 工具输出恰好自带 ⟦c:⟧ 前缀的真实原文则照常落盘（盘上从此有原文）。
+    let prior_placeholder = text.contains("原文未保留");
     let sidecar_path: Option<PathBuf> = match (sidecar_dir, &pointer) {
-        (Some(dir), None) => Some(sidecar_file_path(dir, session_id)),
+        (Some(dir), None) if !prior_placeholder => Some(sidecar_file_path(dir, session_id)),
         _ => None,
     };
     let placeholder = match (&sidecar_path, &pointer) {

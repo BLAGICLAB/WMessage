@@ -644,7 +644,10 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_LOOKUP_RECEIPT,
         mutating: false,
         claims_patterns: &[],
-        max_output_bytes: 8192,
+        // 召回出口按全局 cap：痕迹表单条存 16KB 字节，明细视图 = 元信息 +
+        // 入参（≤16KB）+ 完整返回（≤16KB 字节≈最多 16K 字符）——8KB 预算下
+        // 中文召回几乎必转存节选，「调取原文」承诺落空
+        max_output_bytes: crate::bot::constants::TOOL_OUTPUT_BYTES,
         call: call_lookup_receipt,
     },
     ToolDef {
@@ -690,8 +693,9 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         claims_patterns: &[],
         // 文档类输出：技能正文是模型要照着执行的流程说明，截掉中段等于删任务
         // （实测 57KB 正文按 8KB 头尾节选后，「工作流程（七步法）」整节丢失）。
-        // 上限给到 65536，装得下任何一篇技能正文（正文自身另有 50KB 上限）。
-        max_output_bytes: 65536,
+        // MAX_SKILL_BODY 是字符口径（51200 字符，中文可达 ~150KB 字节），per-tool
+        // 只提到全局 cap——超出的部分由 use_skill 出口按字节自钳并附续读披露。
+        max_output_bytes: crate::bot::constants::TOOL_OUTPUT_BYTES,
         call: call_use_skill,
     },
     ToolDef {

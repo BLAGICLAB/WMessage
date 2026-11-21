@@ -79,7 +79,7 @@ pub const TOOL_WINDOW_KEEP_RECENT: usize = 6;
 ///
 /// 凭证单条撑爆上下文比截断一条工具结果更难排查——它出现在「结论」位置，
 /// 丢了就等于结论缺了一块。
-pub const EVIDENCE_OUTPUT_CHARS: usize = 64 * 1024;
+pub const EVIDENCE_OUTPUT_CHARS: usize = 96 * 1024;
 
 /// LLM 首包超时（秒）。
 ///

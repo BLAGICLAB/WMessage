@@ -19,8 +19,10 @@ use crate::db::trace::SpanRow;
 const LIST_LIMIT: usize = 30;
 /// 清单里每条的结果节选字数
 const SNIPPET_CHARS: usize = 120;
-/// 单次调用的完整返回最多回灌多少字（痕迹表本身按 16KB 存，这里再收一道）
-const DETAIL_CHARS: usize = 8000;
+/// 单次调用的完整返回最多回灌多少字。痕迹表按 16KB **字节**存，字符数恒
+/// 不超过字节数——取同值即任何存档内容都能全量回显（回灌预算同批提到
+/// 全局 cap）。仍留作兜底：明细视图永不超存档上限。
+const DETAIL_CHARS: usize = crate::db::trace::SPAN_TEXT_MAX;
 
 /// 凭证召回：按 tool_call_id / span_id / trace_id 调回历史工具调用的完整结果。
 ///

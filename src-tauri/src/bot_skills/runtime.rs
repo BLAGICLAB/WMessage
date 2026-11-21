@@ -460,6 +460,26 @@ pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> 
                     }
                 }
             }
+            // 字节口径自钳：MAX_SKILL_BODY 是字符口径（51200 字符），中文正文
+            // 可达 ~150KB 字节，per-tool 预算（全局 cap 128KB）兜不住——与其让
+            // 回灌漏斗五五节选丢中段（「工作流程」整节丢，文档类例外要防的
+            // 正是这个），不如出口按字节钳掉中段并指路 references 按需读
+            if out.len() > crate::bot::constants::TOOL_OUTPUT_BYTES {
+                let head_end = crate::bot::format::byte_head_end(
+                    &out,
+                    crate::bot::constants::TOOL_OUTPUT_BYTES / 2,
+                );
+                let tail_start = crate::bot::format::byte_tail_start(
+                    &out,
+                    crate::bot::constants::TOOL_OUTPUT_BYTES / 2,
+                );
+                out = format!(
+                    "{}\n…（技能文档超过 {} 字节，中段已裁——超长段落用 references 清单里的路径按需 read_text_file）…\n{}",
+                    &out[..head_end],
+                    crate::bot::constants::TOOL_OUTPUT_BYTES,
+                    &out[tail_start..]
+                );
+            }
             ToolResult::ok(out, Vec::new())
         }
         Err(e) => ToolResult::denied(e),
