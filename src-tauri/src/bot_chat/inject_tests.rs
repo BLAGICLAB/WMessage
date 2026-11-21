@@ -15,11 +15,13 @@ fn text(s: &str) -> Value {
     serde_json::json!(s)
 }
 
-/// 摘要 + 记忆块拼一段注入；两块都空 → None（不注入）
+/// 摘要 + 记忆块拼一段注入；两块都空 → None（不注入）。
+/// 头锚是出处池剥离注入段的依据（模型自产内容不得给自己作证）。
 #[test]
 fn build_injection_joins_summary_then_memory() {
     let j = build_injection(Some("[早前对话摘要] S"), Some("## 记忆\n- 甲")).unwrap();
-    assert_eq!(j, "[早前对话摘要] S\n\n## 记忆\n- 甲");
+    assert_eq!(j, "【系统背景】\n[早前对话摘要] S\n\n## 记忆\n- 甲");
+    assert!(j.starts_with(super::inject::MERGED_INJECTION_HEAD));
 }
 
 /// 空块不算内容：全空 → None（不注入），不产出空字符串
@@ -30,11 +32,15 @@ fn build_injection_none_when_all_empty() {
 }
 
 /// 注入块并进纯文本消息：拼在**前面**，用户原话留在最后
-/// （recency 权重最高的那个位置留给真正的指令）
+/// （recency 权重最高的那个位置留给真正的指令）。
+/// 边界锚是出处池「只留用户原话」的切分依据。
 #[test]
 fn merge_injection_puts_injection_before_user_text() {
     let out = merge_injection(&text("帮我建个卡"), "## 记忆\n- 甲");
-    assert_eq!(out, serde_json::json!("## 记忆\n- 甲\n\n帮我建个卡"));
+    assert_eq!(
+        out,
+        serde_json::json!("## 记忆\n- 甲\n\n【用户发言】\n\n帮我建个卡")
+    );
 }
 
 /// 多模态消息：注入块作为独立 text 块插到数组最前，图片块结构原样不动
@@ -65,7 +71,7 @@ fn injection_only_lands_in_last_message() {
     let out = build_history_msgs(&history, &contents, Some("## 记忆"));
     assert_eq!(out[0]["content"], "第一轮");
     assert_eq!(out[1]["content"], "回答");
-    assert_eq!(out[2]["content"], "## 记忆\n\n本轮");
+    assert_eq!(out[2]["content"], "## 记忆\n\n【用户发言】\n\n本轮");
 }
 
 /// role 白名单照旧：非法 role 一律降级为 user

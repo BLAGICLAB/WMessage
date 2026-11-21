@@ -799,6 +799,8 @@ pub(crate) use flow::TurnOrigin;
 // 结果、自持守卫后的主链入口
 use flow::{bot_chat_guarded, busy_chat_result, require_bot_enabled};
 use inject::{build_history_msgs, build_injection};
+// 出处池（bot_model_loop::evidence）按这两根锚剥离并进用户消息的注入段
+pub(crate) use inject::{MERGED_INJECTION_BOUNDARY, MERGED_INJECTION_HEAD};
 #[cfg(test)]
 use input::normalize_user_input_core;
 pub use input::{format_recovery_hint, merge_task_refs_dedup};

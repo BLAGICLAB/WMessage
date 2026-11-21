@@ -25,6 +25,15 @@ use super::ChatMsg;
 /// 注入块与本轮用户原话之间的分隔符
 const INJECTION_SEP: &str = "\n\n";
 
+/// 并进用户消息的背景块（摘要/记忆）统一头锚。出处池
+/// （`bot_model_loop::evidence::context_sources`）据此剥离注入段：
+/// 摘要含历史 assistant 终稿、记忆块含模型自写事实——都是模型自产内容，
+/// 计入出处等于让模型拿自己说过的话给自己作证。
+pub(crate) const MERGED_INJECTION_HEAD: &str = "【系统背景】";
+/// 头锚块结束、用户原话开始的边界锚（纯文本消息形态用；多模态形态注入块
+/// 独立成块，出处池按块头锚跳过）。
+pub(crate) const MERGED_INJECTION_BOUNDARY: &str = "\n\n【用户发言】\n\n";
+
 /// 摘要与记忆块拼成一段注入文本（None = 没有可注入的内容）。
 ///
 /// 两块都是「本轮视野的前置材料」：摘要服务「本轮对早前的记忆」，记忆块按
@@ -39,7 +48,10 @@ pub(super) fn build_injection(summary: Option<&str>, memory: Option<&str>) -> Op
     if parts.is_empty() {
         return None;
     }
-    Some(parts.join(INJECTION_SEP))
+    Some(format!(
+        "{MERGED_INJECTION_HEAD}\n{}",
+        parts.join(INJECTION_SEP)
+    ))
 }
 
 /// 把注入块并进一条消息的 content（纯函数）。
@@ -51,7 +63,7 @@ pub(super) fn build_injection(summary: Option<&str>, memory: Option<&str>) -> Op
 /// - 其它形状（理论上不会发生）：原样返回，不猜。
 pub(super) fn merge_injection(content: &Value, injection: &str) -> Value {
     match content {
-        Value::String(s) => Value::String(format!("{injection}{INJECTION_SEP}{s}")),
+        Value::String(s) => Value::String(format!("{injection}{MERGED_INJECTION_BOUNDARY}{s}")),
         Value::Array(blocks) => {
             let mut out: Vec<Value> = Vec::with_capacity(blocks.len() + 1);
             out.push(serde_json::json!({"type": "text", "text": injection}));

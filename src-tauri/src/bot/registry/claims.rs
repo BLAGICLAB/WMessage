@@ -349,11 +349,16 @@ const EXECUTION_NOT_DONE_MARKERS: &[&str] = &[
     "凭印象",
 ];
 
-/// 终稿是否如实说明了「那次执行没做成」（含「这是推算不是执行结果」）。
-pub fn states_execution_not_done(text: &str) -> bool {
+/// 句段是否如实说明了「这次没做成 / 这个数是推算」。
+///
+/// 让开收窄到句段粒度：只有携带数值的那一段自己说了「跑不了 / 被拦了 /
+/// 按公式推算」，该数才算如实披露的推算。全文粒度会让「失败 / 公式 /
+/// 估算」这类常见词在文中任意远处出现就关掉整道数值闸——
+/// 「执行完毕，输出 5050。如果失败请重试」即可穿透。
+pub fn segment_states_execution_not_done(seg: &str) -> bool {
     EXECUTION_NOT_DONE_MARKERS
         .iter()
-        .any(|m| !m.is_empty() && text.contains(m))
+        .any(|m| !m.is_empty() && seg.contains(m))
 }
 
 /// 存在性/核实类措辞：终稿在给出现场结论（文件在不在、查到没有）。
@@ -417,8 +422,10 @@ pub fn numbers_in_text(text: &str) -> Vec<f64> {
 /// 触发要三样同时落在同一个句段里：执行完成态措辞（词表）、结果措辞、具体
 /// 数值。句段按换行与句末标点切（`split_claim_segments`），跨行的那句
 /// 「执行完毕：」与下一行的「输出 5050」不算同一段——宁可漏判不误伤。
-pub fn claimed_result_numbers(text: &str, patterns: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+/// 返回（数值, 所在句段）：出处比对判「无出处」，让开判定比「该段自己是否
+/// 如实披露推算」——两件事都要句段粒度，全文粒度必误伤。
+pub fn claimed_result_numbers(text: &str, patterns: &[String]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
     for seg in split_claim_segments(text) {
         if !patterns
             .iter()
@@ -430,8 +437,8 @@ pub fn claimed_result_numbers(text: &str, patterns: &[String]) -> Vec<String> {
             continue;
         }
         for n in result_numbers_in(seg) {
-            if !out.contains(&n) {
-                out.push(n);
+            if !out.iter().any(|(k, _)| k == &n) {
+                out.push((n, seg.to_string()));
             }
         }
     }

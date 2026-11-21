@@ -506,22 +506,27 @@ fn guard_collect(
     // 来的」。同一个提问里调过工具，不代表报出来的数就是那个工具给的
     // ——「已跑完，输出 5050」而工具给的是别的数，就是编的。
     //
-    // 让开两处：派过子 agent（它的返回不落我们的池子）、终稿如实说了
-    // 执行没做成（那它给的是自己的推算，不是把执行结果编出来）。
+    // 让开两处：派过子 agent（它的返回不落我们的池子）、携带数值的那一段
+    // 自己如实说了「没做成 / 是推算」（那它给的是自己的推算，不是把执行
+    // 结果编出来）。让开收窄到句段粒度：全文粒度会让「失败 / 公式 / 估算」
+    // 这类常见词在任意远处出现就关掉整道闸——「执行完毕，输出 5050。
+    // 如果失败请重试」即可穿透。
     let claimed_numbers =
         crate::bot::registry::claimed_result_numbers(final_text, deps.guard_claim_keywords);
     let mut sources: Vec<String> = context_sources(&*msgs);
-    sources.extend(evidence.iter().filter(|e| e.ok).map(|e| e.output.clone()));
-    let unsourced_value: Option<String> = if claimed_numbers.is_empty()
-        || subagent_spawned
-        || crate::bot::registry::states_execution_not_done(final_text)
-    {
+    // 失败返回也进出处池：模型看得见的内容都算出处（引用失败文案里的数
+    // 不是编造）。tool 消息被桩子化后这里是失败返回唯一的池内存身点。
+    sources.extend(evidence.iter().map(|e| e.output.clone()));
+    let unsourced_value: Option<String> = if claimed_numbers.is_empty() || subagent_spawned {
         None
     } else {
         claimed_numbers
             .iter()
-            .find(|n| !number_sourced(n, &sources))
-            .cloned()
+            .find(|(n, seg)| {
+                !crate::bot::registry::segment_states_execution_not_done(seg)
+                    && !number_sourced(n, &sources)
+            })
+            .map(|(n, _)| n.clone())
     };
     // 判据二（回声调用）：本次提问的成功调用全都没取回新信息——返回内容
     // 就是模型自己写进参数的那句。终稿再拿它当结论的依据，就是自证。

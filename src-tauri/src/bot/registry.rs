@@ -195,8 +195,8 @@ pub(crate) use schemas::assemble_tools_json_body;
 pub use claims::{
     claimed_doc_paths, claimed_executed_tools, claimed_result_numbers, claims_execution,
     claims_execution_with, claims_mutation, default_execution_claim_patterns, is_echo_call,
-    mentioned_tool_names, numbers_in_text, path_missing_on_disk, states_a_result,
-    states_execution_not_done,
+    mentioned_tool_names, numbers_in_text, path_missing_on_disk, segment_states_execution_not_done,
+    states_a_result,
 };
 pub use schemas::{
     mutating_tools, profile_whitelist, tools_index, tools_json, tools_json_for,

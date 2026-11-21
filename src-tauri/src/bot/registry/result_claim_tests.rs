@@ -1,7 +1,7 @@
 //! 工具单源真相的守卫相关纯函数：结果值抽取与回声判定。
 use super::{
     claimed_result_numbers, default_execution_claim_patterns, is_echo_call, result_numbers_in,
-    states_execution_not_done,
+    segment_states_execution_not_done,
 };
 
 fn patterns() -> Vec<String> {
@@ -9,20 +9,21 @@ fn patterns() -> Vec<String> {
 }
 
 /// 判据 A 的正例：执行完成态措辞 + 结果措辞 + 数值，同一段里齐了才摘。
+/// 返回（数值, 所在句段）对：让开判定与出处比对都要句段粒度。
 #[test]
 fn claimed_result_numbers_picks_execution_result_values() {
     assert_eq!(
         claimed_result_numbers("已跑完，输出 5050", &patterns()),
-        vec!["5050".to_string()]
+        vec![("5050".to_string(), "已跑完，输出 5050".to_string())]
     );
     assert_eq!(
         claimed_result_numbers("执行完毕，返回 8191", &patterns()),
-        vec!["8191".to_string()]
+        vec![("8191".to_string(), "执行完毕，返回 8191".to_string())]
     );
     // 小数与千分位照原样摘（出处比对那侧再归一）
     assert_eq!(
         claimed_result_numbers("我跑了，结果是 2.5", &patterns()),
-        vec!["2.5".to_string()]
+        vec![("2.5".to_string(), "我跑了，结果是 2.5".to_string())]
     );
 }
 
@@ -85,14 +86,29 @@ fn is_echo_call_needs_enough_content_to_judge() {
     assert!(!is_echo_call(r#"{"code":"print(\"OK\")"}"#, "OK"));
 }
 
-/// 让开条件：终稿如实说明执行没做成（或明说那是推算）→ 结果值判据整档让开。
+/// 让开条件收窄到句段粒度：只有携带数值的那一段自己说了「没做成 / 是推算」
+/// 才让开；「失败 / 公式 / 估算」在别的段落出现不得关掉本段的数值闸。
+/// 否则「执行完毕，输出 5050。如果失败请重试」即可穿透——编造的数只要在
+/// 文中任意远处带一个「失败」就免检。
 #[test]
-fn states_execution_not_done_covers_failure_and_derivation_forms() {
-    assert!(states_execution_not_done("我跑了，但开关没开，跑不了。"));
-    assert!(states_execution_not_done("答案是 5050（按公式推算的）"));
-    assert!(states_execution_not_done(
+fn segment_states_execution_not_done_covers_failure_and_derivation_forms() {
+    assert!(segment_states_execution_not_done(
+        "我跑了，但开关没开，跑不了。"
+    ));
+    // 同段披露推算仍然让开（如实转述的原始场景不受影响）
+    assert!(segment_states_execution_not_done(
+        "答案是 5050（按公式推算的）"
+    ));
+    assert!(segment_states_execution_not_done(
         "run_python 调用失败：Python 编程未开启"
     ));
-    // 正常的执行完成态终稿不该命中让开
-    assert!(!states_execution_not_done("已跑完，输出 5050"));
+    // 正常的执行完成态句段不该命中让开
+    assert!(!segment_states_execution_not_done("已跑完，输出 5050"));
+    // 跨段不豁免：让开词在远处出现，本段的数照查
+    let (n, seg) = &claimed_result_numbers("执行完毕，输出 5050\n如果失败请重试。", &patterns())[0];
+    assert_eq!(n, "5050");
+    assert!(
+        !segment_states_execution_not_done(seg),
+        "「失败」在另一段出现，本段不得豁免"
+    );
 }
