@@ -229,6 +229,16 @@ impl HookRegistry {
             .insert(session_id.to_string());
     }
 
+    /// 会话收尾清理：把该会话在所有层的按层关闭一并撤销。
+    ///
+    /// 每跑一个子 agent 都是新会话 id，这张表只增不减——不清理就是随运行
+    /// 次数线性无界增长（调用方：runner 的 HookTeardownGuard RAII）。
+    pub fn clear_session(&self, session_id: &str) {
+        for set in self.disabled_sessions().values_mut() {
+            set.remove(session_id);
+        }
+    }
+
     fn disabled_sessions(&self) -> MutexGuard<'_, HashMap<HookLayer, HashSet<String>>> {
         // 锁中毒（别的线程 panic 时）不阻断工具调用：取回内层数据继续用。
         // 这张表在钩子调用之外才被取用（钩子 panic 不会发生在持锁期间），

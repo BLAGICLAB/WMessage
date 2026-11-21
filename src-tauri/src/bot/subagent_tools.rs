@@ -15,7 +15,7 @@ use tauri::AppHandle;
 /// 子 agent 系统提示的产物目录规则段（gen_dir 硬约束，同 EXECUTE 提示口径）。
 pub(crate) fn gen_dir_rule_for(artifact_dir: &std::path::Path) -> String {
     format!(
-        "## 产物目录（硬性约束）\n你的全部文件写入必须落在：{}\n目录外写入会被拒绝；报告/数据文件写进该目录并在收尾 JSON 的 artifacts 里登记路径。",
+        "## 产物目录\n本任务的产物（报告/数据文件）必须写进：{}\n并在收尾 JSON 的 artifacts 里登记路径。可写目录以系统实际判定为准（AI_Gen_Files + 任务卡绑定文件夹 + 设置页 allowedDirs），产物文件统一落在本目录。\n该目录在收尾后会被扫描收取，写在外面收不进产物。",
         artifact_dir.display()
     )
 }

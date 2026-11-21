@@ -146,6 +146,10 @@ pub(crate) async fn run_subagent(
     // yaml，解析校验后进进程内缓存。**必须在守卫注册之前**——守卫要拿
     // 「profile ∩ allowed」的交集作为白名单判据，配置没绑就没交集可算。
     crate::bot_onions::bind_session(&app, &session_id);
+    // 会话级 hook 关闭随运行结束撤销：每跑一个子 agent 都是新会话 id，注册表
+    // 的 disabled 集合只增不减——不清理就是线性无界增长。RAII：正常收尾/
+    // panic/unwind 都走 Drop。
+    let _hook_teardown = HookTeardownGuard(session_id.clone());
     // 白名单全集：配置档在就取交集，不在就是 profile 白名单原样（语义不变）
     let subagent_tools: Vec<&'static str> =
         match crate::bot_onions::cached_for_session(Some(session_id.as_str())) {
@@ -1099,6 +1103,17 @@ struct AbortOnDrop(tauri::async_runtime::JoinHandle<()>);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+/// 会话级 hook 关闭的 RAII 撤销：bind_session 给本会话关掉的层（probe 关
+/// post_turn / validator 关 pre_tool / writereditor 关 post_tool），随运行
+/// 结束一并撤销——注册表的 disabled 集合只增不减，每跑一个子 agent 都是新
+/// 会话 id，不清理就是线性无界增长。
+struct HookTeardownGuard(String);
+impl Drop for HookTeardownGuard {
+    fn drop(&mut self) {
+        crate::bot::hooks::registry().clear_session(&self.0);
     }
 }
 

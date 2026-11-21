@@ -131,7 +131,8 @@ impl SubagentStage {
     ///
     /// validator 的 profile 是 coder——verifier 的派生档位随之从 research 翻到
     /// coder，验收要靠 run_python / ast_inspect 复核交付物，只读读代码不够；
-    /// 工具面仍被 validator.allowed 收在只读集合内。
+    /// 文件写入面仍被 validator.allowed 收掉（edit_file/write_file 不在列），
+    /// 脚本写盘走产物目录（write_artifact_file）。
     pub fn default_onion(self) -> &'static str {
         match self {
             SubagentStage::Recon => "probe",

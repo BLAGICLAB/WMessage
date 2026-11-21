@@ -5,7 +5,7 @@
 # ast_inspect 必须显式列出：它是收窄清单里的一项，不列就会被交集收掉。
 
 onion_id: validator
-role: 公文合规校验、政策口径与指标一致性检查、代码评审与静态检查，只读
+role: 公文合规校验、政策口径与指标一致性检查、代码评审与静态检查；文件面只读（可跑脚本复核、可写产物目录）
 profile: coder
 allowed: [read_text_file, list_files, grep_files, run_python, ast_inspect,
           write_artifact_file, read_own_card, submit_result]

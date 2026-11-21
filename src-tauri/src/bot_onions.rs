@@ -5,8 +5,10 @@
 //! 理由：会话列表每次整表读进内存，且备份/导出语义会因大文本入库而变复杂。
 //!
 //! **唯一生效规则：effective = profile 白名单 ∩ yaml.allowed**，只有收紧、没有
-//! 放宽，且没有第二张 deny 列表。交集算出来可能为空——那必须让人看得见
-//! （见 `render_effective_note`），「配置看着生效、实际落空」是最该挡住的失败。
+//! 放宽，且没有第二张 deny 列表。交集能力面可为空，但交卷出口（submit_result）
+//! 恒在——「配置看着生效、实际落空」最该挡住的失败形态是 yaml 失效静默回落
+//! 全量 profile 白名单，bind_session 对三条失败路径（load / read_meta /
+//! db_open）全部审计留痕。
 //!
 //! 加载时机：会话创建/切换时读一次，缓存在进程内；文件变更不热重载
 //! （与既有 `BotConfig` 启动时读的语义一致）。
@@ -271,14 +273,7 @@ pub fn effective_tools(profile: SubagentProfile, allowed: &[String]) -> Vec<&'st
 
 /// 交集为空时给模型/人看的一句话（§3.4：「配置看着生效、实际落空」必须可见）。
 pub fn render_effective_note(profile: SubagentProfile, allowed: &[String]) -> String {
-    let base = crate::bot::registry::profile_whitelist(profile);
     let eff = effective_tools(profile, allowed);
-    if eff.is_empty() {
-        return format!(
-            "[⚠️ 配置收窄后无可用工具] profile={profile:?} 给 {len} 个，yaml.allowed 收窄到 0 个——本次不会有任何工具可用，请检查 allowed",
-            len = base.len()
-        );
-    }
     format!(
         "[配置已生效] profile={profile:?} {len} 个工具，yaml.allowed 收窄后实际可用：{names}",
         len = eff.len(),
@@ -295,12 +290,8 @@ pub fn render_effective_note(profile: SubagentProfile, allowed: &[String]) -> St
 /// 实际落空」要连模型一起看得见，提示词这半就得给交集。
 pub fn render_prompt_note(cfg: &OnionConfig, profile: SubagentProfile) -> String {
     let eff = effective_tools(profile, &cfg.allowed);
-    let tools = if eff.is_empty() {
-        "（无：本次没有任何工具可用。不要尝试调用任何工具，说明阻塞后直接交付你已知的部分。）"
-            .to_string()
-    } else {
-        eff.join("、")
-    };
+    // submit_result 恒在（effective_tools 强制补回），eff 永不为空
+    let tools = eff.join("、");
     let role = cfg.role.trim();
     if role.is_empty() {
         format!(
@@ -340,11 +331,23 @@ pub fn cached_for_session(session_id: Option<&str>) -> Option<OnionConfig> {
 /// 会话创建/切换时调一次：读 DB 元列 + 读 yaml + 解析校验，结果进缓存。
 ///
 /// 读不到配置（没绑 / 文件不在 / 解析失败）都记 None 而不是报错中断——绑定是
-/// 可选增强，坏配置不该让会话开不起来；失败原因已由 `load` 的错误文本带出。
+/// 可选增强，坏配置不该让会话开不起来；失败原因走 load_fail / read_meta_fail
+/// / db_open_fail 三条审计（yaml 失效回落全量 profile 白名单，必须可见）。
 pub fn bind_session<R: tauri::Runtime>(app: &tauri::AppHandle<R>, session_id: &str) {
     let loaded = match super::db::open_db(app) {
         Ok(conn) => match super::db::bot_sessions::bot_session_onion(&conn, session_id) {
-            Ok(Some(meta)) => load(app, &meta.config).ok(),
+            Ok(Some(meta)) => match load(app, &meta.config) {
+                Ok(cfg) => Some(cfg),
+                // yaml 被删/改坏：静默回落全量 profile 白名单是「配置看着生效、
+                // 实际落空」最宽的形态，必须留痕（与 read_meta_fail 同格式）
+                Err(e) => {
+                    crate::bot::audit_log(
+                        app,
+                        &format!("bot_onions load_fail | {session_id} | {e}"),
+                    );
+                    None
+                }
+            },
             Ok(None) => None,
             Err(e) => {
                 crate::bot::audit_log(
