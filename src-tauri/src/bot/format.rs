@@ -46,6 +46,19 @@ pub(crate) fn truncate_bytes(text: &str, max_bytes: usize) -> String {
     text[..byte_head_end(text, max_bytes)].to_string()
 }
 
+/// 工具结果回灌统一包裹的前缀。回灌漏斗给每条执行过的工具结果加数据声明头；
+/// claims 的回声判定剥掉这行再比对。常量放这里（bot 层小工具）供
+/// bot_model_loop 的漏斗与 bot/registry 的 claims 共用——两处各写一份字面量
+/// 必然漂移。改文案前先核三处约束：
+/// 1. 前缀不得以「【」开头：evidence 的注入前缀族（【系统提示】/【自检】/
+///    【终稿自检】）与 bot_chat 的并进块头（【系统背景】）都会把整条消息逐出
+///    证据池，模型引用工具真数的回答会被幻觉守卫误伤；
+/// 2. 声明头的固定文案不含数字——包裹后的文本进证据池做数值出处命中，
+///    数字声明头会给模型的话引入假出处；
+/// 3. 首行不是 "### " 开头——claims::result_section 按首行格式头跳 MCP 样板段，
+///    剥声明头的逻辑按本前缀识别，换前缀要两处一起动。
+pub(crate) const TOOL_OUTPUT_ENVELOPE_PREFIX: &str = "〔工具回执·数据声明〕";
+
 #[cfg(test)]
 mod tests {
     use super::*;

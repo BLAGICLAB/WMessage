@@ -75,7 +75,7 @@ pub(crate) use self::guard::{
     finalize_without_tools, selfcheck_retry_hint, side_selfcheck_verdict, SELFCHECK_FAIL_EMIT,
     SELFCHECK_PASS_EMIT, SELFCHECK_PASS_HINT,
 };
-pub(crate) use self::output::apply_output_cap;
+pub(crate) use self::output::{apply_output_cap, wrap_tool_output};
 pub(crate) use self::repeat_gate::{
     answered_text, ask_draft, fallback_text, is_exempt_tool, reject_text, RepeatGateState,
 };

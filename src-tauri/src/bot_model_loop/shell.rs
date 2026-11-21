@@ -3,8 +3,8 @@
 //! 本文件由 bot_model_loop.rs 拆分而来（纯搬移，行为零变化）。
 
 use super::{
-    apply_output_cap, decide_selfcheck, run_model_loop_core, LlmHttp, LoopTrace, ModelLoopDeps,
-    SelfcheckDecision,
+    apply_output_cap, decide_selfcheck, run_model_loop_core, wrap_tool_output, LlmHttp, LoopTrace,
+    ModelLoopDeps, SelfcheckDecision,
 };
 use crate::bot_chat::TaskRef;
 use crate::bot_slash::StopGuard;
@@ -571,6 +571,15 @@ pub async fn run_model_loop(
             //   L3 db::SPAN_TEXT_MAX——在 trace 侧，只管存多少进 SQLite，不管这里。
             // trace span 仍存原文（钳在 L3），整轮回放的证据不因回灌节选而丢失。
             let text = apply_output_cap(&app, tool_output_cap, &name, out.text).await;
+            // 执行过的工具（Ok/Warn/Error）回灌统一加数据声明包裹；Denied 的
+            // 拒文是系统写给模型的指引，不是工具带回的数据，不包。包裹在发射
+            // 时现算——trace 侧已按 L3 存档原文（execute_tool_traced 在上一步），
+            // 凭证召回拿到的仍是未包裹原文。
+            let text = if out.status == crate::bot::registry::ToolStatus::Denied {
+                text
+            } else {
+                wrap_tool_output(&name, text)
+            };
             if let Ok(mut n) = sink.lock() {
                 *n += 1;
             }

@@ -584,7 +584,15 @@ pub fn is_echo_call(args: &str, output: &str) -> bool {
 ///
 /// 外部 MCP 工具常把返回排成 `### Result` / `### Ran … code` / `### Page` 几段，
 /// 样板段不是取回的内容。第一行不是 `### ` 格式头时整段都算内容。
+/// 回灌漏斗的数据声明头（`bot::format::TOOL_OUTPUT_ENVELOPE_PREFIX`）先剥掉
+/// 整行再判定——声明行是回灌侧文案，声明头的中文 token 不在入参里，不剥的话
+/// 所有调用都判不出回声。
 fn result_section(output: &str) -> &str {
+    let output = if output.starts_with(crate::bot::format::TOOL_OUTPUT_ENVELOPE_PREFIX) {
+        output.split_once('\n').map(|(_, rest)| rest).unwrap_or("")
+    } else {
+        output
+    };
     let first_line = output.split_inclusive('\n').next().unwrap_or("");
     if !first_line.trim_start().starts_with("### ") {
         return output;

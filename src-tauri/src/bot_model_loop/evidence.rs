@@ -91,7 +91,7 @@ pub(crate) const INJECTED_MSG_PREFIXES: &[&str] =
 /// - 带「系统背景」头锚的并进块（摘要/记忆，见 bot_chat::inject）→ 只留
 ///   边界锚之后的用户原话——原话是真人说的算出处，注入段是模型自产不算；
 /// - 普通文本 → 原样。
-fn usable_source_text(text: &str) -> Option<String> {
+pub(crate) fn usable_source_text(text: &str) -> Option<String> {
     use crate::bot_chat::{MERGED_INJECTION_BOUNDARY, MERGED_INJECTION_HEAD};
     if INJECTED_MSG_PREFIXES.iter().any(|p| text.starts_with(p)) {
         return None;
