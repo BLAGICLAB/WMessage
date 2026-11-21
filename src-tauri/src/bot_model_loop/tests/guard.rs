@@ -942,6 +942,27 @@ mod post_turn_layer_tests {
     }
 }
 
+/// bot-tool-running/done 事件的入参/结果必须走 sink 面同源裁剪：
+/// 这两个事件经 turn_record 聚合落 sqlite（bot_history 重启还原）且前端
+/// 直接显示——URL 型工具的凭据段/查询串与结果里的「来源：」行/elicitation
+/// 回声不得进持久化面（bot.log 审计行早已同口径，这是最后一块落库面）。
+#[test]
+fn tool_events_route_args_and_result_through_sink() {
+    let core = prod_src();
+    assert!(
+        core.contains("\"args\": crate::bot::dispatch::sink_args_preview(name, args)"),
+        "bot-tool-done 的 args 必须走 sink_args_preview（落库面收口）"
+    );
+    assert!(
+        core.contains("\"result\": crate::bot::dispatch::sink_result_text("),
+        "bot-tool-done 的 result 必须走 sink_result_text"
+    );
+    assert!(
+        core.contains("\"args_preview\": crate::bot::dispatch::sink_args_preview(name, args)"),
+        "bot-tool-running 的 args_preview 同口径（打断时以 running 行形态落库）"
+    );
+}
+
 /// 熔断阶梯：三段式（90% 软告警 → 95% 收尾窗 → 收尾轮数用尽硬停）。
 ///
 /// 阶梯按**预算占比**定义而非绝对次数——档位变化时阈值自动跟着走，

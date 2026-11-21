@@ -698,7 +698,9 @@ async fn execute_tool_impl(
     if let Some(msg) = invalid_args_message(name, args) {
         let mut bad_kv: Vec<(&str, String)> = vec![
             ("tool", name.to_string()),
-            ("args_preview", args.chars().take(80).collect::<String>()),
+            // URL 型工具的入参前 80 字必含完整 URL（凭据段/查询串）：
+            // 与模块头 sink 纪律同源，不许裸截断
+            ("args_preview", sink_args_preview(name, args)),
         ];
         bad_kv.extend(trace_kv(trace, session_id));
         crate::audit::write_event(

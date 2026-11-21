@@ -1053,3 +1053,44 @@ async fn ssrf_rejection_never_reaches_the_proxy() {
         "闸拦属于「换出口也没用」，归 Unreachable 会把内网地址送去第三方代理重试"
     );
 }
+
+/// URL 凭据段不进审计面/错误文本的接线守卫：fetch_url 三条结构化审计事件
+/// 与两条重定向错误文案都必须过 `strip_url_secrets`——userinfo 与查询串
+/// 随事件值进 bot.log、Location 原文进错误文本，都是 f56c3280 收口口径的
+/// 漏网点（该收口只接了 audit_log 一行）。
+#[test]
+fn url_secret_stripping_wired_at_every_sink_point() {
+    let doc = include_str!("../bot/tools/doc.rs");
+    let events = doc
+        .matches("escape_for_log(&crate::bot::tools::strip_url_secrets(&u), 100)")
+        .count();
+    assert!(
+        events >= 3,
+        "deepseek_fetch_used/failed 与 jina_fallback 三事件都得过 strip_url_secrets，实得 {events}"
+    );
+    // 裸的 escape_for_log(&u, ...) 不得再出现（新事件漏接的形态）
+    assert!(
+        !doc.contains("escape_for_log(&u, 100)"),
+        "doc.rs 不得再有无脱敏的 URL 审计写入点"
+    );
+    let http = include_str!("http.rs");
+    assert!(
+        http.matches("strip_url_secrets(&loc)").count() >= 2,
+        "http_request 重定向两处错误文案都得脱敏 Location"
+    );
+    let fetch = include_str!("fetch.rs");
+    assert!(
+        fetch.matches("strip_url_secrets(&loc)").count() >= 2,
+        "fetch_url 重定向两处错误文案都得脱敏 Location"
+    );
+    // Tavily 与其余四路引擎同形：先流式封顶读体再解析
+    let search = include_str!("search.rs");
+    let tavily_body = search
+        .split("async fn search_tavily")
+        .nth(1)
+        .expect("search_tavily 函数应存在");
+    assert!(
+        tavily_body.contains("read_body_capped(resp, SEARCH_BODY_CAP_BYTES)"),
+        "Tavily 不得用 resp.json() 绕过 2MB 流式读体闸"
+    );
+}

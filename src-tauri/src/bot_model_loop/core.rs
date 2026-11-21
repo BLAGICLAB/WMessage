@@ -997,7 +997,9 @@ where
             "bot-tool-running",
             serde_json::json!({
                 "id": id, "name": name,
-                "args_preview": args.chars().take(200).collect::<String>(),
+                // sink 面同源裁剪（http_request/fetch_url 的 URL 凭据段/查询串）：
+                // 本事件经 turn_record 落 sqlite、前端也拿它显示——与 bot.log 审计行同口径
+                "args_preview": crate::bot::dispatch::sink_args_preview(name, args),
             }),
         );
         let tool_outcome = execute_tool(
@@ -1080,17 +1082,23 @@ where
         emit(
             "bot-tool-done",
             serde_json::json!({
-                "id": id, "name": name, "args": args,
-                "result": result.chars().take(2000).collect::<String>(),
+                "id": id, "name": name,
+                // sink 面同源裁剪：本事件经 turn_record 聚合落 sqlite（bot_history
+                // 重启还原）且前端直接显示——原始入参里的 URL 凭据段/查询串、
+                // 结果文本里的「来源：」行/elicitation 回声都不得进持久化面
+                "args": crate::bot::dispatch::sink_args_preview(name, args),
+                "result": crate::bot::dispatch::sink_result_text(
+                    name,
+                    &result.chars().take(2000).collect::<String>(),
+                ),
                 "ms": tool_ms,
                 "ok": !failed,
             }),
         );
         // 结果先过 sink 面脱敏（http_request/fetch_url 的 URL 凭据段/查询串
         // + MCP elicitation 的应答回声）再截断——与 dispatch 的 tool.call /
-        // tool.return / 动作流同一口径；模型可见面（上面的 bot-tool-done
-        // 事件）不脱敏。实机 M209 发现本行 args/result 带原始 URL 凭据段，
-        // 是 sink 面唯一没接上的口子。
+        // tool.return / 动作流同一口径；模型可见的 tool result 不经此函数
+        //（模型需要最终 URL 与服务器回显的应答内容）。
         let result_for_log = crate::bot::dispatch::sink_result_text(name, result);
         audit(
             crate::audit::AuditLevel::Info,

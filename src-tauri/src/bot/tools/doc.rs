@@ -720,7 +720,7 @@ pub(crate) async fn tool_fetch_url(
                         app,
                         crate::audit::AuditLevel::Info,
                         "web.deepseek_fetch_used",
-                        "url" => escape_for_log(&u, 100),
+                        "url" => escape_for_log(&crate::bot::tools::strip_url_secrets(&u), 100),
                     );
                 }
                 Some(Err(e)) => {
@@ -728,7 +728,7 @@ pub(crate) async fn tool_fetch_url(
                         app,
                         crate::audit::AuditLevel::Info,
                         "web.deepseek_fetch_failed",
-                        "url" => escape_for_log(&u, 100),
+                        "url" => escape_for_log(&crate::bot::tools::strip_url_secrets(&u), 100),
                         "error" => escape_for_log(e, 200),
                     );
                 }
@@ -739,7 +739,7 @@ pub(crate) async fn tool_fetch_url(
                     app,
                     crate::audit::AuditLevel::Info,
                     "web.jina_fallback",
-                    "url" => escape_for_log(&u, 100),
+                    "url" => escape_for_log(&crate::bot::tools::strip_url_secrets(&u), 100),
                 );
             }
             ToolResult::ok(slice_fetch_output(&fetched.text, offset), Vec::new())

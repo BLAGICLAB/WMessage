@@ -2,6 +2,7 @@
 
 use super::html::extract_main_content;
 use super::*;
+use crate::bot::tools::strip_url_secrets;
 
 impl UrlGateError {
     /// 裸原因（不含域标签）。
@@ -355,18 +356,16 @@ pub(super) async fn fetch_direct(raw_url: &str) -> Result<String, FetchErr> {
                 .map_err(|_| FetchErr::Rejected("Location 头编码无效".into()))?
                 .to_string();
             let prev_scheme = url_cursor.scheme().to_string();
-            url_cursor = url_cursor
-                .join(&loc)
-                .map_err(|_| FetchErr::Rejected(format!("重定向目标无效：{loc}").into()))?;
+            url_cursor = url_cursor.join(&loc).map_err(|_| {
+                let safe = strip_url_secrets(&loc);
+                FetchErr::Rejected(format!("重定向目标无效：{safe}").into())
+            })?;
             // https→http 降级重定向拒：首跳 TLS 不保护后续明文跳（中间人可篡改返回内容）；
             // 用户直接给 http 起始 URL 不受影响（既有语义）
             if prev_scheme == "https" && url_cursor.scheme() == "http" {
                 return Err(FetchErr::Rejected(CommandError::DomainRule {
                     domain: "web".to_string(),
-                    reason: format!(
-                        "拒绝 https→http 降级重定向：{}",
-                        crate::bot::escape_for_log(&loc, 100)
-                    ),
+                    reason: format!("拒绝 https→http 降级重定向：{}", strip_url_secrets(&loc)),
                 }));
             }
             hops += 1;

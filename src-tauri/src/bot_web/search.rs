@@ -354,9 +354,12 @@ async fn search_tavily(key: &str, query: &str, opts: &SearchOpts) -> Result<Stri
     if !resp.status().is_success() {
         return Err(format!("Tavily 返回 HTTP {}", resp.status()));
     }
-    let v: serde_json::Value = resp
-        .json()
+    // 与其余四路引擎同形：先流式封顶读体再解析——Content-Length 可撒谎，
+    // resp.json() 会把谎报长度的响应整段读进内存
+    let body = read_body_capped(resp, SEARCH_BODY_CAP_BYTES)
         .await
+        .map_err(|e| format!("Tavily 响应读取失败：{e}"))?;
+    let v: serde_json::Value = serde_json::from_str(&decode_search_body(&body))
         .map_err(|e| format!("Tavily 响应解析失败：{e}"))?;
     let arr = v["results"].as_array().cloned().unwrap_or_default();
     if arr.is_empty() {

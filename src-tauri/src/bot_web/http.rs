@@ -205,13 +205,19 @@ pub(crate) async fn execute(spec: &RequestSpec, gate: &GateCtx<'_>) -> Result<Re
             let prev_scheme = url_cursor.scheme().to_string();
             url_cursor = url_cursor.join(&loc).map_err(|_| HttpError {
                 dest: Some(final_dest),
-                message: format!("重定向目标无效：{loc}"),
+                message: format!(
+                    "重定向目标无效：{}",
+                    crate::bot::tools::strip_url_secrets(&loc)
+                ),
             })?;
             // https→http 降级拒：与 fetch_direct 同一理由（首跳 TLS 不保护后续明文跳）
             if prev_scheme == "https" && url_cursor.scheme() == "http" {
                 return Err(HttpError {
                     dest: Some(final_dest),
-                    message: format!("拒绝 https→http 降级重定向：{loc}"),
+                    message: format!(
+                        "拒绝 https→http 降级重定向：{}",
+                        crate::bot::tools::strip_url_secrets(&loc)
+                    ),
                 });
             }
             // 方法与请求体按 RFC 9110 调整（303/301/302 的 POST 改 GET 丢体）
