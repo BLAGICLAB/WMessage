@@ -1,8 +1,9 @@
-//! MCP 服务器配置的 tauri 命令（3 个，设置页 McpPanel 用）。
+//! MCP 服务器配置的 tauri 命令（5 个，设置页 McpPanel 用）。
 //!
 //! - `mcp_server_save`：新增/编辑（id 为空由后端生成 uuid；校验失败响亮报错）
 //! - `mcp_server_delete`：按 id 删除（幂等）
 //! - `mcp_server_toggle`：启停窄口径更新（只动 enabled，避免前端旧快照整份覆盖）
+//! - `mcp_secret_backup_status/delete`：机密迁移备份的在盘状态查询与显式删除
 //!
 //! 三个命令都返回更新后的完整列表（前端免二次读取）。
 //! 写路径与 add_allowed_dir 同款：CONFIG_WRITE_LOCK 全程持锁 RMW
@@ -28,10 +29,7 @@ use super::manager::shared;
 /// 配置变更后触发连接重载（fire-and-forget：写盘已原子完成，重载自行读盘对齐；
 /// 失败只记审计不回滚配置——连接态不是配置的真相源）。
 fn trigger_reload(app: &AppHandle) {
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        shared().reload_from_config(&app).await;
-    });
+    shared().request_reload(app.clone());
 }
 
 /// 持锁 RMW 内核：锁内 迁移 → 读 → f（可失败，失败不落盘）→ 原子写。
@@ -99,7 +97,7 @@ pub(crate) fn mcp_server_save(
         // 再校验，校验失败就是「保存报错，但机密已被清空/替换」。
         prev_secrets = crate::bot::mcp::secrets::read_server_secrets(&app_for_blob, &server_id)
             .map_err(CommandError::KeyringError)?;
-        upsert_in_config(cfg, server.clone())?;
+        let saved = upsert_in_config(cfg, server.clone())?;
         // 机密落 keyring/降级文件——**锁内、迁移之后**（评审 CRITICAL②：
         // 若在锁外先写，紧随其后的迁移会读文件里的旧明文同 id 覆盖刚写的新值）。
         // 写败 → f 返 Err → 配置文件不落盘（闭包返回 Err 时外层直接短路）
@@ -111,11 +109,6 @@ pub(crate) fn mcp_server_save(
         )
         .map_err(CommandError::KeyringError)?;
         secrets_stored = true;
-        let saved = cfg
-            .mcp_servers
-            .as_ref()
-            .and_then(|l| l.iter().find(|s| s.id == server.id))
-            .cloned();
         Ok((list_of(cfg), saved))
     });
     // 机密已写新值而配置未落盘 = 半成功：回滚机密到旧值，
@@ -142,9 +135,7 @@ pub(crate) fn mcp_server_save(
         return Err(e.clone());
     }
     let (list, saved) = result?;
-    if let Some(s) = &saved {
-        audit(&app, "mcp.server_saved", s);
-    }
+    audit(&app, "mcp.server_saved", &saved);
     trigger_reload(&app);
     Ok(list)
 }
@@ -176,12 +167,7 @@ pub(crate) fn mcp_server_delete(app: AppHandle, id: String) -> CommandResult<Vec
         });
     }
     let (list, removed) = with_locked_config(&app, |cfg| {
-        let removed = cfg
-            .mcp_servers
-            .as_ref()
-            .and_then(|l| l.iter().find(|s| s.id == id))
-            .cloned();
-        remove_from_config(cfg, &id);
+        let removed = remove_from_config(cfg, &id);
         Ok((list_of(cfg), removed))
     })?;
     if let Some(s) = &removed {
@@ -234,25 +220,18 @@ pub(crate) fn mcp_server_toggle(
     enabled: bool,
 ) -> CommandResult<Vec<McpServerConfig>> {
     let (list, toggled) = with_locked_config(&app, |cfg| {
-        let ok = set_enabled_in_config(cfg, &id, enabled);
+        let toggled = set_enabled_in_config(cfg, &id, enabled);
         //  评审：id 不存在响亮报错（另一标签页删过的竞态），不静默返回旧列表；
         // DomainRule 而非 Internal（可恢复业务态，前端可按 domain 区分）
-        if !ok {
+        let Some(toggled) = toggled else {
             return Err(crate::error::CommandError::DomainRule {
                 domain: "mcp".into(),
                 reason: "未找到该 MCP 服务器（可能已被删除），请刷新列表后重试".into(),
             });
-        }
-        let toggled = cfg
-            .mcp_servers
-            .as_ref()
-            .and_then(|l| l.iter().find(|s| s.id == id))
-            .cloned();
+        };
         Ok((list_of(cfg), toggled))
     })?;
-    if let Some(s) = &toggled {
-        audit(&app, "mcp.server_toggled", s);
-    }
+    audit(&app, "mcp.server_toggled", &toggled);
     trigger_reload(&app);
     Ok(list)
 }
@@ -425,6 +404,34 @@ pub async fn mcp_server_tools(app: AppHandle, id: String) -> CommandResult<Vec<M
             description: t.description.as_ref().map(|d| d.to_string()),
         })
         .collect())
+}
+
+/// MCP 机密迁移备份（bot-config.backup-mcp-keys.json，0600 含明文回滚网）的在盘状态。
+/// 前端据此决定是否显示「删除迁移备份」入口——迁移成功且 keyring 稳定后，
+/// 备份就没有长期存在的理由（含明文的文件留在盘上是净风险）。
+#[tauri::command]
+pub(crate) fn mcp_secret_backup_status(app: AppHandle) -> CommandResult<bool> {
+    Ok(crate::bot::config::io::mcp_secret_backup_path(&app).exists())
+}
+
+/// 删除 MCP 机密迁移备份：keyring 已稳定保存机密后由用户显式丢弃回滚网。
+/// 硬删（含明文的文件不进回收站——回收站留一份等于没删）；前端确认在前。
+/// 返回是否真的删了（false = 本就没有，幂等）。
+#[tauri::command]
+pub(crate) fn mcp_secret_backup_delete(app: AppHandle) -> CommandResult<bool> {
+    let path = crate::bot::config::io::mcp_secret_backup_path(&app);
+    if !path.exists() {
+        return Ok(false);
+    }
+    std::fs::remove_file(&path)
+        .map_err(|e| CommandError::IoError(format!("迁移备份删除失败：{e}")))?;
+    crate::audit::write_event(
+        &app,
+        crate::audit::AuditLevel::Info,
+        "mcp.secret_backup_deleted",
+        &[("path", path.to_string_lossy().to_string())],
+    );
+    Ok(true)
 }
 
 #[cfg(test)]

@@ -188,6 +188,9 @@ pub(crate) fn build_mounted_tools(
     let mut out = Vec::new();
     for (server_id, server_name, tools) in servers {
         for t in tools {
+            if out.len() >= MAX_TOTAL_MOUNTED_TOOLS {
+                return out;
+            }
             let func = registry.assign(server_id, server_name, t.name.as_ref());
             out.push(McpMountedTool {
                 schema: tool_schema(server_name, &func, t),
@@ -200,6 +203,11 @@ pub(crate) fn build_mounted_tools(
     }
     out
 }
+
+/// 聚合挂载的总条数上限：单服务器 128、服务器 20，理论上限 2560 条——
+/// 全量进 tools JSON 会把每轮请求的 prompt 体量顶爆，且上限随配置线性膨胀
+/// 无告警。截断按配置顺序保序（前序服务器优先），触顶时审计留痕。
+const MAX_TOTAL_MOUNTED_TOOLS: usize = 512;
 
 /// 当前可挂载条目（读全局连接槽；无连接 → 空表）
 pub fn mcp_mounted_tools() -> Vec<McpMountedTool> {
@@ -258,13 +266,23 @@ pub(crate) async fn execute_mcp_tool(
     // load_config 是同步文件读（ 评审 HIGH）：挪 spawn_blocking，不阻塞
     // tokio worker——dispatch 的工具调用全在 runtime 线程上 await 这里
     let app_cfg = app.clone();
-    let servers = tauri::async_runtime::spawn_blocking(move || {
+    let servers = match tauri::async_runtime::spawn_blocking(move || {
         crate::bot::config::io::load_config(&app_cfg)
             .mcp_servers
             .unwrap_or_default()
     })
     .await
-    .unwrap_or_default();
+    {
+        Ok(servers) => servers,
+        // join 失败（读配置任务被 abort/panic）不得伪装成「配置为空」——
+        // 那会把「服务器已被删除」的错误发给模型，误导它放弃合法工具
+        Err(e) => {
+            return crate::bot::registry::ToolResult::error(
+                format!("MCP 配置读取失败（{e}），请重试；重试仍失败请检查设置页"),
+                Vec::new(),
+            );
+        }
+    };
     let server = servers.into_iter().find(|s| s.id == mounted.server_id);
     match server {
         Some(cfg) if cfg.enabled => {
@@ -432,8 +450,26 @@ fn shape_result_text(result: &CallToolResult) -> (String, usize) {
 /// 拼进主 agent tools JSON 的动态段：`",\n  {schema}..."` 序列（空表 = 空串）。
 /// registry::tools_json_with_mcp 把它插进静态 JSON 的尾部 `"\n]"` 之前。
 pub(crate) fn mcp_tools_json_body() -> String {
-    build_tools_json_body(&shared().mounted())
+    // 每轮模型请求都拼一次动态段：mounted() 全量 clone + 每工具 schema
+    // 序列化 + 字符串拼接。代数缓存——槽位/工具清单任何变更都会 bump
+    // （manager::touch_tools_generation），代数没变直接复用上一次拼好的串。
+    let gen = shared().tools_generation();
+    {
+        let cache = TOOLS_JSON_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((g, body)) = cache.as_ref() {
+            if *g == gen {
+                return body.clone();
+            }
+        }
+    }
+    let body = build_tools_json_body(&shared().mounted());
+    *TOOLS_JSON_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some((gen, body.clone()));
+    body
 }
+
+/// 动态段缓存（代数 → 拼好的 JSON 串）。并发重建都有效、后写覆盖——
+/// 指纹是代数本身，不依赖重建顺序。
+static TOOLS_JSON_CACHE: std::sync::Mutex<Option<(u64, String)>> = std::sync::Mutex::new(None);
 
 /// 同上（纯函数内核，单测直打）。名字走登记簿——与 dispatch 反查同一本，
 /// 否则「模型看到的名字」与「路由用的名字」会分家。
@@ -468,6 +504,32 @@ mod tests {
     /// 每次构建用一本新登记簿（与生产的进程级登记簿同形，但用例之间互不干扰）
     fn build(servers: &[(String, String, Vec<Tool>)]) -> Vec<McpMountedTool> {
         build_mounted_tools(servers, &mut NameRegistry::default())
+    }
+
+    /// 聚合总条数钳：超过 MAX_TOTAL_MOUNTED_TOOLS 保序截尾（前序服务器优先），
+    /// 防多服务器大清单把每轮请求的 prompt 体量顶爆且无告警。
+    #[test]
+    fn build_mounted_tools_truncates_at_total_cap() {
+        let per = MAX_TOTAL_MOUNTED_TOOLS / 2 + 5;
+        let servers = [
+            server(
+                "s1",
+                "first",
+                (0..per).map(|i| tool(&format!("t{i}"), "x")).collect(),
+            ),
+            server(
+                "s2",
+                "second",
+                (0..per).map(|i| tool(&format!("u{i}"), "x")).collect(),
+            ),
+        ];
+        let out = build(&servers);
+        assert_eq!(out.len(), MAX_TOTAL_MOUNTED_TOOLS, "截到总上限");
+        // 保序截尾：前序服务器条目全保留，截掉的只有尾段
+        let s1 = out.iter().filter(|e| e.server_id == "s1").count();
+        assert_eq!(s1, per, "前序服务器条目全保留");
+        let below = build(&[server("s1", "first", vec![tool("read", "读")])]);
+        assert_eq!(below.len(), 1, "远低于上限不截");
     }
 
     #[test]

@@ -285,10 +285,31 @@ export function McpPanel({ active = true }: { active?: boolean }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [tools, setTools] = useState<McpToolBrief[]>([]);
   const [toolsError, setToolsError] = useState("");
+  // 机密迁移备份在盘状态：迁移成功且 keyring 稳定后，含明文的备份没有
+  // 长期留盘的理由——用户显式丢弃回滚网
+  const [backupExists, setBackupExists] = useState(false);
 
   // 平台采集能力：后端把同一份能力标志挂在每台服务器上（平台级的，面板只展示一次）。
   // false = 本平台采不到——内存 / CPU / 监听恒空是「没判」，不是「没占用」。
   const caps = servers[0];
+
+  const deleteSecretBackup = async () => {
+    const ok = await confirm({
+      message:
+        "删除 MCP 机密迁移备份？删除后无法回滚到迁移前的机密状态（keyring 已稳定保存机密，备份仅是迁移失败时的回滚网）。",
+      title: "删除迁移备份",
+      kind: "warning",
+      okLabel: "删除",
+    });
+    if (!ok) return;
+    try {
+      const deleted = await invoke<boolean>("mcp_secret_backup_delete");
+      setBackupExists(false);
+      if (deleted) flashNotice("迁移备份已删除");
+    } catch (e) {
+      handleCommandError(e, "mcp_secret_backup_delete");
+    }
+  };
 
   const refresh = useCallback(async () => {
     try {
@@ -296,6 +317,9 @@ export function McpPanel({ active = true }: { active?: boolean }) {
       const list = (await invoke<McpServerStatus[]>("mcp_status")) ?? [];
       setServers(list);
       void refreshOauthStatuses(list);
+      invoke<boolean>("mcp_secret_backup_status")
+        .then(setBackupExists)
+        .catch(() => {});
     } catch (e) {
       handleCommandError(e, "mcp_status", { silent: true });
       setError(formatCommandError(e));
@@ -615,6 +639,15 @@ export function McpPanel({ active = true }: { active?: boolean }) {
         >
           ＋ 添加服务器
         </button>
+        {backupExists && (
+          <button
+            className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
+            onClick={deleteSecretBackup}
+            title="删除机密迁移备份（bot-config.backup-mcp-keys.json）——迁移成功且 keyring 稳定后可丢弃回滚网"
+          >
+            删除迁移备份
+          </button>
+        )}
         {notice && (
           <span className="text-xs text-[var(--success)]">{notice}</span>
         )}

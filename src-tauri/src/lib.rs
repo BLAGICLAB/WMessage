@@ -868,6 +868,8 @@ pub fn run() {
             bot::mcp::commands::mcp_server_toggle,
             bot::mcp::commands::mcp_status,
             bot::mcp::commands::mcp_server_tools,
+            bot::mcp::commands::mcp_secret_backup_status,
+            bot::mcp::commands::mcp_secret_backup_delete,
             bot::mcp::commands::mcp_server_secrets_masked,
             bot::mcp::elicit::elicit_respond,
             bot::mcp::oauth::mcp_oauth_login,

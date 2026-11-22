@@ -506,7 +506,10 @@ fn invalid(field: &str, value: &str, reason: impl Into<String>) -> CommandError 
 }
 
 /// 新增或按 id 整体替换。校验失败响亮报错（InvalidArgument），不静默修正。
-pub(crate) fn upsert_in_config(cfg: &mut BotConfig, server: McpServerConfig) -> CommandResult<()> {
+pub(crate) fn upsert_in_config(
+    cfg: &mut BotConfig,
+    server: McpServerConfig,
+) -> CommandResult<McpServerConfig> {
     let server = normalize_server(server);
     validate_server(&server).map_err(|reason| invalid("server", &server.name, reason))?;
     let list = servers_mut(cfg);
@@ -524,36 +527,42 @@ pub(crate) fn upsert_in_config(cfg: &mut BotConfig, server: McpServerConfig) -> 
     {
         return Err(invalid("name", &server.name, "已被其他 MCP 服务器使用"));
     }
-    match list.iter_mut().find(|s| s.id == server.id) {
-        Some(slot) => *slot = server,
-        None => list.push(server),
+    match list.iter_mut().position(|s| s.id == server.id) {
+        Some(idx) => list[idx] = server.clone(),
+        None => list.push(server.clone()),
     }
-    Ok(())
+    list.iter()
+        .find(|s| s.id == server.id)
+        .cloned()
+        .ok_or_else(|| invalid("server", &server.name, "写入后条目丢失"))
 }
 
 /// 按 id 删除；返回是否真的删了（幂等：不存在 = false，不报错）。
-pub(crate) fn remove_from_config(cfg: &mut BotConfig, id: &str) -> bool {
-    let Some(list) = cfg.mcp_servers.as_mut() else {
-        return false;
-    };
-    let before = list.len();
-    list.retain(|s| s.id != id);
-    let removed = list.len() < before;
+pub(crate) fn remove_from_config(cfg: &mut BotConfig, id: &str) -> Option<McpServerConfig> {
+    let list = cfg.mcp_servers.as_mut()?;
+    let idx = list.iter().position(|s| s.id == id)?;
+    let removed = list.remove(idx);
     if list.is_empty() {
         cfg.mcp_servers = None; // 清空后字段整个消失，保持配置文件干净
     }
-    removed
+    Some(removed)
 }
 
-/// 按 id 启停；返回是否找到（不存在 = false）。
-pub(crate) fn set_enabled_in_config(cfg: &mut BotConfig, id: &str, enabled: bool) -> bool {
-    cfg.mcp_servers
+/// 按 id 启停；返回更新后的条目（不存在 = None），调用方免二次遍历取审计体。
+pub(crate) fn set_enabled_in_config(
+    cfg: &mut BotConfig,
+    id: &str,
+    enabled: bool,
+) -> Option<McpServerConfig> {
+    let updated = cfg
+        .mcp_servers
         .as_mut()
         .and_then(|list| list.iter_mut().find(|s| s.id == id))
         .map(|s| {
             s.enabled = enabled;
-        })
-        .is_some()
+            s.clone()
+        });
+    updated
 }
 
 // 单测
@@ -919,15 +928,15 @@ mod tests {
         let s = stdio_server("fs");
         upsert_in_config(&mut cfg, s.clone()).unwrap();
         // 启停
-        assert!(set_enabled_in_config(&mut cfg, &s.id, false));
+        assert!(set_enabled_in_config(&mut cfg, &s.id, false).is_some());
         assert!(!cfg.mcp_servers.as_ref().unwrap()[0].enabled);
-        assert!(!set_enabled_in_config(&mut cfg, "nope", true));
+        assert!(set_enabled_in_config(&mut cfg, "nope", true).is_none());
         // 删除 + 空表回收（字段整个消失）
-        assert!(remove_from_config(&mut cfg, &s.id));
+        assert!(remove_from_config(&mut cfg, &s.id).is_some());
         assert!(cfg.mcp_servers.is_none(), "空列表应回收为 None");
-        assert!(!remove_from_config(&mut cfg, &s.id));
+        assert!(remove_from_config(&mut cfg, &s.id).is_none());
         // 删除不存在时 None 不 panic
-        assert!(!remove_from_config(&mut BotConfig::default(), "x"));
+        assert!(remove_from_config(&mut BotConfig::default(), "x").is_none());
     }
 
     // ── serde：老配置兼容 + 往返 ──

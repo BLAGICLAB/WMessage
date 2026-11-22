@@ -1,13 +1,13 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 345 个文件、约 15.2 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 345 个文件、约 15.3 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1283)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1285)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 │                        （setup 里另起清扫：上次被杀留下的 app_runs running 僵尸行）
 ├── app_state.rs (292)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        14 张执行期表 + 「全局状态总表」文档；详见 §2.1
@@ -252,7 +252,7 @@ src-tauri/src/
 │   ├── bot/mcp/mod.rs   模块声明
 │   ├── bot/mcp/config.rs        McpServerConfig/校验（stdio 启动器白名单、URL 公网闸、
 │   │                            normalize/timeout 钳制）+ 工具命名 mcp_tool_name/tool_prefix
-│   ├── bot/mcp/manager.rs (1415)  McpManager（OnceLock 单例）：**按需启停**（静默待命 /
+│   ├── bot/mcp/manager.rs (1483)  McpManager（OnceLock 单例）：**按需启停**（静默待命 /
 │   │                            调用期拉起 / 调用完回收；ensure_connected/call_tool/retire）、
 │   │                            指纹懒重连、stderr 环形缓冲、spawn 白名单字面量构造、
 │   │                            子进程资源采样（5s TTL 缓存，口径同 bot/procs：

@@ -132,6 +132,20 @@ mod slot_tests {
     ///
     /// 这个判定目前零测试覆盖：40s 这个魔法数与边界比较一旦被改坏
     /// （比如写成 `>=` 或改成 4000），没有任何用例会红。
+    /// 槽位变更必须 bump 工具代数：mount 侧的动态段缓存以代数为失效依据，
+    /// 漏 bump = 模型看到的工具清单漂移（缓存永不重建）。disconnect 是最轻的
+    /// 可观测变更面（幂等 no-op 也会走清扫收尾）。
+    #[tokio::test]
+    async fn disconnect_bumps_tools_generation() {
+        let _g = SHARED_MCP_TEST_LOCK.lock().await;
+        let before = shared().tools_generation();
+        shared().disconnect("no-such-server").await;
+        assert!(
+            shared().tools_generation() > before,
+            "disconnect 后代数必须前进（缓存失效依据）"
+        );
+    }
+
     #[test]
     fn connecting_slot_is_stale_only_after_the_window() {
         let now = crate::db::now_ms();
@@ -185,6 +199,8 @@ static MANAGER: std::sync::OnceLock<McpManager> = std::sync::OnceLock::new();
 pub fn shared() -> &'static McpManager {
     MANAGER.get_or_init(|| McpManager {
         slots: Mutex::new(HashMap::new()),
+        tools_generation: std::sync::atomic::AtomicU64::new(0),
+        reload_tx: std::sync::OnceLock::new(),
         stderr_tail: Mutex::new(HashMap::new()),
         sample_cache: Mutex::new(Vec::new()),
         cwd: Mutex::new(None),
@@ -210,6 +226,11 @@ pub struct McpSlotStatus {
 #[derive(Default)]
 pub struct McpManager {
     slots: Mutex<HashMap<String, Slot>>,
+    /// 挂载工具的代数：任何槽位/工具清单变更时 +1，mount 侧的动态段缓存
+    /// 以此判断可否复用上一次拼好的 JSON（见 mount::mcp_tools_json_body）
+    tools_generation: std::sync::atomic::AtomicU64,
+    /// 配置重载合流通道（见 request_reload）：设置页连发合并为一次 apply
+    reload_tx: std::sync::OnceLock<tokio::sync::mpsc::Sender<tauri::AppHandle>>,
     /// 各服务器子进程 stderr 尾巴（每台 ≤20 行，诊断外部服务器启动失败用）。
     /// 阶段 6 失败隔离强化：连接失败 / 调用断连时把尾巴附进错误与审计，
     /// 不用让用户去猜服务器为什么不起来。
@@ -371,6 +392,49 @@ pub(crate) fn fingerprint(cfg: &McpServerConfig) -> u64 {
 }
 
 impl McpManager {
+    /// 槽位/工具清单变更后 bump 代数：mount 侧缓存据此失效。
+    /// 多 bump 无害（只是多一次重建），漏 bump 才是错误——新写点必须补调。
+    fn touch_tools_generation(&self) {
+        self.tools_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// mount 侧缓存读代数（字段私有，经方法暴露只读面）
+    pub(crate) fn tools_generation(&self) -> u64 {
+        self.tools_generation
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 配置重载合流去抖：设置页连点保存 / delete / toggle 每次都触发对齐，
+    /// 无去抖时连发 N 次就是 N 个并发 apply（各自读盘各自对齐槽位，互相踩踏）。
+    /// 单飞 worker + 队列排干：同批触发合并为一次 apply（apply 只读盘上最新
+    /// 配置，中间代次的句柄丢弃不影响结果）。通道满 / worker 死退回逐发——
+    /// 去抖是优化，不是正确性依赖。
+    pub(crate) fn request_reload(&self, app: tauri::AppHandle) {
+        let tx = self.reload_tx.get_or_init(|| {
+            let (tx, rx) = tokio::sync::mpsc::channel::<tauri::AppHandle>(64);
+            tauri::async_runtime::spawn(Self::reload_worker(shared(), rx));
+            tx
+        });
+        if tx.try_send(app.clone()).is_err() {
+            tauri::async_runtime::spawn(async move {
+                shared().reload_from_config(&app).await;
+            });
+        }
+    }
+
+    async fn reload_worker(
+        this: &'static Self,
+        mut rx: tokio::sync::mpsc::Receiver<tauri::AppHandle>,
+    ) {
+        while let Some(app) = rx.recv().await {
+            while rx.try_recv().is_ok() {
+                // 排干同批积压
+            }
+            this.reload_from_config(&app).await;
+        }
+    }
+
     fn slots(&self) -> std::sync::MutexGuard<'_, HashMap<String, Slot>> {
         // Mutex 中毒只在持锁段 panic 时发生；本结构持锁段无 panic 点，
         // 中毒 = 不可恢复内部错误，按上锁惯例 unwrap 让其响亮暴露
@@ -406,7 +470,7 @@ impl McpManager {
         );
         self.prune_stderr(&cfg.id);
         Self::close_old(old).await;
-        match self.spawn_service(cfg).await {
+        let result = match self.spawn_service(cfg).await {
             Ok((service, tools, pid)) => {
                 self.slots().insert(
                     cfg.id.clone(),
@@ -426,7 +490,9 @@ impl McpManager {
                     .insert(cfg.id.clone(), Slot::Down { error: e.clone() });
                 Err(e)
             }
-        }
+        };
+        self.touch_tools_generation();
+        result
     }
 
     /// 断开并移除槽位（幂等：无槽 no-op）。取消令牌触发优雅退出，
@@ -441,6 +507,7 @@ impl McpManager {
             .unwrap_or_else(|e| e.into_inner())
             .remove(id);
         Self::close_old(old).await;
+        self.touch_tools_generation();
     }
 
     /// 每台服务器的调用闸：同一台服务器的并发调用串行化。
@@ -1286,6 +1353,7 @@ impl McpManager {
         };
         // 调用完即回收：子进程不跨调用存活（下一次调用重新拉起）
         self.retire(&cfg.id, fp).await;
+        self.touch_tools_generation();
         result
     }
 

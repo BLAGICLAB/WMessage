@@ -107,6 +107,14 @@ pub fn run(
         db::record_app_run(&conn, &app.id, now_ms, "running", process_generation())
             .map_err(|e| e.to_string())?
     };
+    crate::audit_event!(
+        app_handle,
+        crate::audit::AuditLevel::Info,
+        "apps.run_started",
+        "app" => app.id.clone(),
+        "run_id" => run_id,
+        "timeout_secs" => timeout_secs.map(|s| s.to_string()).unwrap_or_default(),
+    );
     let started = Instant::now();
     // 产物目录先建实：脚本经 argv[2] 直接写这里，不用自己拼 run_id（它无从得知）
     let output_dir = dir.join("output").join(run_id.to_string());
@@ -210,6 +218,15 @@ pub fn run(
             eprintln!("[apps] 回写运行结果失败，行暂留 running（清扫兜底）：{e}");
             return Err(e.to_string());
         }
+        crate::audit_event!(
+            app_handle,
+            crate::audit::AuditLevel::Info,
+            "apps.run_finished",
+            "app" => app.id.clone(),
+            "run_id" => run_id,
+            "status" => status,
+            "duration_ms" => duration_ms as i64,
+        );
     }
     Ok(AppRunResult {
         run_id,
@@ -258,6 +275,14 @@ fn mark_run_failed(
     if let Err(e) = finish_run_failed(&conn, run_id, duration_ms, db::now_ms(), status, summary) {
         eprintln!("[apps] 回写失败态失败，运行行暂留 running（清扫兜底）：{e}");
     }
+    crate::audit_event!(
+        app_handle,
+        crate::audit::AuditLevel::Info,
+        "apps.run_finished",
+        "run_id" => run_id,
+        "status" => status,
+        "duration_ms" => duration_ms,
+    );
 }
 
 /// 本进程的世代标识：进程生命周期内恒定，spawn 时落进 app_runs.owner_boot_id。

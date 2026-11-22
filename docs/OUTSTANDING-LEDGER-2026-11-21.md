@@ -38,14 +38,14 @@
 | ~~B-4~~ | **list_windows schema 文案与实现分家**：schema 说只列有标题窗口，macOS 把无标题也列出 | 同上 | ✅ **2026-11-22 修**：macOS 端对齐过滤（与 Windows 同口径），源码锚点锁两平台（list_windows_filters_untitled_on_both_platforms） |
 | ~~B-5~~ | **权限缺失应一次性说清缺哪两项**（模型从 turn=0 烧到 21） | 同上 | ✅ **2026-11-22 修**：permission_gap_notice 共享披露（句首点名缺项 + 两项权限/授权路径/别重试一起给全），macOS 两处 AX 闸与截图空产物面接上；测试锁纯函数与三处接线 |
 | ~~B-6~~ | 逻辑一致性拍板项（10-23）三条，2026-11-22 拍板全收口：**D9** 睡眠双时钟→世代标记（app_runs.owner_boot_id 列 + spawn 落世代 + 清扫只收非本世代行，语义=「僵尸=写它的进程死了」，本世代活跑含合盖唤醒永不被误标；不用 pid——复用误判要再叠进程启动时间校验）；**E9** 坏 due 读侧→验证后关闭（**直接只读查了运行库：全库 1 行带 due、零行不合法**，「等存量」前提不成立）；**E10** 六处原生 alert 收编浮层→useAppMessage（OS 原生 message() 信息弹窗单键，与 useConfirm 同源同 mock 策略），App.tsx ×4 + TodoCard + OperationHistoryTab 全迁 | `logic-consistency-audit-2026-10-23.md:223-228` | ✅ 全落地 |
-| B-7 | 11-16 审计待立项三件：P2-1 上下文硬顶真裁剪、P2-8 受管服务巡检单轮快照共享、三态主题 UI | `agent-audit-2026-11-16.md:1393-1394`（P2-1/P2-8 已做半步：语义诚实化 / spawn_blocking） | 中 |
-| B-8 | MCP B0 遗留（r2）：reload 合流去抖、锁内 clone+O(n) find、mcp_tools_json_body 每轮重挂载表重建、快照双重 mounted 窗口、spawn_blocking join 吞错、aggregate 工具总数无上限、表单切换丢字段回填 | `DEVLOG.md:5124`（DNS rebinding 半已由 10-21 DNS 闸闭环） | 中 |
+| ~~B-7~~ | 11-16 审计待立项三件：P2-1 上下文硬顶真裁剪、P2-8 受管服务巡检单轮快照共享、三态主题 UI | `agent-audit-2026-11-16.md:1393-1394` | ✅ **2026-11-22 拍板核销**：三条均为「待实测压力再做」的性能/体验项（P2-1/P2-8 已做半步：语义诚实化 / spawn_blocking），无压力驱动的投机实现不做——压力出现时以新挂账入表 |
+| ~~B-8~~ | MCP B0 遗留（r2）八小件，2026-11-22 逐件核实：**仍在 5 件全修**——①reload 合流去抖（单飞 worker + 队列排干，连发合并为最后一次 apply）②save/delete/toggle 锁内二次遍历（三个变更核改返回条目，审计体随写带出）③mcp_tools_json_body 每轮重建（代数缓存：manager 四处变更点 bump，mount 侧代数不变复用拼好的串）④spawn_blocking join 吞错（失败改报「配置读取失败」，不再伪装「服务器已删除」）⑤aggregate 总条数钳 512（保序截尾，防 20×128 线性膨胀）；**已修 2 件过期**（双查窗口——调用期已改盘上配置为权威；DNS TOCTOU——MCP 端点已钉 IP）；**失义 1 件**（前端表单切换——现码不丢字段，切走组的手改不参与提交是有意口径） | `DEVLOG.md:5124` | ✅ 全收口 |
 | ~~B-9~~ | SettingsPage 双 `mountedSections.has("bot")` 重复渲染（切「机器人」分区两段同显） | `DEVLOG.md:9206-9209` | ✅ **过期账**：91efc14f（10-27 快赢卫生批）已把 bot 三子块聚拢 + hidden 闸，现码三段全部带 `activeSection !== "bot"` 闸 |
 | ~~B-10~~ | 命令面板残留「doing=今日」标签（挂件口径同源遗留） | `DEVLOG.md:2596` | ✅ **过期账（非遗留，是对口径）**：doing 的现行产品语义已定型为「今日」（due 今天 → doing，TodoCard:139 / TaskDetailPanel:52 同款派生），面板标签与语义一致 |
-| B-11 | file_rollback create 撤销=删文件（危险动作，待立项设计） | `DEVLOG.md:3188` | 中 |
-| B-12 | MCP KeySlot「删除迁移备份」按钮（二期） | `DEVLOG.md:4792` | 小 |
-| B-13 | 10-27 账本余项：audit_log 长尾约 136 处迁移、M1 状态机守卫**等十余条 P3（明细只在记忆不在仓——账实缺口）**、apps_run 专项审计、archiveRule 配置未应用、evolution 死目录（仅 .DS_Store） | `DEVLOG.md:9429-9431`；evolution/ 目录实测仍在 | 中（余项）+ 文档债 |
-| B-14 | 工作项每回合一行重构（方案未实施；11-21 已补删除级联一处） | `WORK-ITEM-REDESIGN-PLAN-2026-11-04.md`（方案在案） | 大（另立项） |
+| ~~B-11~~ | file_rollback create 撤销=删文件（危险动作，待立项设计） | `DEVLOG.md:3188` | ✅ **过期账**：4cff76c7（11-07 差距收编批 3）已实现为「指纹一致才移入回收站 + 回收站失败文件原样保留」——漂移闸 / symlink 拒 / 64MB 上限四道防线齐备，原「删文件」形态已不存在 |
+| ~~B-12~~ | MCP KeySlot「删除迁移备份」按钮（二期） | `DEVLOG.md:4792` | ✅ **2026-11-22 落地**：备份路径单源化（io::mcp_secret_backup_path）+ mcp_secret_backup_status/delete 两命令（硬删——含明文文件不进回收站，删必审计）+ McpPanel「删除迁移备份」按钮（备份在盘才显示，删除前 warning 确认「删除后无法回滚到迁移前的机密状态」） |
+| ~~B-13~~ | 10-27 账本余项，2026-11-22 逐项处置：**evolution 死目录已删**；**apps_run 生命周期审计已补**（apps.run_started / apps.run_finished ×2——失败路径经 mark_run_failed 一处覆盖全部失败分支）；**archiveRule 过期账**（现码 reloadTasks 已应用规则）；**audit_log 长尾 167 处转卫生批**（自由文本 → 结构化宏是格式现代化非缺陷，单项映射需逐条设计，现落 bot.log+审计面双份）；**M1 状态机守卫等十余条 P3 明细不可重建**（原明细只在会话记忆不在仓，诚实关闭——后续若复现以新挂账入表） | `DEVLOG.md:9429-9431` | ✅ 分账收口 |
+| ~~B-14~~ | 工作项每回合一行重构（方案未实施；11-21 已补删除级联一处） | `WORK-ITEM-REDESIGN-PLAN-2026-11-04.md`（方案在案） | ✅ **2026-11-22 拍板转专项另立**：方案文档五批切分 + 四项待拍板保持有效，实施需专门会话（体量大，混入批量修风险高）；立项时以该方案为蓝本先拍四项 |
 
 ### C. 待实机（验证面）
 

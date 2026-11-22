@@ -286,6 +286,12 @@ pub(crate) fn load_config(app: &AppHandle) -> BotConfig {
 /// 不碰 apiKey/tavily/brave 等其他字段——评审 HIGH：BotConfig 整体写回会把
 /// 未迁移的 legacy 明文 key 一并清空）；任一台失败不写回（明文原样），WARN
 /// 审计，下次重试。
+/// MCP 机密迁移备份的固定路径（含明文的回滚网，0600）。
+/// 创建/查询/删除三处共用一个来源，避免字面量漂移。
+pub(crate) fn mcp_secret_backup_path(app: &AppHandle) -> std::path::PathBuf {
+    config_path(app).with_file_name("bot-config.backup-mcp-keys.json")
+}
+
 pub(crate) fn migrate_mcp_server_secrets_locked(app: &AppHandle) -> Result<(), String> {
     debug_assert!(holding_config_write(), "必须持 CONFIG_WRITE_LOCK");
     // 幂等短路：解析原始文件（水合前——文件里的明文还是真相源）
@@ -324,7 +330,7 @@ pub(crate) fn migrate_mcp_server_secrets_locked(app: &AppHandle) -> Result<(), S
     }
     // 首台迁移前备份（0600；含明文——它就是回滚网，见设计 §5。
     // 写一次不覆盖：首迁失败重试时快照仍是最初原文件，评审 M 采纳）
-    let backup = config_path(app).with_file_name("bot-config.backup-mcp-keys.json");
+    let backup = mcp_secret_backup_path(app);
     if !backup.exists() {
         match std::fs::copy(&p, &backup) {
             Ok(_) => {
