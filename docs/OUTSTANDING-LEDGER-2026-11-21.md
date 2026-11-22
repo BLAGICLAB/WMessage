@@ -40,8 +40,8 @@
 | ~~B-6~~ | 逻辑一致性拍板项（10-23）三条，2026-11-22 拍板全收口：**D9** 睡眠双时钟→世代标记（app_runs.owner_boot_id 列 + spawn 落世代 + 清扫只收非本世代行，语义=「僵尸=写它的进程死了」，本世代活跑含合盖唤醒永不被误标；不用 pid——复用误判要再叠进程启动时间校验）；**E9** 坏 due 读侧→验证后关闭（**直接只读查了运行库：全库 1 行带 due、零行不合法**，「等存量」前提不成立）；**E10** 六处原生 alert 收编浮层→useAppMessage（OS 原生 message() 信息弹窗单键，与 useConfirm 同源同 mock 策略），App.tsx ×4 + TodoCard + OperationHistoryTab 全迁 | `logic-consistency-audit-2026-10-23.md:223-228` | ✅ 全落地 |
 | B-7 | 11-16 审计待立项三件：P2-1 上下文硬顶真裁剪、P2-8 受管服务巡检单轮快照共享、三态主题 UI | `agent-audit-2026-11-16.md:1393-1394`（P2-1/P2-8 已做半步：语义诚实化 / spawn_blocking） | 中 |
 | B-8 | MCP B0 遗留（r2）：reload 合流去抖、锁内 clone+O(n) find、mcp_tools_json_body 每轮重挂载表重建、快照双重 mounted 窗口、spawn_blocking join 吞错、aggregate 工具总数无上限、表单切换丢字段回填 | `DEVLOG.md:5124`（DNS rebinding 半已由 10-21 DNS 闸闭环） | 中 |
-| B-9 | SettingsPage 双 `mountedSections.has("bot")` 重复渲染（切「机器人」分区两段同显） | `DEVLOG.md:9206-9209`（10-17 顺带发现） | 小 |
-| B-10 | 命令面板残留「doing=今日」标签（挂件口径同源遗留） | `DEVLOG.md:2596` | 小 |
+| ~~B-9~~ | SettingsPage 双 `mountedSections.has("bot")` 重复渲染（切「机器人」分区两段同显） | `DEVLOG.md:9206-9209` | ✅ **过期账**：91efc14f（10-27 快赢卫生批）已把 bot 三子块聚拢 + hidden 闸，现码三段全部带 `activeSection !== "bot"` 闸 |
+| ~~B-10~~ | 命令面板残留「doing=今日」标签（挂件口径同源遗留） | `DEVLOG.md:2596` | ✅ **过期账（非遗留，是对口径）**：doing 的现行产品语义已定型为「今日」（due 今天 → doing，TodoCard:139 / TaskDetailPanel:52 同款派生），面板标签与语义一致 |
 | B-11 | file_rollback create 撤销=删文件（危险动作，待立项设计） | `DEVLOG.md:3188` | 中 |
 | B-12 | MCP KeySlot「删除迁移备份」按钮（二期） | `DEVLOG.md:4792` | 小 |
 | B-13 | 10-27 账本余项：audit_log 长尾约 136 处迁移、M1 状态机守卫**等十余条 P3（明细只在记忆不在仓——账实缺口）**、apps_run 专项审计、archiveRule 配置未应用、evolution 死目录（仅 .DS_Store） | `DEVLOG.md:9429-9431`；evolution/ 目录实测仍在 | 中（余项）+ 文档债 |
