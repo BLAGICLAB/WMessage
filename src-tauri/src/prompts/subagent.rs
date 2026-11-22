@@ -299,6 +299,131 @@ mod subagent_prompt_tests {
                 );
             }
         }
+        // 三段式角色段与 profile 同规则：recon 生效集 = research 白名单 ∩
+        // probe.allowed，verifier 生效集 = coder 白名单 ∩ validator.allowed
+        //（SubagentStage::default_onion 的自动挂载，见 bot_orchestrator）。
+        let probe = yaml_allowed(include_str!("../../resources/onions/probe.yaml"));
+        let validator = yaml_allowed(include_str!("../../resources/onions/validator.yaml"));
+        for (p, effective) in [
+            (PROFILE_RECON, effective_tools(RESEARCH_TOOLS, &probe)),
+            (PROFILE_VERIFIER, effective_tools(CODER_TOOLS, &validator)),
+        ] {
+            for tool in effective {
+                assert!(
+                    p.contains(tool),
+                    "角色段提示未点名生效集工具 {tool}（模型会误判不可用）"
+                );
+            }
+        }
+    }
+
+    /// 提示词工具行点名的每个工具都必须在实际生效集（profile 白名单 ∩
+    /// stage 配置档 allowed）里——点名集外工具，模型照着调用必撞 dispatch
+    /// 白名单闸，每次白烧一轮预算。漂移的实证形态：配置档收窄清单漏列
+    /// `submit_result`，而全部 profile 的交卷指引都点名它（spawn 时每段
+    /// 第一次交卷必被拒）。
+    #[test]
+    fn role_prompt_tool_lines_name_only_effective_tools() {
+        let probe = yaml_allowed(include_str!("../../resources/onions/probe.yaml"));
+        let validator = yaml_allowed(include_str!("../../resources/onions/validator.yaml"));
+        use crate::bot::registry::{CODER_TOOLS, GENERAL_TOOLS, RESEARCH_TOOLS};
+        // 无 stage 配置档的裸 profile：生效集 = 白名单本身
+        for (role, prompt, effective) in [
+            (
+                "research",
+                PROFILE_RESEARCH,
+                effective_tools(RESEARCH_TOOLS, RESEARCH_TOOLS),
+            ),
+            (
+                "coder",
+                PROFILE_CODER,
+                effective_tools(CODER_TOOLS, CODER_TOOLS),
+            ),
+            (
+                "general",
+                PROFILE_GENERAL,
+                effective_tools(GENERAL_TOOLS, GENERAL_TOOLS),
+            ),
+            (
+                "recon",
+                PROFILE_RECON,
+                effective_tools(RESEARCH_TOOLS, &probe),
+            ),
+            (
+                "verifier",
+                PROFILE_VERIFIER,
+                effective_tools(CODER_TOOLS, &validator),
+            ),
+        ] {
+            for tool in prompt_tool_line(prompt) {
+                assert!(
+                    effective.contains(&tool),
+                    "{role} 提示词工具行点名了生效集外的工具 {tool:?}——模型照着调用必撞白名单闸"
+                );
+            }
+        }
+    }
+
+    /// 配置档的 allowed 是收窄清单：只能收紧、不能放宽（schema 约束注释与
+    /// bot_onions::effective_tools 同一口径）。列了白名单外的工具 = 配置
+    /// 看着生效、实际落空。
+    #[test]
+    fn builtin_onion_allowed_never_widens_the_whitelist() {
+        use crate::bot::registry::{CODER_TOOLS, RESEARCH_TOOLS};
+        let probe = yaml_allowed(include_str!("../../resources/onions/probe.yaml"));
+        let validator = yaml_allowed(include_str!("../../resources/onions/validator.yaml"));
+        for (onion, whitelist, allowed) in [
+            ("probe", RESEARCH_TOOLS, &probe),
+            ("validator", CODER_TOOLS, &validator),
+        ] {
+            for tool in allowed {
+                assert!(
+                    whitelist.contains(tool),
+                    "{onion}.allowed 列了 {tool}——不在对应 profile 白名单里，永远不生效"
+                );
+            }
+        }
+    }
+
+    /// yaml 的 allowed 收窄清单解析（测试用轻量读取，与运行时 `bot_onions::load`
+    /// 读同一份文件）：`allowed: [a, b, …]` → 逗号分词。清单可能折行
+    /// （flow sequence 跨行），从 allowed: 起点到 `]` 止整段截取。
+    fn yaml_allowed(include: &str) -> Vec<&str> {
+        let start = include
+            .find("allowed:")
+            .expect("配置档必须有 allowed 收窄清单");
+        let rest = &include[start..];
+        let end = rest.find(']').expect("allowed 清单未闭合");
+        let inner = &rest[rest.find('[').expect("allowed 必为 flow sequence") + 1..end];
+        inner
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    /// profile/角色提示里的工具清单行 → 工具名数组（全角冒号后顿号分词）。
+    fn prompt_tool_line(prompt: &str) -> Vec<&str> {
+        let line = prompt
+            .lines()
+            .find(|l| l.contains("可用工具：") || l.starts_with("工具："))
+            .expect("profile 提示必须有一行工具清单");
+        let idx = line.find('：').expect("工具行必带全角冒号");
+        line[idx + '：'.len_utf8()..]
+            .split('、')
+            .map(|s| s.trim().trim_end_matches('。'))
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    /// 生效集 = profile 白名单 ∩ 配置档 allowed（与 bot_onions::effective_tools
+    /// 同一语义；测试侧不拉起 app，直接对常量与 yaml 解析结果求交）。
+    fn effective_tools<'a>(whitelist: &[&'a str], allowed: &[&str]) -> Vec<&'a str> {
+        whitelist
+            .iter()
+            .copied()
+            .filter(|t| allowed.contains(t))
+            .collect()
     }
 
     /// 子 agent profile 必须写明 run_python 不联网——主聊天的红线不覆盖子 agent，
