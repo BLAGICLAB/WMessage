@@ -104,7 +104,8 @@ pub fn run(
     let run_id = {
         let _g = db::lock_db_write();
         let conn = db::open_db(app_handle).map_err(|e| e.to_string())?;
-        db::record_app_run(&conn, &app.id, now_ms, "running").map_err(|e| e.to_string())?
+        db::record_app_run(&conn, &app.id, now_ms, "running", process_generation())
+            .map_err(|e| e.to_string())?
     };
     let started = Instant::now();
     // 产物目录先建实：脚本经 argv[2] 直接写这里，不用自己拼 run_id（它无从得知）
@@ -259,6 +260,15 @@ fn mark_run_failed(
     }
 }
 
+/// 本进程的世代标识：进程生命周期内恒定，spawn 时落进 app_runs.owner_boot_id。
+/// 僵尸清扫的判据语义 =「僵尸 = 写它的进程死了」：本世代的活跑（含合盖唤醒——
+/// 运行计时用 Instant 合盖不走表，墙龄却会跨过清扫阈值）永不被清扫；
+/// 上代进程的行（或迁移前无世代的 NULL 行）照常收。
+fn process_generation() -> &'static str {
+    static GENERATION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    GENERATION.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
+
 /// 陈旧 running 行的判定阈值：超过这个时长仍停在 running 的行，
 /// 它的进程早就不在了（崩在写回之前）——按中断处理。
 /// 取 bot::constants::APPS_MAX_TIMEOUT_SECS（30 分钟）的四倍：再长的运行也早该结束了。
@@ -266,18 +276,22 @@ const STALE_RUN_AGE_MS: i64 = 2 * 60 * 60 * 1000;
 
 /// 清扫陈旧的 running 行（僵尸行，纯函数便于单测）：
 /// 进程崩在写回之前时，行会永远停在 running，程序页上显示「运行中」。
-/// 只动 started_at 早于阈值的 running 行；已终态的行不碰。
+/// 只动 started_at 早于阈值且**非本世代**的 running 行；已终态的行不碰。
+/// 本世代行不清扫：墙龄判龄与运行计时（Instant）在合盖唤醒时会错位，
+/// 活跑被误标的代价是「先假失败后自愈」——用户看到的中间态在说谎。
 fn sweep_stale_runs_conn(
     conn: &rusqlite::Connection,
     now_ms: i64,
     age_ms: i64,
+    generation: &str,
 ) -> Result<usize, String> {
     let cutoff = now_ms - age_ms;
     conn.execute(
         "UPDATE app_runs
             SET finished_at = ?1, duration_ms = ?1 - started_at, status = 'failed', summary = ?2
-          WHERE status = 'running' AND started_at < ?3",
-        rusqlite::params![now_ms, "进程中断（未回写结果）", cutoff],
+          WHERE status = 'running' AND started_at < ?3
+            AND (owner_boot_id IS NULL OR owner_boot_id != ?4)",
+        rusqlite::params![now_ms, "进程中断（未回写结果）", cutoff, generation],
     )
     .map_err(|e| e.to_string())
 }
@@ -293,7 +307,7 @@ pub(crate) fn sweep_stale_runs(app_handle: &AppHandle) {
             return;
         }
     };
-    match sweep_stale_runs_conn(&conn, db::now_ms(), STALE_RUN_AGE_MS) {
+    match sweep_stale_runs_conn(&conn, db::now_ms(), STALE_RUN_AGE_MS, process_generation()) {
         Ok(n) if n > 0 => eprintln!("[apps] 清扫陈旧运行行：{n} 行由 running 标成失败"),
         Ok(_) => {}
         Err(e) => eprintln!("[apps] 清扫陈旧运行行失败：{e}"),
@@ -500,9 +514,19 @@ mod tests {
     }
 
     fn insert_run(conn: &rusqlite::Connection, id: i64, started_at: i64, status: &str) {
+        insert_run_with_generation(conn, id, started_at, status, "gen-old");
+    }
+
+    fn insert_run_with_generation(
+        conn: &rusqlite::Connection,
+        id: i64,
+        started_at: i64,
+        status: &str,
+        generation: &str,
+    ) {
         conn.execute(
-            "INSERT INTO app_runs (id, app_id, started_at, status) VALUES (?1, 'app1', ?2, ?3)",
-            rusqlite::params![id, started_at, status],
+            "INSERT INTO app_runs (id, app_id, started_at, status, owner_boot_id) VALUES (?1, 'app1', ?2, ?3, ?4)",
+            rusqlite::params![id, started_at, status, generation],
         )
         .unwrap();
     }
@@ -535,7 +559,7 @@ mod tests {
         insert_run(&conn, 1, now - 5_000, "running"); // 刚起：仍在跑
         insert_run(&conn, 2, now - 3 * 60 * 60 * 1000, "running"); // 陈旧：僵尸行
         insert_run(&conn, 3, now - 3 * 60 * 60 * 1000, "ok"); // 已终态
-        let n = sweep_stale_runs_conn(&conn, now, 60 * 60 * 1000).unwrap();
+        let n = sweep_stale_runs_conn(&conn, now, 60 * 60 * 1000, "gen-current").unwrap();
         assert_eq!(n, 1, "只应扫掉 1 个僵尸行");
         assert_eq!(run_status(&conn, 1).0, "running");
         assert_eq!(run_status(&conn, 2).0, "failed");
@@ -547,5 +571,24 @@ mod tests {
             })
             .unwrap();
         assert_eq!(dur, 3 * 60 * 60 * 1000);
+    }
+
+    /// 世代保护：本世代的活跑（含合盖唤醒——运行计时用 Instant 合盖不走表，
+    /// 墙龄却跨过了阈值）永不被清扫；上代行与迁移前的 NULL 行照常收。
+    #[test]
+    fn sweep_spares_current_generation_and_collects_older_ones() {
+        let conn = runs_db();
+        let now = 10_000_000i64;
+        let stale = now - 3 * 60 * 60 * 1000;
+        // 本世代陈旧行 = 合盖唤醒后的活跑：不清
+        insert_run_with_generation(&conn, 1, stale, "running", "gen-current");
+        // 上代行与迁移前 NULL 行 = 真僵尸：照收
+        insert_run_with_generation(&conn, 2, stale, "running", "gen-old");
+        insert_run(&conn, 3, stale, "running");
+        let n = sweep_stale_runs_conn(&conn, now, 60 * 60 * 1000, "gen-current").unwrap();
+        assert_eq!(n, 2, "上代 + NULL 收两行，本世代不动");
+        assert_eq!(run_status(&conn, 1).0, "running", "本世代活跑不得被误标");
+        assert_eq!(run_status(&conn, 2).0, "failed");
+        assert_eq!(run_status(&conn, 3).0, "failed");
     }
 }

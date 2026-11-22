@@ -17,7 +17,8 @@ const mocks = vi.hoisted(() => {
   const openMock = vi.fn();
   const saveMock = vi.fn();
   const askMock = vi.fn();
-  return { invokeMock, listenMock, openMock, saveMock, askMock };
+  const messageMock = vi.fn();
+  return { invokeMock, listenMock, openMock, saveMock, askMock, messageMock };
 });
 
 // 夹具任务：多数用例拿它当「首屏已加载」的信号。用它而不是演示数据，是因为
@@ -61,6 +62,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: mocks.openMock,
   save: mocks.saveMock,
   ask: mocks.askMock,
+  message: mocks.messageMock,
 }));
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -81,6 +83,7 @@ beforeEach(() => {
   mocks.askMock.mockReset();
   mocks.askMock.mockResolvedValue(true);
   alertMock.mockClear();
+  mocks.messageMock.mockClear();
   window.alert = alertMock;
   // 流式在途态在模块 store 里（跨面板挂载存活），跨用例共享——不复位会让
   // 上一例的「在途」改写这一例的渲染
@@ -500,6 +503,7 @@ describe("App", () => {
       });
       failUpsert = true; // 初始化完成后，后续写入全部失败
       alertMock.mockClear();
+  mocks.messageMock.mockClear();
       // emit mock 跨用例共享（beforeEach 不清），先清零再断言「失败不广播」
       const { emit } = await import("@tauri-apps/api/event");
       (emit as ReturnType<typeof vi.fn>).mockClear();
@@ -993,7 +997,10 @@ describe("App", () => {
     await user.click(importBtn);
     // 导入完成 alert（证明 importTasks 全流程走完）
     await waitFor(() => {
-      expect(alertMock).toHaveBeenCalledWith("导入完成：本次写入 2 条任务卡");
+      expect(mocks.messageMock).toHaveBeenCalledWith(
+        "导入完成：本次写入 2 条任务卡",
+        expect.objectContaining({ kind: "info" }),
+      );
     });
     // db_load 第二次调用必须发生在 tasks_import 之后（DB 是单一真源）
     const calls = mocks.invokeMock.mock.calls;

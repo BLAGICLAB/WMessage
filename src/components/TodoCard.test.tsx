@@ -21,7 +21,9 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(async () => null),
+  message: vi.fn(async () => {}),
 }));
+import { message as messageDialogMock } from "@tauri-apps/plugin-dialog";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openPath: vi.fn(async () => {}),
@@ -704,8 +706,8 @@ describe("TodoCardView 子任务", () => {
       return null;
     });
     const onDelete = vi.fn();
-    const alerts: string[] = [];
-    vi.stubGlobal("alert", (msg: string) => alerts.push(msg));
+    const messageMock = vi.mocked(messageDialogMock);
+    messageMock.mockClear();
     render(
       <TodoCard
         task={{
@@ -722,16 +724,16 @@ describe("TodoCardView 子任务", () => {
     );
     await user.click(screen.getByText("彻底删除"));
     await user.click(screen.getByText("全部删除").closest("button")!);
-    await waitFor(() => expect(alerts).toHaveLength(1));
+    await waitFor(() => expect(messageMock).toHaveBeenCalledTimes(1));
+    const notice = messageMock.mock.calls[0][0] as string;
     // 两个文件都尝试过（不因第一个失败就跳过第二个）
     const deleteCalls = invokeMock.mock.calls.filter(
       (c) => c[0] === "delete_bound_file",
     );
     expect(deleteCalls).toHaveLength(2);
-    expect(alerts[0]).toContain("已移入回收站 1/2");
-    expect(alerts[0]).toContain("b.pdf");
+    expect(notice).toContain("已移入回收站 1/2");
+    expect(notice).toContain("b.pdf");
     // 卡不删：还有文件没处理完
     expect(onDelete).not.toHaveBeenCalled();
-    vi.unstubAllGlobals();
   });
 });

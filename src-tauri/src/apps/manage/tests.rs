@@ -317,7 +317,7 @@ fn delete_removes_all_three_tables_and_the_directory() {
         &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, None, 1,
     )
     .unwrap();
-    db_apps::record_app_run(&conn, &id, 2, "ok").unwrap();
+    db_apps::record_app_run(&conn, &id, 2, "ok", "gen-test").unwrap();
     std::fs::create_dir_all(dir.join("input")).unwrap();
     std::fs::write(dir.join("input").join("本月.xlsx"), b"x").unwrap();
     archive_core(&conn, &id, 3).unwrap();

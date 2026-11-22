@@ -66,7 +66,7 @@ import { handleCommandError } from "./lib/errorHandler";
 import { NAV_W } from "./lib/navWidth";
 import { applyFontSizeSync } from "./lib/botConfig";
 import { dayKey } from "./components/HomePage/homeData";
-import { useConfirm } from "./lib/useConfirm";
+import { useAppMessage, useConfirm } from "./lib/useConfirm";
 import { unlistenSafe } from "./lib/useTauriListen";
 import { isBackendPersisted, KNOWN_SOURCES } from "./lib/mutationOrigin";
 import { revertPatch } from "./lib/taskRevert";
@@ -768,7 +768,7 @@ function App() {
       kind: "export",
       stem: "wmessage-tasks",
       transfer: exportTasksToFile,
-      done: (count) => alert(`导出完成：共 ${count} 条任务卡`),
+      done: (count) => void info(`导出完成：共 ${count} 条任务卡`),
       label: "tasks_export",
     });
 
@@ -782,7 +782,7 @@ function App() {
         await reloadTasks();
         return merged;
       },
-      done: (count) => alert(`导入完成：本次写入 ${count} 条任务卡`),
+      done: (count) => void info(`导入完成：本次写入 ${count} 条任务卡`),
       label: "tasks_import",
     });
 
@@ -814,7 +814,7 @@ function App() {
       kind: "export",
       stem: "wmessage-workspace",
       transfer: exportWorkspaceToFile,
-      done: (count) => alert(`导出完成：共 ${count} 个工作区条目`),
+      done: (count) => void info(`导出完成：共 ${count} 个工作区条目`),
       label: "workspace_export",
     });
 
@@ -828,7 +828,7 @@ function App() {
         emit("workspace-changed").catch(() => {});
         return merged;
       },
-      done: (count) => alert(`导入完成：本次写入 ${count} 个工作区条目`),
+      done: (count) => void info(`导入完成：本次写入 ${count} 个工作区条目`),
       label: "workspace_import",
     });
 
@@ -888,6 +888,7 @@ function App() {
   // 有子任务卡时先询问：一并软删 or 仅删母卡（子卡保留，parentId 悬挂不清理——
   // 母卡从回收站恢复后关联仍成立）
   const confirm = useConfirm();
+  const info = useAppMessage();
   const deleteTask = async (taskId: string) => {
     const children = tasksRef.current.filter(
       (t) => t.parentId === taskId && !t.deletedAt,

@@ -264,6 +264,10 @@ pub fn open_db<R: tauri::Runtime>(
     ensure_columns(&conn, "apps", &[("timeout_secs", "INTEGER")])?;
     conn.execute_batch(crate::db::apps::APP_RUNS_DDL)
         .map_err(|e| e.to_string())?;
+    // 睡眠双时钟：活跑的墙龄会跨过 2h 清扫阈值（运行计时用 Instant，合盖不走表），
+    // 清扫只收非本世代的行——世代在 spawn 时落列，见 apps::process_generation。
+    // 必须在 APP_RUNS_DDL 之后：ensure_columns 对不存在的表做 ALTER 会报错
+    ensure_columns(&conn, "app_runs", &[("owner_boot_id", "TEXT")])?;
     conn.execute_batch(crate::db::apps::APP_VERSIONS_DDL)
         .map_err(|e| e.to_string())?;
     // 通用持久化副作用队列：状态已写、动作未做的中间态可恢复

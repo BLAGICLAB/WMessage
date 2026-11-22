@@ -24,7 +24,7 @@ import { runWithBot } from "../../lib/botRun";
 import { openFilePath } from "../../lib/openTarget";
 import { isTaskCompleted } from "../../lib/taskScope";
 import { planWindowLabel } from "../TaskTimeline/week";
-import { useConfirm } from "../../lib/useConfirm";
+import { useAppMessage, useConfirm } from "../../lib/useConfirm";
 import { useTaskFiles } from "../../lib/useTaskFiles";
 import {
   taskFiles,
@@ -63,6 +63,7 @@ export function TodoCardView({
 }: TodoCardViewProps & { drag?: CardDrag }) {
   const [editing, setEditing] = useState(false);
   const confirm = useConfirm();
+  const info = useAppMessage();
   const [dueEditing, setDueEditing] = useState(false);
   // 执行痕迹弹层（TracePanel 自带 portal，任务卡内点击「执行详情」打开）
   const [traceOpen, setTraceOpen] = useState(false);
@@ -779,7 +780,7 @@ export function TodoCardView({
                     // 有失败：一次说清「删了几个、哪些没删成、为什么」，任务卡保留
                     // 在回收站可重试。不再叠一个 handleCommandError 弹窗——两份
                     // 弹窗等于让用户对着同一件事点两次确认
-                    alert(
+                    await info(
                       `已移入回收站 ${doneCount}/${boundFiles.length} 个，任务卡保留在回收站可重试。\n\n未删除：\n${failed.join("\n")}`,
                     );
                     setPurgeBusy(false);

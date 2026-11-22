@@ -10,9 +10,11 @@ import {
   type TagMergeRunSummary,
 } from "../../lib/botConsolidate";
 import { handleCommandError } from "../../lib/errorHandler";
+import { useAppMessage } from "../../lib/useConfirm";
 import { formatDateTime } from "../../format";
 
 export function OperationHistoryTab() {
+  const info = useAppMessage();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [runs, setRuns] = useState<TagMergeRunSummary[]>([]);
@@ -42,7 +44,7 @@ export function OperationHistoryTab() {
     try {
       const r = await tagsConsolidateRollback(runId);
       // 简单提示
-      alert(
+      await info(
         `已撤销「${r.merged_to}」的合并，恢复 ${r.restored_task_count} 个任务的 tags。`,
       );
       reload();

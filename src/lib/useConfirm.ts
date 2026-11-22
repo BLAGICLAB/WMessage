@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask, message } from "@tauri-apps/plugin-dialog";
 
 /**
  * 破坏性操作二次确认（统一走 Tauri 2 原生 dialog plugin，不依赖 window.confirm）。
@@ -54,6 +54,39 @@ export function useConfirm(): (
     } catch {
       // plugin-dialog 不可用（web/无头测试缺 mock）→ 默认拒绝（拒绝比误通过安全）
       return false;
+    }
+  }, []);
+}
+
+/** 操作结果反馈（信息弹窗，单键「好」）：收编原生 alert——同一视觉语言
+ *  （OS 原生 dialog plugin），不阻塞状态、无取消语义。与 useConfirm 同源
+ *  同 mock 策略（vitest 替换 plugin-dialog 即可）。 */
+export type AppMessageOptions = {
+  /** 弹窗正文（多行用 \n） */
+  message: string;
+  /** 弹窗标题，默认「操作完成」 */
+  title?: string;
+  /** 确认按钮文案，默认「好」 */
+  okLabel?: string;
+};
+
+export function useAppMessage(): (
+  messageOrOptions: string | AppMessageOptions,
+) => Promise<void> {
+  return useCallback(async (input) => {
+    const options: AppMessageOptions =
+      typeof input === "string" ? { message: input } : input;
+    const title = options.title ?? "操作完成";
+    const okLabel = options.okLabel ?? "好";
+    try {
+      await message(options.message, {
+        title,
+        kind: "info",
+        okLabel,
+      });
+    } catch {
+      // plugin-dialog 不可用（web/无头测试缺 mock）→ 静默降级：
+      // 信息提示丢了不阻塞流程，不弹错
     }
   }, []);
 }

@@ -37,7 +37,7 @@
 | ~~B-3~~ | **F-新5**：子 agent 纪律段点名 8 个生效集外工具 | 046c46b9 提交信息登记 | ✅ **2026-11-22 核实为过期账**：漂移实体（三份 onion yaml 未列 submit_result，而全部 profile 交卷指引点名它）已被次日 35399ddd 修掉（yaml 显式补列）；双向现状验算一致。防复发补三锚点：反向（提示词工具行 ⊆ 生效集，五段全盖）+ 配置档不放宽（allowed ⊆ 白名单）+ 既有单向守卫扩盖 recon/verifier |
 | ~~B-4~~ | **list_windows schema 文案与实现分家**：schema 说只列有标题窗口，macOS 把无标题也列出 | 同上 | ✅ **2026-11-22 修**：macOS 端对齐过滤（与 Windows 同口径），源码锚点锁两平台（list_windows_filters_untitled_on_both_platforms） |
 | ~~B-5~~ | **权限缺失应一次性说清缺哪两项**（模型从 turn=0 烧到 21） | 同上 | ✅ **2026-11-22 修**：permission_gap_notice 共享披露（句首点名缺项 + 两项权限/授权路径/别重试一起给全），macOS 两处 AX 闸与截图空产物面接上；测试锁纯函数与三处接线 |
-| B-6 | 逻辑一致性拍板项（10-23）：D9 睡眠双时钟（正解要 pid 出 PyRunResult）、E9 坏 due 读侧口径、E10 alert 视觉语言统一 | `logic-consistency-audit-2026-10-23.md:223-228` | 中 |
+| ~~B-6~~ | 逻辑一致性拍板项（10-23）三条，2026-11-22 拍板全收口：**D9** 睡眠双时钟→世代标记（app_runs.owner_boot_id 列 + spawn 落世代 + 清扫只收非本世代行，语义=「僵尸=写它的进程死了」，本世代活跑含合盖唤醒永不被误标；不用 pid——复用误判要再叠进程启动时间校验）；**E9** 坏 due 读侧→验证后关闭（**直接只读查了运行库：全库 1 行带 due、零行不合法**，「等存量」前提不成立）；**E10** 六处原生 alert 收编浮层→useAppMessage（OS 原生 message() 信息弹窗单键，与 useConfirm 同源同 mock 策略），App.tsx ×4 + TodoCard + OperationHistoryTab 全迁 | `logic-consistency-audit-2026-10-23.md:223-228` | ✅ 全落地 |
 | B-7 | 11-16 审计待立项三件：P2-1 上下文硬顶真裁剪、P2-8 受管服务巡检单轮快照共享、三态主题 UI | `agent-audit-2026-11-16.md:1393-1394`（P2-1/P2-8 已做半步：语义诚实化 / spawn_blocking） | 中 |
 | B-8 | MCP B0 遗留（r2）：reload 合流去抖、锁内 clone+O(n) find、mcp_tools_json_body 每轮重挂载表重建、快照双重 mounted 窗口、spawn_blocking join 吞错、aggregate 工具总数无上限、表单切换丢字段回填 | `DEVLOG.md:5124`（DNS rebinding 半已由 10-21 DNS 闸闭环） | 中 |
 | B-9 | SettingsPage 双 `mountedSections.has("bot")` 重复渲染（切「机器人」分区两段同显） | `DEVLOG.md:9206-9209`（10-17 顺带发现） | 小 |

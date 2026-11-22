@@ -37,7 +37,8 @@ pub const APP_RUNS_DDL: &str = "CREATE TABLE IF NOT EXISTS app_runs (
    finished_at    INTEGER,
    duration_ms    INTEGER,
    status         TEXT NOT NULL,
-   summary        TEXT
+   summary        TEXT,
+   owner_boot_id  TEXT
  );";
 
 /// app_versions 表单源 DDL：程序本体版本快照（每次创建/更新/回滚存一份完整内容）。
@@ -229,10 +230,11 @@ pub fn record_app_run(
     app_id: &str,
     started_at: i64,
     status: &str,
+    owner_boot_id: &str,
 ) -> Result<i64, String> {
     conn.execute(
-        "INSERT INTO app_runs (app_id, started_at, status) VALUES (?1, ?2, ?3)",
-        rusqlite::params![app_id, started_at, status],
+        "INSERT INTO app_runs (app_id, started_at, status, owner_boot_id) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![app_id, started_at, status, owner_boot_id],
     )
     .map_err(|e| e.to_string())?;
     Ok(conn.last_insert_rowid())
