@@ -667,4 +667,30 @@ describe("ChatPanel 布局尺寸取自 chatLayout 推导链", () => {
     expect(el?.style.minWidth).toBe(`${COMPOSER_MIN_W}px`);
     expect(el?.className).toContain("flex-[2]");
   });
+
+  // 机器人总开关关闭（SPEC 2-31 口径）：输入框保留渲染但禁用 + 说明文案——
+  // 草稿可见性与「先打字后开开关」的流优先于「完全不渲染」；发送即便被
+  // 触发也有后端 require_bot_enabled 兜底拒
+  it("机器人总开关关闭：输入卡禁用并提示，发送/附件入口不可点", async () => {
+    render(<ChatPanel {...defaultProps} enabled={false} />);
+    // 会话不加载（enabled 闸跳过），页面仍是空态引导 + 禁用输入卡
+    await waitFor(() => {
+      expect(mocks.invokeMock).not.toHaveBeenCalledWith("bot_sessions_load");
+    });
+    const ta = screen.getByPlaceholderText(
+      "机器人已关闭，到设置页开启后才能对话",
+    );
+    expect(ta).toBeDisabled();
+    expect(
+      screen.getByText(/机器人已关闭：输入与发送不可用/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "添加文件或图片" }),
+    ).toBeDisabled();
+    // 容器仍挂载（主窗口靠 hidden 切页，卸载会丢 messages 与监听器）
+    expect(
+      screen.getByRole("complementary", { name: "会话列表" }),
+    ).toBeInTheDocument();
+  });
 });

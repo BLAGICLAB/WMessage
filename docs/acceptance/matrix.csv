@@ -29,7 +29,7 @@
 2-28,2 机器人聊天入口（挂件已退役）,跨入口跳聊天统一走 chat-focus-session,D2,ACC-C-07,—,无,(无),L2,未验,chat-focus-session 跨入口统一跳转未验
 2-29,2 机器人聊天入口（挂件已退役）,托盘菜单「打开主窗口 / 打开聊天 / 退出」,D2,ACC-C-08,S20,部分,(无),L2,未验,托盘「打开聊天」推到最顶层并发空载荷事件未验
 2-30,2 机器人聊天入口（挂件已退役）,聊天区不再有「选任务模式」与任务引用块,D2,ACC-C-09,—,无(负向),(无),L2,未验,负向卡：聊天区不得出现「选任务模式」与任务引用块
-2-31,2 机器人聊天入口（挂件已退役）,机器人总开关关闭时聊天页不给可用界面,D2,ACC-C-10,M32,部分,src/components/ChatPanel.session.test.tsx,L1+L2,未验,开关关闭时聊天页不给可用界面未验
+2-31,2 机器人聊天入口（挂件已退役）,机器人总开关关闭时聊天页不出现可用的对外交互（输入框禁用+提示）,D2,ACC-C-10,M32,部分,src/components/ChatPanel.session.test.tsx,L1+L2,未验,输入框禁用+说明文案未实机验
 2-32,2 机器人聊天入口（挂件已退役）,聊天页两栏布局,D2,ACC-C-11,"M88,W11",部分,src/components/ChatPanel.test.tsx,L1+L2,未验,会话栏常驻 224px 与两行式条目未验
 3-33,3 机器人聊天与模型,多会话聊天,D3a,ACC-I-01,"S19,S20",部分,src/components/ChatPanel.send.test.tsx,L1+L2,未验,斜杠命令 /compact /retry /clean、删除确认 60s 超时自动拒未验
 3-34,3 机器人聊天与模型,本地提示是纯瞬态,D3a,ACC-I-02,S20,部分,src/components/ChatPanel.send.test.tsx,L1+L2,未验,只覆盖停止回显；/compact 不足 /retry 不可重试等提示不落库未验

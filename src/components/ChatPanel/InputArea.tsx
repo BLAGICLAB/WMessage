@@ -40,8 +40,13 @@ import type {
   TaskRef,
 } from "./types";
 
-/** 输入框占位文案：回复中 / 带附件 / 默认 三态 */
-function placeholderOf(viewedBusy: boolean, hasFiles: boolean): string {
+/** 输入框占位文案：机器人关闭 / 回复中 / 带附件 / 默认 四态 */
+function placeholderOf(
+  viewedBusy: boolean,
+  hasFiles: boolean,
+  botDisabled: boolean,
+): string {
+  if (botDisabled) return "机器人已关闭，到设置页开启后才能对话";
   if (viewedBusy) return "回复中…（点右侧停止键或输入 /stop 可停止）";
   if (hasFiles) return "输入指令，如：润色这个文件";
   return "和机器人说点什么";
@@ -72,6 +77,8 @@ type InputAreaProps = {
   /** 停止当前回复 */
   onStop: () => void;
   viewedBusy: boolean;
+  /** 机器人总开关关闭：输入卡整体禁用（见解构处注释） */
+  botDisabled?: boolean;
   /** 🛡 授权模式：窄命令 bot_set_perm_mode 落盘，改的是全局档位（不是会话级） */
   perm: {
     mode: PermMode;
@@ -122,6 +129,11 @@ export function InputArea({
   pickFiles,
   onStop,
   viewedBusy,
+  /** 机器人总开关关闭（App 由 bot_get_enabled 读入、bot-changed 驱动）：
+   *  输入卡整体禁用 + 说明文案——发送/附件入口不可点，打不了字；
+   *  后端 require_bot_enabled 仍是权威闸，这里只是把「为什么发不出去」
+   *  从发送后的报错提前到输入框本身 */
+  botDisabled = false,
   perm,
   permBtnRef,
   permDropdownRef,
@@ -132,6 +144,9 @@ export function InputArea({
   model,
   effort,
 }: InputAreaProps) {
+  // 禁用面只罩「对外交互」三件（打字 / 附件 / 发送）；🛡🧠⚡ 下拉是本地 UI
+  // 不对外，照常可点——禁用面扩大只会让用户以为整个页面都坏了。
+  const controlsDisabled = viewedBusy || botDisabled;
   // 底栏放不下时逐级图标化：推理强度 → 授权 → 模型，模型名信息量最大、最后才让。
   // 图标态宽度是 chatLayout 里的常量，全图标行宽即聊天中栏的最小宽度——单行、
   // 不换行、互不压住。底栏浮层都从卡内 absolute bottom-full 向上弹出：输入卡不得
@@ -281,9 +296,18 @@ export function InputArea({
             })}
           </div>
         )}
+        {botDisabled && (
+          <div
+            className="mb-1 text-[10px] leading-4 text-[var(--t3)]"
+            role="status"
+          >
+            机器人已关闭：输入与发送不可用，到设置页「机器人设置」开启后恢复
+          </div>
+        )}
         <textarea
           ref={taRef}
           value={input}
+          disabled={controlsDisabled}
           onChange={(e) => {
             setInput(e.target.value);
             setSlashIdx(0);
@@ -334,7 +358,7 @@ export function InputArea({
               send();
             }
           }}
-          placeholder={placeholderOf(viewedBusy, files.length > 0)}
+          placeholder={placeholderOf(viewedBusy, files.length > 0, botDisabled)}
           rows={1}
           className="w-full min-h-[48px] max-h-40 overflow-y-auto resize-none bg-transparent outline-none text-xs text-[var(--t2)] leading-relaxed placeholder:text-[var(--t4)]"
         />
@@ -346,7 +370,7 @@ export function InputArea({
             style={{ width: COMPOSER_PLUS_W }}
             title="添加文件或图片，和消息一起发送（如：添加 Word 后输入「润色」；图片发给机器人识别：png / jpg / jpeg / webp / gif / bmp，最大 3MB/张、最多 4 张/消息）"
             onClick={pickFiles}
-            disabled={viewedBusy}
+            disabled={controlsDisabled}
           >
             <Plus size={15} aria-hidden />
           </button>
@@ -566,11 +590,12 @@ export function InputArea({
           ) : (
             <button
               type="button"
-              className="shrink-0 h-8 rounded-full flex items-center justify-center bg-[var(--t1)] text-[var(--bg)] hover:opacity-85 transition-[opacity,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]"
+              className="shrink-0 h-8 rounded-full flex items-center justify-center bg-[var(--t1)] text-[var(--bg)] hover:opacity-85 transition-[opacity,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97] disabled:opacity-40 disabled:hover:opacity-40"
               style={{ width: COMPOSER_SEND_W }}
               title="发送（Enter 发送，Shift+Enter 换行）"
               aria-label="发送"
               onClick={send}
+              disabled={controlsDisabled}
             >
               <svg
                 width="14"

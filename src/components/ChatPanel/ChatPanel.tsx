@@ -962,6 +962,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
       <InputArea
         input={input}
         setInput={setInput}
+        botDisabled={!enabled}
         files={files}
         setFiles={setFiles}
         taskRefs={refs}
