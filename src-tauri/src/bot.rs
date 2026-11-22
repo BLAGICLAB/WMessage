@@ -51,6 +51,8 @@ pub use crate::bot_fs::{resolve_with_perm, FileChangeReceipt};
 // 文件读上限、内容哈希与 diff 生成：trace 侧与读盘类工具共用。
 pub(crate) use crate::bot_fs::{build_unified_diff, sha256_hex, sha256_hex_bytes, READ_MAX_BYTES};
 // 回收站上下文：回滚侧把被创建文件移入废纸篓时复用同一 NSFileManager 口径。
+/// 族外（ui/）引用桌面权限披露走门面——bot 命名空间门禁禁深层路径
+pub(crate) use crate::bot_desktop::permission_gap_notice;
 pub(crate) use crate::bot_manage_file::trash_context;
 // 技能提示段与运行态：逐步执行要拼技能上下文，退出清理要判技能是不是还在跑。
 pub use crate::bot_skills::{build_skill_block, SkillRun, SkillState};

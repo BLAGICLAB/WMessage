@@ -407,6 +407,18 @@ fn screenshot_ok_result(out: &std::path::Path, size: u64) -> ToolResult {
     .with_file_change(crate::bot_fs::build_binary_file_receipt(&path))
 }
 
+/// 桌面自动化的权限缺口披露（一次性说清两项）：缺哪项就把哪项写在句首，
+/// 但两项权限、授权路径与「授权前别重试」的口径一起给全。权限缺失只报
+/// 单项时，模型会换参数、换工具接着撞（实测从 turn=0 烧到 turn=21 才停）。
+pub(crate) fn permission_gap_notice(missing: &str) -> String {
+    format!(
+        "桌面自动化缺 macOS 权限：{missing}未授予。桌面与截图工具要两项权限都齐——\
+         「辅助功能」与「屏幕录制」都在 系统设置 → 隐私与安全性 里勾选本应用；\
+         授权前 list_windows / ui_inspect / ui_click / ui_type / screenshot 会持续失败，\
+         不要换参数或换工具重试，先告知用户去授权、等确认后再继续。"
+    )
+}
+
 /// 截取主显示器画面 → AI_Gen_Files/wm-screen-<时间戳>.png，返回路径。
 /// 模型拿到路径后可接着 ocr_image 读屏上文字（读屏上内容不需要视觉模型）。
 pub async fn tool_screenshot(app: &AppHandle, _args: &str) -> ToolResult {
@@ -436,10 +448,7 @@ pub async fn tool_screenshot(app: &AppHandle, _args: &str) -> ToolResult {
         Ok(Ok(())) => {
             let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
             if size == 0 {
-                return ToolResult::error(
-                    "截图失败：产物文件为空（请检查屏幕录制权限）".to_string(),
-                    Vec::new(),
-                );
+                return ToolResult::error(permission_gap_notice("「屏幕录制」"), Vec::new());
             }
             crate::bot::audit_log(
                 app,
@@ -463,6 +472,54 @@ mod tests {
             .split_once("#[cfg(test)]")
             .expect("bot_desktop.rs 应有测试模块")
             .0
+    }
+
+    /// 权限缺口披露一次性说清两项：单项提示会让模型换工具接着撞（烧轮次实测）。
+    #[test]
+    fn permission_gap_notice_names_both_permissions_and_stops_retry() {
+        for missing in ["「辅助功能」", "「屏幕录制」"] {
+            let m = permission_gap_notice(missing);
+            assert!(m.contains(missing), "缺哪项要写在句首：{m}");
+            assert!(
+                m.contains("辅助功能") && m.contains("屏幕录制"),
+                "两项权限都要点名：{m}"
+            );
+            assert!(m.contains("系统设置"), "要给授权路径：{m}");
+            assert!(m.contains("不要换参数或换工具重试"), "要拦住重试循环：{m}");
+        }
+    }
+
+    /// 两处 macOS AX 闸与截图空产物失败面都必须走披露函数——
+    /// 散落的单项文案是权限缺失烧轮次的根因。
+    #[test]
+    fn permission_failures_route_through_the_disclosure() {
+        let macos = include_str!("ui/macos.rs");
+        let hits = macos
+            .matches("permission_gap_notice(\"「辅助功能」\")")
+            .count();
+        assert!(
+            hits >= 2,
+            "macOS 两处 AX 闸（list_windows / inspect）都要接披露函数，现 {hits} 处"
+        );
+        assert!(
+            desktop_src_before_tests().contains("permission_gap_notice(\"「屏幕录制」\")"),
+            "截图空产物失败要接披露函数"
+        );
+    }
+
+    /// 无标题窗口两平台同口径过滤——schema 承诺「只列有标题的窗口」。
+    #[test]
+    fn list_windows_filters_untitled_on_both_platforms() {
+        let macos = include_str!("ui/macos.rs");
+        let windows = include_str!("ui/windows.rs");
+        assert!(
+            macos.contains("title.trim().is_empty()"),
+            "macOS 端要跳过无标题窗口（面板/托盘窗列出即噪音）"
+        );
+        assert!(
+            windows.contains("title.trim().is_empty()"),
+            "Windows 端已过滤，别退化"
+        );
     }
 
     /// Windows 截屏不许直接 `Command::new` 拉 powershell。

@@ -183,17 +183,18 @@ fn running_apps() -> Vec<(
 /// 列出所有可接管窗口
 pub fn list_windows() -> Result<Vec<UiWindow>, String> {
     if !accessibility_trusted() {
-        return Err(
-            "本进程尚未获得 macOS「辅助功能」权限，无法读取窗口内容。请到 系统设置 → 隐私与安全性 → 辅助功能 勾选本应用后重试。"
-                .to_string(),
-        );
+        return Err(crate::bot::permission_gap_notice("「辅助功能」"));
     }
     let mut out = Vec::new();
     for (pid, name, _app) in running_apps() {
         let app_el = unsafe { AXUIElement::new_application(pid as libc::pid_t) };
         for (idx, win) in windows_of(&app_el).into_iter().enumerate() {
             let title = string_attr(&win, AX_TITLE).unwrap_or_default();
-            // 无标题的窗口（面板、托盘窗）也列出来，但标注出来让模型自己挑
+            // 无标题的窗口（面板、托盘窗）不进清单：与工具 schema「只列有标题的
+            // 窗口」及 Windows 端同口径——空标题无法被按标题定位，列出即噪音
+            if title.trim().is_empty() {
+                continue;
+            }
             let focused = is_foreground_window(pid, &title);
             out.push(UiWindow {
                 id: format!("{pid}:{idx}"),
@@ -354,10 +355,7 @@ pub fn inspect_tree(
     max_nodes: usize,
 ) -> Result<Vec<UiNode>, String> {
     if !accessibility_trusted() {
-        return Err(
-            "本进程尚未获得 macOS「辅助功能」权限，无法读取窗口内容。请到 系统设置 → 隐私与安全性 → 辅助功能 勾选本应用后重试。"
-                .to_string(),
-        );
+        return Err(crate::bot::permission_gap_notice("「辅助功能」"));
     }
     let win = resolve(window_id)?;
     let mut out = Vec::new();

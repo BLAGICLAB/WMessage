@@ -191,7 +191,7 @@ src-tauri/src/
 │   ├── bot_model_loop/tests/sse.rs (402)    读流层测试（叫停后不推流 / 正文照旧记账）
 │   ├── bot_model_loop/tests/repeat_gate.rs (248) 重复闸测试（指纹连击 / 第 3 次拦截 / 转问三态 /
 │   │                                    豁免表 / 与收尾窗叠加）
-├── bot.rs (185)         bot 族唯一对外门面：跨族 re-export（BotChatResult/TaskRef/ChatMsg/
+├── bot.rs (187)         bot 族唯一对外门面：跨族 re-export（BotChatResult/TaskRef/ChatMsg/
 │                        model_loop/StopGuard/StopToken/AuditLevel/db::* 等）+ 子模块声明；
 │                        **跨族引用一律走 `crate::bot::`**，族外不得直接摸
 │                        `crate::bot_chat::` 这类深层路径（tests-audit/audit_bot_namespace.py
@@ -491,7 +491,7 @@ src-tauri/src/
 │   │                 平台分发（list_windows / activate_window / inspect_tree / press_node /
 │   │                 focus_node / type_text）+ 前台窗口判定（window_is_foreground）+
 │   │                 自操作拦截（不列自己的窗口、不许操作自己的窗口）
-│   ├── ui/macos.rs (612) macOS 后端：AX 读 UI 树（AXWindows / AXChildren / AXPress，
+│   ├── ui/macos.rs (610) macOS 后端：AX 读 UI 树（AXWindows / AXChildren / AXPress，
 │   │                 AXValue 取坐标）+ CGEvent 注入（Unicode 键盘事件）；
 │   │                 需本进程获「辅助功能」权限（AXIsProcessTrusted）；
 │   │                 前台窗口按 NSWorkspace 实测（不恒为 false）
@@ -499,7 +499,7 @@ src-tauri/src/
 │                     无 Invoke 才退回坐标点击）+ SendInput 注输入；
 │                     控件值读 UIA ValuePattern（密码框不读，避免读出明文）；
 │                     COM 生命周期同线程成对（CoInitializeEx / CoUninitialize）
-├── bot_desktop.rs (685) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
+├── bot_desktop.rs (742) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
 │                        （opener 定位，白名单闸）/ open_url（公网闸 ensure_public_http_url）/
 │                        clipboard_write（官方 clipboard-manager v2）/ copy_file_to_clipboard
 │                        （文件进系统剪贴板，读白名单闸，复用 platform::copy_file 的

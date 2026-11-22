@@ -35,8 +35,8 @@
 | B-1 | **刷新面五缺陷（11-11）**：P1 刷新后回「最近更新会话」、P1 回灌轮次终稿可能永久缺失、P1 ServicesPanel 刷新无并发闸、P2 错误提示不清除、P2 UsageStatsCard 无竞令牌——**零修复记录，后续四轮审计全部没提**（漏网线）。**2026-11-22 复核启动**：用户实机报的「子任务完成后的回复必须先刷新才能移除」定位为汇报轮回复无出生身份（append 丢弃 id、事件只发 bot-chat-report）——已修（upsert 内核回填 + bot-msg-upserted 对账，见 §三），不属于原五条，是复核揪出的同类第六条 | `docs/refresh-audit-report-2026-11-11.md` §0/L223-227；git log 11-11 后 src/ 无对应修复 | 复核进行中；原五条逐条验证时效后排修 |
 | ~~B-2~~ | **SPEC 出入 #2**：机器人开关关时「输入框完全不渲染」未实现 | `ACCEPTANCE-PLAN-2026-10-30.md:350` | ✅ **2026-11-22 拍板（选项 3）并落地**：输入框保留但禁用 + 说明文案（草稿可见性优先），SPEC 2-31 / 矩阵 / 卡 ACC-C-10 三方同步；测试锚点在 ChatPanel.session.test |
 | ~~B-3~~ | **F-新5**：子 agent 纪律段点名 8 个生效集外工具 | 046c46b9 提交信息登记 | ✅ **2026-11-22 核实为过期账**：漂移实体（三份 onion yaml 未列 submit_result，而全部 profile 交卷指引点名它）已被次日 35399ddd 修掉（yaml 显式补列）；双向现状验算一致。防复发补三锚点：反向（提示词工具行 ⊆ 生效集，五段全盖）+ 配置档不放宽（allowed ⊆ 白名单）+ 既有单向守卫扩盖 recon/verifier |
-| B-4 | **list_windows schema 文案与实现分家**：schema 说只列有标题窗口，macOS 把无标题也列出 | `realmachine-mutation-test-2026-10-23.md:1926-1932` 顺带发现 | 小 |
-| B-5 | **权限缺失应一次性说清缺哪两项**（模型从 turn=0 烧到 21） | 同上 :1928 | 小（产品面） |
+| ~~B-4~~ | **list_windows schema 文案与实现分家**：schema 说只列有标题窗口，macOS 把无标题也列出 | 同上 | ✅ **2026-11-22 修**：macOS 端对齐过滤（与 Windows 同口径），源码锚点锁两平台（list_windows_filters_untitled_on_both_platforms） |
+| ~~B-5~~ | **权限缺失应一次性说清缺哪两项**（模型从 turn=0 烧到 21） | 同上 | ✅ **2026-11-22 修**：permission_gap_notice 共享披露（句首点名缺项 + 两项权限/授权路径/别重试一起给全），macOS 两处 AX 闸与截图空产物面接上；测试锁纯函数与三处接线 |
 | B-6 | 逻辑一致性拍板项（10-23）：D9 睡眠双时钟（正解要 pid 出 PyRunResult）、E9 坏 due 读侧口径、E10 alert 视觉语言统一 | `logic-consistency-audit-2026-10-23.md:223-228` | 中 |
 | B-7 | 11-16 审计待立项三件：P2-1 上下文硬顶真裁剪、P2-8 受管服务巡检单轮快照共享、三态主题 UI | `agent-audit-2026-11-16.md:1393-1394`（P2-1/P2-8 已做半步：语义诚实化 / spawn_blocking） | 中 |
 | B-8 | MCP B0 遗留（r2）：reload 合流去抖、锁内 clone+O(n) find、mcp_tools_json_body 每轮重挂载表重建、快照双重 mounted 窗口、spawn_blocking join 吞错、aggregate 工具总数无上限、表单切换丢字段回填 | `DEVLOG.md:5124`（DNS rebinding 半已由 10-21 DNS 闸闭环） | 中 |
