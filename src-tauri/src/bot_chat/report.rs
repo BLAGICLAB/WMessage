@@ -110,15 +110,24 @@ pub(super) async fn report_turn_history(app: &AppHandle, session_id: &str) -> Ve
     report_turn_history_from_rows(rows)
 }
 
-/// 汇报轮回复的落地：追加落库 + 通知前端。
+/// 汇报轮回复的落地：落库（带身份）+ 通知前端。
 ///
 /// 不走前端的全量覆盖存历史：汇报轮没有前端快照，前端那份在下一条用户消息
 /// 才覆写；这一轮必须自己落库，否则用户不发言就重启，汇报内容就凭空消失。
 ///
+/// 落库走 upsert 内核（生成并回传行身份）而不是 append：行身份必须随事件
+/// 回显给前端——汇报轮回复是前端唯一拿不到出生身份的 assistant 行（主聊轮
+/// 的终稿行由行内核就地补 id 后随 bot-msg-upserted 回显），缺身份的行在前端
+/// 无法移除（removeMessage 按 msg_id 删真源行，无 id 直接拒）。
+///
+/// 两条事件各管一半：`bot-chat-report` 定稿正文（前端就地替换流式气泡），
+/// `bot-msg-upserted` 对账身份（同 id upsert = 同一条消息，无 id 匹配则替换
+/// 本回合尾行）。先后顺序无依赖，两个方向都收敛到「有身份的终稿行」。
+///
 /// 返回 Err = 没送达：调用方据此不记「已吸收」并重试（这段汇报是子任务结果
 /// 唯一的出口，丢了就是永久丢失）。
-pub(super) async fn persist_report_reply(
-    app: &AppHandle,
+pub(super) async fn persist_report_reply<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     session_id: &str,
     result: &BotChatResult,
 ) -> Result<(), String> {
@@ -126,37 +135,40 @@ pub(super) async fn persist_report_reply(
     let content = result.text.clone();
     let refs = serde_json::to_string(&result.task_refs).ok();
     let r = crate::db::lock::with_write_conn(app, move |conn| {
-        crate::db::bot_history_append_inner(
-            conn,
-            &sid,
-            &crate::db::BotMsgRow {
-                msg_id: None,
-                file_changes_json: None,
-                trace_id: None,
-                role: "assistant".into(),
-                content,
-                refs_json: refs,
-                thinking: None,
-                tools_json: None,
-                turn_status: None,
-            },
-        )
+        let row = crate::db::BotMsgRow {
+            msg_id: None,
+            file_changes_json: None,
+            trace_id: None,
+            role: "assistant".into(),
+            content,
+            refs_json: refs,
+            thinking: None,
+            tools_json: None,
+            turn_status: None,
+        };
+        let msg_id = crate::db::bot_history::bot_history_upsert_row_inner(conn, &sid, &row)?;
+        Ok((msg_id, row))
     })
     .await;
-    if let Err(e) = r {
-        crate::audit_event!(
-            app,
-            crate::audit::AuditLevel::Warn,
-            "subagent_report.persist_failed",
-            "error" => e,
-        );
-        return Err(e);
-    }
+    let (msg_id, mut row) = match r {
+        Ok(pair) => pair,
+        Err(e) => {
+            crate::audit_event!(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "subagent_report.persist_failed",
+                "error" => e,
+            );
+            return Err(e);
+        }
+    };
+    row.msg_id = Some(msg_id);
     crate::bot::stream_log::emit_recorded(
         app,
         Some(session_id),
         "bot-chat-report",
         serde_json::json!({ "text": result.text }),
     );
+    emit_row_upserted(app, Some(session_id), &row);
     Ok(())
 }

@@ -134,7 +134,7 @@ src-tauri/src/
 │   ├── bot_chat/media.rs (152)  多模态图片组装：base64 入模 + 扩展名白名单 + 附件索引
 │   ├── bot_chat/summary.rs (322) 历史摘要面：截断点选择 + 摘要请求 + 压缩
 │   ├── bot_chat/inject.rs (108)  上下文注入面：摘要/记忆块并入末条消息（保缓存前缀稳定）
-│   ├── bot_chat/report.rs (162) 子任务汇报轮：回传结果 + 门控 + 历史映射
+│   ├── bot_chat/report.rs (174) 子任务汇报轮：回传结果 + 门控 + 历史映射
 │   ├── bot_chat/input.rs (118)  输入规范化面：不可见字符清洗 + 路由前判定 + 恢复提示
 │   ├── bot_chat/bot_chat_pure_helpers_tests.rs (754) 纯函数与接线守卫单测
 │   ├── bot_chat/inject_tests.rs (145)                 注入面单测（注入位置 + 前缀稳定性）

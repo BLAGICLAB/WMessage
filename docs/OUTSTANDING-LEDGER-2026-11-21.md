@@ -32,7 +32,7 @@
 
 | # | 事项 | 出处与现状证据 | 量级 |
 |---|---|---|---|
-| B-1 | **刷新面五缺陷（11-11）**：P1 刷新后回「最近更新会话」、P1 回灌轮次终稿可能永久缺失、P1 ServicesPanel 刷新无并发闸、P2 错误提示不清除、P2 UsageStatsCard 无竞态令牌——**零修复记录，后续四轮审计全部没提**（漏网线） | `docs/refresh-audit-report-2026-11-11.md` §0/L223-227；git log 11-11 后 src/ 无对应修复 | **先复核时效**（真源化后部分面已变），成立即排修 |
+| B-1 | **刷新面五缺陷（11-11）**：P1 刷新后回「最近更新会话」、P1 回灌轮次终稿可能永久缺失、P1 ServicesPanel 刷新无并发闸、P2 错误提示不清除、P2 UsageStatsCard 无竞令牌——**零修复记录，后续四轮审计全部没提**（漏网线）。**2026-11-22 复核启动**：用户实机报的「子任务完成后的回复必须先刷新才能移除」定位为汇报轮回复无出生身份（append 丢弃 id、事件只发 bot-chat-report）——已修（upsert 内核回填 + bot-msg-upserted 对账，见 §三），不属于原五条，是复核揪出的同类第六条 | `docs/refresh-audit-report-2026-11-11.md` §0/L223-227；git log 11-11 后 src/ 无对应修复 | 复核进行中；原五条逐条验证时效后排修 |
 | B-2 | **SPEC 出入 #2**：机器人开关关时「输入框完全不渲染」未实现（SPEC 记 P1） | `ACCEPTANCE-PLAN-2026-10-30.md:350` | 小 |
 | B-3 | **F-新5**：子 agent 纪律段点名 8 个生效集外工具——recon(:186 写死 9 工具)/verifier(:213 写死 7 工具)与实际白名单脱节 | 046c46b9 提交信息登记；`prompts/subagent.rs` 自该日起零改动；**详情未进冒烟文档正文** | 小（提示词面） |
 | B-4 | **list_windows schema 文案与实现分家**：schema 说只列有标题窗口，macOS 把无标题也列出 | `realmachine-mutation-test-2026-10-23.md:1926-1932` 顺带发现 | 小 |
@@ -90,6 +90,7 @@
 | F4「定时执行不开放」口径 | 10-27 拍板（module-audit L1286），卡片口径需同步（并入 D-6 池） |
 | 2026-08 旧待办 | NSIS 安装包 11-05 落地、代码签名（Windows）11-19 落地；**剩 macOS dmg / Logo 单色托盘 / 数据备份导出 → 并入 B 组另议** |
 | 11-21 四盲区审计 10 笔修复 | 62b2bb79..89cb45c4，全量绿（报告 §六验收记录） |
+| 汇报轮回复无出生身份（B-1 复核揪出）：移除键须先刷新 | 2026-11-22 修复：persist_report_reply 换 upsert 内核回填身份 + bot-msg-upserted 对账广播；锚点 = report_reply_lands_with_identity_and_event_echoes_it（Rust）+ 汇报轮端到端移除断言（usage.test） |
 
 ## §四 拍板不做 / 登记不修（关闭态索引，新审计勿复报）
 

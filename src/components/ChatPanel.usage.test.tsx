@@ -479,6 +479,34 @@ describe("ChatPanel", () => {
       // 正文按后端给的全文校正，不留半截流式内容，也不重复追加一条
       expect(screen.getByText("子任务跑完了，结论如下：……")).toBeInTheDocument();
       expect(screen.queryByText("子任务跑完了")).toBeNull();
+      // 身份对账：汇报轮回复的出生身份随 bot-msg-upserted 回显。缺它时移除键
+      // 直接拒（提示「先刷新对话再移除」）——刷新面缺陷 B-1 的用户可见形态
+      await act(async () => {
+        for (const cb of mocks.listeners["bot-msg-upserted"] ?? []) {
+          cb({
+            payload: {
+              sessionId: "s1",
+              msgId: "rpt-1",
+              role: "assistant",
+              content: "子任务跑完了，结论如下：……",
+              turnStatus: "completed",
+            },
+          });
+        }
+      });
+      // 同 id 对账：内容不重复追加
+      expect(screen.getAllByText("子任务跑完了，结论如下：……").length).toBe(1);
+      // 端到端：移除键直接可用（bot_history_drop 带真源行身份，无需先刷新）
+      const user = userEvent.setup();
+      await user.click(
+        screen.getByTitle("移除这条回复（不满意时删除，不再作为上下文）"),
+      );
+      await waitFor(() => {
+        expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_drop", {
+          sessionId: "s1",
+          msgId: "rpt-1",
+        });
+      });
     } finally {
       mocks.listenMock.mockImplementation(prevListenImpl!);
     }

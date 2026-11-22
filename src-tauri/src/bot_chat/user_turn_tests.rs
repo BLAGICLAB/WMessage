@@ -355,3 +355,43 @@ const BOT_MESSAGES_TEST_SEED: &str = "CREATE TABLE IF NOT EXISTS bot_sessions (
              updated_at INTEGER NOT NULL,
              is_subagent INTEGER NOT NULL DEFAULT 0
          );";
+
+/// 汇报轮回复带身份落库：此前走 append 内核（生成的 id 被丢弃）、事件只发
+/// bot-chat-report——汇报轮回复是前端唯一拿不到出生身份的 assistant 行，
+/// removeMessage 按 msg_id 删真源行、无 id 直接拒（用户看到的表现：
+/// 子 agent 完成后的回复必须先刷新才能移除）。锚点锁两件：库行有服务端 id，
+/// bot-msg-upserted 回显同一 id（前端对账键）。
+#[test]
+fn report_reply_lands_with_identity_and_event_echoes_it() {
+    let app = test_handle();
+    warm_shared_db(&app);
+    let sid = format!("rpt-{}", uuid::Uuid::new_v4());
+    // 事件载荷断言借回放缓冲（同 user_row 锚点的借法）
+    crate::bot::stream_log::begin(&sid);
+    let result = crate::bot::BotChatResult {
+        text: "汇报轮回复全文".into(),
+        task_refs: vec![],
+        busy: false,
+        trace_id: None,
+    };
+    tauri::async_runtime::block_on(super::report::persist_report_reply(&app, &sid, &result))
+        .expect("落库成功");
+    let conn = crate::db::open_db(&app).expect("开库");
+    let (msg_id, role): (Option<String>, String) = conn
+        .query_row(
+            "SELECT msg_id, role FROM bot_messages WHERE session_id = ?1",
+            [&sid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("读行");
+    assert_eq!(role, "assistant");
+    let mid = msg_id.expect("汇报轮回复必须有身份（否则前端无法移除）");
+    let replay = crate::bot::stream_log::replay(&sid, 0);
+    let ev = replay
+        .events
+        .iter()
+        .find(|e| e.event == "bot-msg-upserted")
+        .expect("身份投影事件已广播");
+    assert_eq!(ev.payload["msgId"], mid.as_str(), "事件回显同一 id");
+    assert_eq!(ev.payload["content"], "汇报轮回复全文");
+}
