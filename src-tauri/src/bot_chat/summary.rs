@@ -225,10 +225,14 @@ pub async fn summarize_http(
         // per-request 总超时（共享客户端无默认超时）：摘要单次请求预算不变
         .timeout(std::time::Duration::from_secs(60))
         .json(&body);
-    let req = match provider {
-        crate::bot::ApiProvider::Openai => req.bearer_auth(api_key.trim()),
-        crate::bot::ApiProvider::Anthropic => {
-            crate::bot_anthropic::apply_anthropic_auth(req, api_key.trim())
+    let req = if api_key.trim().is_empty() {
+        req
+    } else {
+        match provider {
+            crate::bot::ApiProvider::Openai => req.bearer_auth(api_key.trim()),
+            crate::bot::ApiProvider::Anthropic => {
+                crate::bot_anthropic::apply_anthropic_auth(req, api_key.trim())
+            }
         }
     };
     let resp = req
@@ -271,8 +275,8 @@ pub async fn summarize_http(
 
 /// 非流式摘要调用（截断即摘要 / /compact / 记忆整理 / 会话抽取共用）：
 /// 配置获取路径与 bot_compact 原路径一致（bot_get_config 拿 base_url/model，
-/// read_llm_key 拿 key，require_api_key 把空 key 映射为 ApiKeyMissing）。
-/// 摘要：跟随全局当前模型。
+/// read_llm_auth 拿鉴权材料——空 key = 免鉴权厂商跳过鉴权头，其余空 key
+/// 在 read_llm_auth 内已映射为 ApiKeyMissing）。摘要：跟随全局当前模型。
 ///
 /// 不接受「用另一个模型跑这次摘要」的参数——没有调用方需要。摘要场景全走
 /// 当前模型：截断摘要（SUMMARY）、/compact（COMPACT）、记忆整理
@@ -290,12 +294,12 @@ pub(crate) async fn summarize_messages(
     let base_url = cfg.base_url.clone();
     let model = cfg.model.clone();
     let provider_str = provider.as_str();
-    let api_key = crate::bot::read_llm_key(
+    let api_key = crate::bot::read_llm_auth(
         Some(provider_str),
         active_id.as_ref(),
         cfg.models_by_provider.as_ref(),
+        &cfg.no_auth_vendors,
     )?;
-    require_api_key(&api_key)?;
     // 共享客户端（连接池复用）；原 60s 总超时改为 per-request 保留
     let client = crate::bot_model_loop::shared_llm_client().clone();
     // 条目级推理参数：max_tokens 条目值覆盖全局（再钳制）；temperature/top_p

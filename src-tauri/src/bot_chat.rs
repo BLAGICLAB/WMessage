@@ -612,15 +612,6 @@ const REPORT_TURN_STUB: &str = "（系统消息：请读取本轮末尾的「子
 
 // /compact 快捷命令
 
-/// 空 API Key → 专用错误 ApiKeyMissing（recoverable=true，引导用户去设置页）。
-/// 抽成纯函数便于单测（keyring 在测试环境不可用，无法覆盖 bot_compact 全链路）。
-fn require_api_key(api_key: &str) -> CommandResult<()> {
-    if api_key.trim().is_empty() {
-        return Err(CommandError::ApiKeyMissing);
-    }
-    Ok(())
-}
-
 /// 摘要请求的历史字符上限：超长会话只保留最近的消息（最旧的先丢），
 /// 防止压缩请求超 context。截断路径的待摘要消息已被 constants::HISTORY_BUDGET_CHARS
 /// 限住，此上限对 /compact 的全量历史才实际生效。

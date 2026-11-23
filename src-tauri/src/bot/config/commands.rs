@@ -135,6 +135,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         memory_tuning: cfg.memory_tuning,
         mcp_servers: cfg.mcp_servers.unwrap_or_default(),
         disabled_vendors: cfg.disabled_vendors,
+        no_auth_vendors: cfg.no_auth_vendors,
         vendor_keys,
         verified_vendors: cfg.verified_vendors,
         tool_rules: cfg.tool_rules,
@@ -187,6 +188,18 @@ pub(crate) fn sanitize_tool_rules(
     } else {
         Some(out)
     }
+}
+
+/// 免鉴权厂商名单清洗（纯函数单测直打）：trim / 去空 / 去重（trim 后字面）。
+/// 判定侧（keyring::vendor_is_no_auth / resolve_model_override）按 trim 后字面
+/// 比较，这里不归一大小写——「Ollama」与「ollama」视为两个名字，用户填哪个、
+/// 厂商条目就叫哪个，改名后名单失效是可见行为（探活不再匿名转正）。
+pub(crate) fn sanitize_no_auth_vendors(list: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    list.into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && seen.insert(s.clone()))
+        .collect()
 }
 
 // bot_set_config
@@ -371,6 +384,13 @@ pub(crate) fn bot_set_config(
     config.tool_rules = sanitize_tool_rules(config.tool_rules.take());
     // 目的地白名单清洗：trim / 去空 / 去重；空表归一 None（与 tool_rules 同款）
     config.allowed_domains = sanitize_allowed_domains(config.allowed_domains.take());
+    // 免鉴权厂商名单清洗：trim / 去空 / 去重（空 Vec 合法 = 全部厂商要求 key）
+    config.no_auth_vendors = sanitize_no_auth_vendors(config.no_auth_vendors);
+    // 写了 key 的厂商同步移出免鉴权名单（互斥）：填 key 表达的就是「这厂商要鉴权」，
+    // 名单残留会让新 key 永远发不出去（免鉴权判定先于 key 读取）
+    if let Some(v) = key_overwritten.as_deref() {
+        config.no_auth_vendors.retain(|x| x != v);
+    }
     // 前端整体替换写不丢「设置页无编辑入口」的字段。读盘回填必须与写**同锁**
     //（评审 HIGH：无锁 load → 有锁 write 之间 persist_last_run 等并发写会被
     // 本写覆盖——丢更新窗口）；write_bot_config_file 自带加锁不可重入，走 _locked 变体
@@ -873,12 +893,33 @@ pub async fn probe_connection(
     }
 }
 
+/// 匿名探活的「未配 key」提示（纯函数，单测直打）：普通厂商匿名 2xx 只证明
+/// 端点通着不算验证通过，要给出「去填 key」的可行动提示；免鉴权厂商
+///（本地模型服务）匿名就是它的正常鉴权形态，**没有**这个提示。
+/// 返回 None = 探活结果原样返回。
+fn anon_probe_hint(vendor: Option<&str>, no_auth: bool) -> Option<String> {
+    if no_auth {
+        return None;
+    }
+    Some(match vendor {
+        Some(v) => format!(
+            "厂商「{v}」还没配 API Key：本次只探了端点连通性（未带鉴权），不算连接测试通过。请先在厂商页填该厂商的 Key。"
+        ),
+        None =>
+            "全局还没配 API Key：本次只探了端点连通性（未带鉴权），不算连接测试通过。请先在设置里填全局主 Key。"
+                .to_string(),
+    })
+}
+
 /// 厂商详情页模型行「测试连接」（参照 open-webui POST /verify）：
 /// key 从系统凭据存储读：传了 vendor 时该厂商的厂商级 key 优先，没配过才回落
 /// 全局主 key；厂商 keyring 真实故障（钥匙串锁定/权限拒绝）上抛 KeyringError，
 /// 不静默拿全局 key 去探测（会报出误导性的「厂商鉴权失败」401）。
 /// 全局主 key 读不到（未配置 / 故障）按无 key 探活——无 key 时厂商会回 401，
 /// 状态如实返回。
+/// 免鉴权厂商（本地模型服务，在 no_auth_vendors 名单）：匿名探活就是正常形态，
+/// 匿名 2xx 即转正——请求侧对这些厂商同样不带鉴权头，匿名探活验证的就是
+/// 请求侧真正要发的东西。
 /// 结果落盘可用性：ok → 厂商进 verified_vendors（设置页绿点 + 聊天下拉放行），
 /// 失败 → 移出；写盘失败记审计，不阻断测试结果的返回。
 #[tauri::command]
@@ -895,6 +936,15 @@ pub async fn bot_test_connection(
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(str::to_string);
+    // 免鉴权名单以盘上配置为准（探活是用户刚点了保存之后的动作，
+    // 盘上值就是刚保存的名单；trim 口径与 sanitize 一致）
+    let no_auth = match &vendor {
+        Some(v) => io::load_config(&app)
+            .no_auth_vendors
+            .iter()
+            .any(|x| x.trim() == v.as_str()),
+        None => false,
+    };
     // 探活带哪个 key：厂商页用该厂商自己的 key；厂商没配 key 就**不带鉴权**探，
     // 不借用全局主 key——探的 base_url 是用户填的（可能指向任何第三方），
     // 把主 key 发过去等于把它交出去。无厂商的老条目用全局主 key。
@@ -915,7 +965,8 @@ pub async fn bot_test_connection(
     let r = probe_connection(shared_llm_client(), &base_url, &api_format, &key).await;
     // 没带鉴权（厂商没配 key）时，2xx 只说明端点通着，不说明 key 有效——
     // 不能凭它把厂商转成「已验证」（转正后请求侧会拿主 key 打这个 base_url）。
-    let verified = r.ok && authenticated;
+    // 例外：免鉴权厂商的请求侧本来就不带鉴权，匿名 2xx 验证的正是要发的东西。
+    let verified = r.ok && (authenticated || no_auth);
     if let Some(v) = vendor.as_deref() {
         let ok = verified;
         if let Err(e) = super::io::update_config_file(&app, |cfg| {
@@ -939,21 +990,16 @@ pub async fn bot_test_connection(
     }
     // 未配 key：如实说清「这次只探了连通性」，别报「连接测试通过」。
     // 无厂商的老条目与厂商条目分开说——unwrap_or_default 会把空厂商名
-    // 拼进「厂商「」还没配 API Key」，指路方向也是错的（该配全局 key）
+    // 拼进「厂商「」还没配 API Key」，指路方向也是错的（该配全局 key）。
+    // 免鉴权厂商没有这道提示（匿名转正即成功）。
     if r.ok && !authenticated {
-        let hint = match vendor.as_deref() {
-            Some(v) => format!(
-                "厂商「{v}」还没配 API Key：本次只探了端点连通性（未带鉴权），不算连接测试通过。请先在厂商页填该厂商的 Key。"
-            ),
-            None =>
-                "全局还没配 API Key：本次只探了端点连通性（未带鉴权），不算连接测试通过。请先在设置里填全局主 Key。"
-                    .to_string(),
-        };
-        return Ok(ConnectionTestResult {
-            ok: false,
-            status: r.status,
-            error: Some(hint),
-        });
+        if let Some(hint) = anon_probe_hint(vendor.as_deref(), no_auth) {
+            return Ok(ConnectionTestResult {
+                ok: false,
+                status: r.status,
+                error: Some(hint),
+            });
+        }
     }
     Ok(r)
 }
@@ -1017,6 +1063,45 @@ mod tool_rule_sanitize_tests {
         assert_eq!(sanitize_tool_rules(None), None);
         assert_eq!(sanitize_tool_rules(Some(vec![])), None);
         assert_eq!(sanitize_tool_rules(Some(vec![rule("x", "nope")])), None);
+    }
+}
+
+#[cfg(test)]
+mod no_auth_vendors_tests {
+    use super::{anon_probe_hint, sanitize_no_auth_vendors};
+
+    /// 名单清洗：trim / 去空 / 去重（trim 后字面）
+    #[test]
+    fn sanitize_trims_dedups_and_drops_empty() {
+        let out = sanitize_no_auth_vendors(vec![
+            " 我的服务 ".into(),
+            "我的服务".into(), // trim 后重复 → 丢
+            "  ".into(),       // 纯空白 → 丢
+            "Ollama".into(),
+            "".into(),
+        ]);
+        assert_eq!(out, vec!["我的服务".to_string(), "Ollama".to_string()]);
+        assert_eq!(sanitize_no_auth_vendors(vec![]), Vec::<String>::new());
+        assert_eq!(
+            sanitize_no_auth_vendors(vec!["  ".into(), "".into()]),
+            Vec::<String>::new(),
+            "全非法 = 空名单（合法值：全部厂商要求 key）"
+        );
+    }
+
+    /// 匿名探活提示：普通厂商给「去填 key」提示；免鉴权厂商不给（匿名即正常形态）。
+    #[test]
+    fn anon_probe_hint_skipped_for_no_auth_vendors() {
+        let hint = anon_probe_hint(Some("DeepSeek"), false).expect("普通厂商应有提示");
+        assert!(hint.contains("DeepSeek") && hint.contains("Key"), "{hint}");
+        assert!(
+            anon_probe_hint(None, false).is_some(),
+            "无厂商（全局 key 槽位）也有提示"
+        );
+        assert!(
+            anon_probe_hint(Some("我的本地服务"), true).is_none(),
+            "免鉴权厂商匿名 2xx 就是验证通过，不给「去填 key」提示"
+        );
     }
 }
 

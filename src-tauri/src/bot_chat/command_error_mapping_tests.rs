@@ -17,17 +17,6 @@ fn bot_disabled_maps_to_dedicated_variant() {
     assert!(require_bot_enabled(true).is_ok(), "开启时应通过");
 }
 
-/// bot_compact 的 key 守卫：空 key → ApiKeyMissing 专用变体；非空 → Ok
-#[test]
-fn require_api_key_empty_returns_api_key_missing() {
-    for empty in ["", "   ", "\n\t "] {
-        let err = require_api_key(empty).expect_err("空 key 应返回 Err");
-        assert_eq!(err, CommandError::ApiKeyMissing, "输入 {empty:?}");
-        assert_eq!(err.code(), crate::error::CommandErrorCode::ApiKeyMissing);
-        assert!(
-            err.is_recoverable(),
-            "ApiKeyMissing 应可恢复（去设置页填 key）"
-        );
-    }
-    assert!(require_api_key("sk-test-123").is_ok(), "非空 key 应通过");
-}
+// bot_compact 的 key 守卫已收编进 keyring::read_llm_auth（空 key 语义唯一化：
+// 空串 = 免鉴权厂商跳过鉴权头，其余空 key 在 read_llm_auth 内收敛成
+// ApiKeyMissing），本文件不再单测已删除的 require_api_key。

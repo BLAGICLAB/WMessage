@@ -45,6 +45,8 @@ export function useSettingsActions(params: SettingsActionsParams) {
     activeModelId: { openai: null, anthropic: null } as ActiveModelId,
     // 被禁用的厂商名列表：禁用后该厂商模型行变淡、开关禁用，聊天选模型入口过滤
     disabledVendors: [] as string[],
+    // 免鉴权厂商名单（本地模型服务）：请求不带鉴权头、探活匿名 2xx 即转正
+    noAuthVendors: [] as string[],
     // 连接测试通过的厂商名列表（可用性依据：左栏绿点 + 聊天下拉过滤；
     // key/URL/格式变更由后端置失效）
     verifiedVendors: [] as string[],
@@ -263,6 +265,8 @@ export function useSettingsActions(params: SettingsActionsParams) {
           anthropic: c.activeModelId?.anthropic ?? null,
         },
         disabledVendors: c.disabledVendors ?? [],
+        // 免鉴权厂商名单（老后端没返 → 空）
+        noAuthVendors: c.noAuthVendors ?? [],
         // 连接测试通过的厂商名单（老后端没返 → 空）
         verifiedVendors: c.verifiedVendors ?? [],
         // 界面字体大小：small/standard/large 三档

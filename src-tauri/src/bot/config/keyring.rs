@@ -718,6 +718,38 @@ pub fn read_llm_key(
     read_api_key()
 }
 
+/// active 厂商是否在免鉴权名单里（纯函数，单测锚点）：
+/// trim 后非空才参与判定，与 active_vendor_of 的过滤同口径。
+pub(crate) fn vendor_is_no_auth(vendor: Option<&str>, no_auth_vendors: &[String]) -> bool {
+    vendor
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| no_auth_vendors.iter().any(|x| x == v))
+        .unwrap_or(false)
+}
+
+/// 解析 LLM 请求的鉴权材料（read_llm_key 的免鉴权感知包装）：
+/// active 厂商在 `no_auth_vendors`（本地模型服务）→ **Ok(空串)**，含义唯一：
+/// 请求侧跳过鉴权头，即使 keyring 里残留旧 key 也不发（名单判定先于任何
+/// keyring I/O）。其余厂商转发 read_llm_key 原语义，空 key 在这里收敛成
+/// ApiKeyMissing——本函数返回空串当且仅当「免鉴权」，调用方无需再判。
+pub fn read_llm_auth(
+    api_provider: Option<&str>,
+    active_model_id: Option<&ActiveModelId>,
+    models_by_provider: Option<&ModelsByProvider>,
+    no_auth_vendors: &[String],
+) -> CommandResult<String> {
+    let vendor = active_vendor_of(api_provider, active_model_id, models_by_provider);
+    if vendor_is_no_auth(vendor.as_deref(), no_auth_vendors) {
+        return Ok(String::new());
+    }
+    let k = read_llm_key(api_provider, active_model_id, models_by_provider)?;
+    if k.trim().is_empty() {
+        return Err(CommandError::ApiKeyMissing);
+    }
+    Ok(k)
+}
+
 // 抑制 unused 警告：AppHandle 暂未直接用于本模块（迁移走数据目录）
 
 #[cfg(test)]
@@ -793,6 +825,28 @@ mod vendor_key_tests {
             probe_auth(None, None, "global-key"),
             ProbeAuth::WithKey("global-key".to_string()),
             "无厂商的老条目用全局主 key"
+        );
+    }
+
+    /// 免鉴权名单判定（纯函数）：命中 → true；未命中/无厂商/空白厂商/空白名单
+    /// → false。trim 后字面比较（名单由 sanitize 保证已 trim，这里兜尾部空白）。
+    #[test]
+    fn vendor_is_no_auth_membership_is_literal_and_trimmed() {
+        let list = vec!["我的本地服务".to_string(), "Ollama".to_string()];
+        assert!(vendor_is_no_auth(Some("我的本地服务"), &list));
+        assert!(vendor_is_no_auth(Some(" 我的本地服务 "), &list));
+        assert!(vendor_is_no_auth(Some("Ollama"), &list));
+        assert!(
+            !vendor_is_no_auth(Some("ollama"), &list),
+            "字面比较不归一大小写"
+        );
+        assert!(!vendor_is_no_auth(Some("DeepSeek"), &list));
+        assert!(!vendor_is_no_auth(Some(""), &list));
+        assert!(!vendor_is_no_auth(Some("  "), &list));
+        assert!(!vendor_is_no_auth(None, &list));
+        assert!(
+            !vendor_is_no_auth(Some("我的本地服务"), &[]),
+            "空名单 = 全部要求 key"
         );
     }
 

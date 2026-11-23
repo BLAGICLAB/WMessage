@@ -138,10 +138,12 @@ async fn call_planner(
     user: &str,
 ) -> CommandResult<GeneratedPlan> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
-    let api_key = crate::bot::read_llm_key(
+    // 免鉴权感知：空串 = 免鉴权厂商（本地模型服务），跳过鉴权头
+    let api_key = crate::bot::read_llm_auth(
         cfg.api_provider.as_deref(),
         cfg.active_model_id.as_ref(),
         cfg.models_by_provider.as_ref(),
+        &cfg.no_auth_vendors,
     )?;
     // 共享客户端（连接池复用）；原 60s 总超时改为 per-request 保留
     let client = crate::bot_model_loop::shared_llm_client().clone();
@@ -197,10 +199,14 @@ async fn call_planner(
         // per-request 总超时（共享客户端无默认超时）：Planner 单次请求预算不变
         .timeout(std::time::Duration::from_secs(60))
         .json(&body);
-    let req = match provider {
-        crate::bot::ApiProvider::Openai => req.bearer_auth(api_key.trim()),
-        crate::bot::ApiProvider::Anthropic => {
-            crate::bot_anthropic::apply_anthropic_auth(req, api_key.trim())
+    let req = if api_key.trim().is_empty() {
+        req
+    } else {
+        match provider {
+            crate::bot::ApiProvider::Openai => req.bearer_auth(api_key.trim()),
+            crate::bot::ApiProvider::Anthropic => {
+                crate::bot_anthropic::apply_anthropic_auth(req, api_key.trim())
+            }
         }
     };
     let resp = req

@@ -53,7 +53,7 @@ pub use io::{
     config_path, migrate_legacy_key, migrate_search_keys, read_bypass_llm_switch,
     read_memory_control, read_memory_tuning,
 };
-pub(crate) use keyring::{read_llm_key, read_search_key, read_vendor_key};
+pub(crate) use keyring::{read_llm_auth, read_search_key, read_vendor_key};
 pub(crate) use schema::EffectiveInference;
 pub use schema::{
     active_model_entry, ensure_vendor_verified, DEFAULT_MAX_TOKENS, MAX_MAX_TOKENS, MIN_MAX_TOKENS,

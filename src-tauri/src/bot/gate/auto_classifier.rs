@@ -74,8 +74,13 @@ struct ClassifierModel {
 /// 解析分类器模型槽位（复用 selfcheckModelId + 厂商验证链）；失败 → None（unsure）
 fn resolve_classifier_model(cfg: &crate::bot::config::types::BotConfig) -> Option<ClassifierModel> {
     let entry_id = cfg.selfcheck_model_id.as_ref()?;
-    let resolved =
-        crate::bot::resolve_model_override(cfg.models_by_provider.as_ref(), entry_id, None).ok()?;
+    let resolved = crate::bot::resolve_model_override(
+        cfg.models_by_provider.as_ref(),
+        entry_id,
+        None,
+        &cfg.no_auth_vendors,
+    )
+    .ok()?;
     crate::bot::ensure_vendor_verified(resolved.vendor.as_deref(), &cfg.verified_vendors).ok()?;
     Some(ClassifierModel {
         base_url: resolved.base_url,
@@ -241,10 +246,15 @@ async fn classify(
         .post(&url)
         .timeout(std::time::Duration::from_secs(CLASSIFIER_TIMEOUT_SECS))
         .json(&body);
-    let req = match model.provider {
-        crate::bot::ApiProvider::Openai => req.bearer_auth(model.api_key.trim()),
-        crate::bot::ApiProvider::Anthropic => {
-            crate::bot_anthropic::apply_anthropic_auth(req, model.api_key.trim())
+    // 空 key = 免鉴权厂商（本地模型服务），完全不带鉴权头
+    let req = if model.api_key.trim().is_empty() {
+        req
+    } else {
+        match model.provider {
+            crate::bot::ApiProvider::Openai => req.bearer_auth(model.api_key.trim()),
+            crate::bot::ApiProvider::Anthropic => {
+                crate::bot_anthropic::apply_anthropic_auth(req, model.api_key.trim())
+            }
         }
     };
     let resp = req.send().await.ok()?;

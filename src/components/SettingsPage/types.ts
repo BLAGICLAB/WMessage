@@ -267,6 +267,26 @@ export type ProviderPreset = {
   keyUrl: string;
   models: PresetModel[];
 };
+
+/** 「自定义厂商」表单的一次提交（addCustomVendor 入参）：
+ *  name 自拟厂商名（keyring 条目/厂商分组都按它），model 首个模型名，
+ *  key 留空 + noAuth = 本地服务（请求不带鉴权头、探活匿名转正）。 */
+export type CustomVendorDraft = {
+  name: string;
+  protocol: "openai" | "anthropic";
+  baseUrl: string;
+  model: string;
+  key: string;
+  noAuth: boolean;
+};
+
+/** 常见本地模型服务的快捷预填（自定义表单 chips）：OpenAI 兼容端点，
+ *  默认免鉴权（勾选可改）。 */
+export const LOCAL_SERVER_PRESETS = [
+  { name: "Ollama", baseUrl: "http://localhost:11434/v1", model: "" },
+  { name: "LM Studio", baseUrl: "http://localhost:1234/v1", model: "" },
+  { name: "vLLM", baseUrl: "http://localhost:8000/v1", model: "" },
+] as const;
 /** 模型库模型 → ModelEntry：model 去掉 "provider/" 前缀（API 调用 id 取后段）、
  *  contextK = context_length/1000 四舍五入一位小数；推理参数仅非空才带（不写 undefined 字段） */
 export function metaModelToEntry(
@@ -328,6 +348,9 @@ export type SettingsConfig = {
   modelsByProvider: ModelsByProvider;
   activeModelId: ActiveModelId;
   disabledVendors: string[];
+  /** 免鉴权厂商名单（本地模型服务）：名单内厂商请求不带鉴权头、
+   *  探活匿名 2xx 即转正；详情页按它把 Key 输入框换成免鉴权说明 */
+  noAuthVendors: string[];
   verifiedVendors: string[];
   uiFontSize: UiFontSize;
   hasApiKey: boolean;

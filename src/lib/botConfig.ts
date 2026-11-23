@@ -47,6 +47,8 @@ export interface BotConfigView {
     anthropic?: string | null;
   } | null;
   disabledVendors?: string[] | null;
+  /** 免鉴权厂商名单（本地模型服务，请求不带鉴权头、探活匿名 2xx 转正） */
+  noAuthVendors?: string[] | null;
   vendorKeys?: string[] | null;
   verifiedVendors?: string[] | null;
   /** 界面字体大小：small/standard/large（None = small；历史遗留的 xlarge

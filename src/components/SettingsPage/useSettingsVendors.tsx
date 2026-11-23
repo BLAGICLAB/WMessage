@@ -14,6 +14,7 @@ import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { MAX_ARCHIVE_DAYS } from "../../lib/archiveRule";
 import { fetchProviders, fetchModelsByProvider, syncModelsDev, MetaProvider, MetaModel } from "../../lib/modelMeta";
 import { ModelEntry, SectionKey, genModelId, metaModelToEntry } from "./types";
+import type { CustomVendorDraft } from "./types";
 import { PROVIDER_PRESETS, KNOWN_PROTOCOL_URLS, CURATED_PROVIDER_KEYS } from "./constants";
 import { normalizeVendorName } from "./providerLogoMap";
 import type { SettingsConfig } from "./types";
@@ -223,7 +224,14 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
   );
   const saveConfig = async (
     override?: typeof config | ((c: typeof config) => typeof config),
-    opts?: { skipReload?: boolean },
+    opts?: {
+      skipReload?: boolean;
+      /** 显式指定本次要写入的厂商 key（addCustomVendor 用）：saveConfig 的
+       *  默认 keyInput/activeVendor 闭包读到的是调用瞬间的旧 state，
+       *  同一事件里先 setActiveVendor 再 saveConfig 拿不到新值。
+       *  null = 本次明确不写 key（跳过 keyInput 兜底） */
+      vendorKey?: { vendor: string; key: string } | null;
+    },
   ): Promise<boolean> => {
     if (configBusy) return false;
     const c =
@@ -239,6 +247,8 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
           modelsByProvider: c.modelsByProvider,
           activeModelId: c.activeModelId,
           disabledVendors: c.disabledVendors,
+          // 免鉴权厂商名单（本地模型服务）透传
+          noAuthVendors: c.noAuthVendors,
           // 已验证厂商名单透传（后端按 key/URL 变化 prune；前端整体替换写必须带上，
           // 否则每次保存配置都把验证状态清成空）
           verifiedVendors: c.verifiedVendors,
@@ -301,12 +311,13 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
           memoryTuning: c.memoryTuning,
         },
         // 厂商页 key 输入框非空且当前在厂商页 → 按厂商名写入凭据存储；
-        // 留空保持该厂商已存 key 不变。apiKey 是旧全局槽位参数，前端已弃用（固定 null）
+        // 留空保持该厂商已存 key 不变。apiKey 是旧全局槽位参数，前端已弃用（固定 null）。
+        // opts.vendorKey 显式传参优先（addCustomVendor：调用瞬间 state 还没更新）
         apiKey: null,
-        vendorKey:
-          keyInput.trim() && activeVendor
+        vendorKey: opts?.vendorKey ??
+          (keyInput.trim() && activeVendor
             ? { vendor: activeVendor, key: keyInput.trim() }
-            : null,
+            : null),
         // Tavily/Brave/DeepSeek key 同主 key 模式——非空才覆盖写入系统凭据存储，
         // null = 不动已存 key（开关切换走 toggleTavily/toggleBrave/toggleDeepseek →
         // saveConfig，此时输入框为空 → keyring 不受任何影响）
@@ -593,6 +604,8 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
       ...config,
       modelsByProvider: { openai, anthropic },
       disabledVendors: config.disabledVendors.filter((v) => v !== name),
+      // 免鉴权名单同步清理：厂商删了名单条目留着是死数据
+      noAuthVendors: config.noAuthVendors.filter((v) => v !== name),
       activeModelId: {
         openai: fix("openai", openai),
         anthropic: fix("anthropic", anthropic),
@@ -622,6 +635,116 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
         activeModelId: { ...c.activeModelId, [from]: target },
       };
     });
+  };
+  /** 当前查看的厂商是否免鉴权（本地模型服务） */
+  const activeVendorNoAuth =
+    activeVendor !== null && config.noAuthVendors.includes(activeVendor);
+  /** 免鉴权开关（厂商详情页）：开 = 进名单（请求不带鉴权头、探活匿名转正）；
+   *  关 = 出名单（恢复 key 输入框与「匿名 2xx 不转正」的严格探活） */
+  const toggleVendorNoAuth = async (next: boolean) => {
+    if (!activeVendor || configBusy) return;
+    const noAuthVendors = next
+      ? config.noAuthVendors.includes(activeVendor)
+        ? config.noAuthVendors
+        : [...config.noAuthVendors, activeVendor]
+      : config.noAuthVendors.filter((v) => v !== activeVendor);
+    const nextCfg = { ...config, noAuthVendors };
+    setConfig(nextCfg);
+    await saveConfig(nextCfg, { skipReload: true });
+    await loadConfig();
+    emit("bot-config-changed", null).catch(() => {});
+  };
+  /** 「自定义厂商」表单提交：自拟名称 + Base URL + 首个模型名，key 可空。
+   *  落位与 applyVendorModels 同语义（同协议替换同名厂商旧条目），落盘后
+   *  直接对该厂商跑一次连接测试——免鉴权厂商匿名 2xx 即转正，一次到位。 */
+  const [customVendorBusy, setCustomVendorBusy] = useState(false);
+  const addCustomVendor = async (draft: CustomVendorDraft) => {
+    if (customVendorBusy) return;
+    const name = draft.name.trim();
+    const baseUrl = draft.baseUrl.trim();
+    const model = draft.model.trim();
+    if (!name || !baseUrl || !model) return;
+    setCustomVendorBusy(true);
+    setBotError("");
+    try {
+      const norm = normalizeVendorName(name);
+      const proto = draft.protocol;
+      const list = config.modelsByProvider[proto] ?? [];
+      // 与 applyVendorModels 同口径：同协议下同名（归一化）厂商旧条目整体替换
+      const kept = list.filter(
+        (m) => normalizeVendorName(m.vendor ?? `__legacy__${proto}`) !== norm,
+      );
+      const existingName =
+        list.find(
+          (m) =>
+            normalizeVendorName(m.vendor ?? `__legacy__${proto}`) === norm,
+        )?.vendor ?? name;
+      const entry: ModelEntry = {
+        id: genModelId(),
+        label: model,
+        baseUrl,
+        model,
+        vendor: existingName,
+        enabled: true,
+      };
+      const curActiveId = config.activeModelId[proto] ?? null;
+      const activeIsMine =
+        config.apiProvider === proto &&
+        curActiveId !== null &&
+        list.some(
+          (m) =>
+            m.id === curActiveId &&
+            normalizeVendorName(m.vendor ?? `__legacy__${proto}`) === norm,
+        );
+      const nothingActive =
+        !(config.activeModelId.openai ?? null) &&
+        !(config.activeModelId.anthropic ?? null);
+      const takeActive = activeIsMine || nothingActive;
+      const noAuthVendors = draft.noAuth
+        ? config.noAuthVendors.includes(existingName)
+          ? config.noAuthVendors
+          : [...config.noAuthVendors, existingName]
+        : config.noAuthVendors.filter((v) => v !== existingName);
+      const next = {
+        ...config,
+        apiProvider: takeActive ? proto : config.apiProvider,
+        noAuthVendors,
+        modelsByProvider: {
+          ...config.modelsByProvider,
+          [proto]: [...kept, entry],
+        },
+        activeModelId: takeActive
+          ? { ...config.activeModelId, [proto]: entry.id }
+          : config.activeModelId,
+      };
+      setConfig(next);
+      // key 与名单同一次落盘（显式 vendorKey，不依赖 state 时序）；免鉴权时
+      // 后端会把写入 key 的厂商移出名单（互斥），这里名单已经不带它
+      const saved = await saveConfig(next, {
+        skipReload: true,
+        vendorKey:
+          draft.key.trim() && !draft.noAuth
+            ? { vendor: existingName, key: draft.key.trim() }
+            : null,
+      });
+      if (!saved) return;
+      setShowProviderPicker(false);
+      setActiveVendor(existingName);
+      // 保存成功即探活：通过 → 绿点 + 进聊天下拉；失败如实显示在厂商页
+      try {
+        await invoke("bot_test_connection", {
+          baseUrl,
+          apiFormat: proto,
+          vendor: existingName,
+        });
+      } catch (e) {
+        handleCommandError(e, "bot_test_connection", { silent: true });
+      }
+      await loadConfig();
+      emit("bot-config-changed", null).catch(() => {});
+    } finally {
+      setCustomVendorBusy(false);
+    }
   };
   const vendorEnabled =
     activeVendor !== null && !config.disabledVendors.includes(activeVendor);
@@ -723,11 +846,14 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
     activeVendorHasKey,
     activeVendorKeyUrl,
     activeVendorMeta,
+    activeVendorNoAuth,
     activeVendorProtocol,
+    addCustomVendor,
     addMetaModel,
     addModelToVendor,
     applyMetaProvider,
     applyProviderPreset,
+    customVendorBusy,
     deleteModel,
     deleteVendor,
     keyInput,
@@ -758,6 +884,7 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
     syncMetaLibrary,
     toggleMetaPicker,
     toggleVendorEnabled,
+    toggleVendorNoAuth,
     updateModel,
     vendorBaseUrl,
     vendorEnabled,

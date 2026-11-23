@@ -145,11 +145,14 @@ export function SettingsPage({
     activeVendorHasKey,
     activeVendorKeyUrl,
     activeVendorMeta,
+    activeVendorNoAuth,
     activeVendorProtocol,
+    addCustomVendor,
     addMetaModel,
     addModelToVendor,
     applyMetaProvider,
     applyProviderPreset,
+    customVendorBusy,
     deleteModel,
     deleteVendor,
     keyInput,
@@ -180,6 +183,7 @@ export function SettingsPage({
     syncMetaLibrary,
     toggleMetaPicker,
     toggleVendorEnabled,
+    toggleVendorNoAuth,
     updateModel,
     vendorBaseUrl,
     vendorEnabled,
@@ -397,6 +401,8 @@ export function SettingsPage({
                 metaSearch={metaSearch}
                 setMetaSearch={setMetaSearch}
                 applyMetaProvider={applyMetaProvider}
+                addCustomVendor={addCustomVendor}
+                customVendorBusy={customVendorBusy}
                 metaApplyBusy={metaApplyBusy}
                 activeVendorMeta={activeVendorMeta}
                 vendorEnabled={vendorEnabled}
@@ -415,6 +421,8 @@ export function SettingsPage({
                 setVendorProtocol={setVendorProtocol}
                 activeVendorHasKey={activeVendorHasKey}
                 activeVendorKeyUrl={activeVendorKeyUrl}
+                activeVendorNoAuth={activeVendorNoAuth}
+                toggleVendorNoAuth={toggleVendorNoAuth}
                 showKey={showKey}
                 keyInput={keyInput}
                 setKeyInput={setKeyInput}

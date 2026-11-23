@@ -422,3 +422,30 @@
 - **证据**：两个标签的截图（含计数）+ 提醒行截图（灰态/已暂停/编辑面板）+ reminders 表查询输出 + bot.log 事件行
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——`grep -n "reminder_set_enabled" src-tauri/src/lib.rs` 命中 = 命令注册在；不命中 = 卡片过期
 - **缺口补验**：实机全流程未跑（标签切换、计数、增删改、到点自动刷新、通知未授权提示条与「重新检查」）；提醒到点实际响铃未验
+
+### ACC-P-23 · 自定义厂商与本地模型服务（免鉴权）
+
+- **SPEC**：6-129
+- **层级**：L1+L2（自动档 `src-tauri/src/bot/config/keyring.rs` vendor_is_no_auth 例 + `src-tauri/src/bot/config/types.rs` resolve_no_auth 两例 + `src-tauri/src/bot/config/commands.rs` no_auth_vendors 两例 + `src/components/SettingsPage.vendor.test.tsx` 3 例）+ 实机观察
+- **历史卡**：—
+- **前置**：应用已启动；本机跑着一个 OpenAI 兼容本地服务（如 `ollama serve`，11434 端口）**且未开鉴权**
+- **步骤**：
+  1. 设置 → 模型设置 → 「添加厂商」→ 点「＋ 自定义厂商」展开表单；点「Ollama」chip → 名称与 Base URL 预填（`http://localhost:11434/v1`）。
+  2. 填模型名称（如 `qwen3:8b`）、勾「此服务无需 API Key」→ key 输入框消失 → 点「添加此厂商」。
+  3. 观察落盘：`jq '.noAuthVendors, .modelsByProvider.openai[-1]' "<data_dir>/bot-config.json"` → 名单含「Ollama」，条目 vendor/baseUrl/model 与表单一致且 enabled。
+  4. 保存后自动探活：厂商页出现连接测试结果；左栏「Ollama」绿点（免鉴权厂商匿名 2xx 即转正）。
+  5. 聊天区 🧠 下拉 → 出现该模型（verified 过滤放行）；选中发一条消息 → 收到回复（请求**不带**鉴权头；Ollama 不计较头）。
+  6. 详情页：API Key 区显示「此厂商已设为免鉴权」说明（无 Key 输入框）→ 点「改为需要鉴权」→ 输入框回来、`noAuthVendors` 不再含该厂商、探活恢复「匿名不转正」严格口径。
+  7. 反向：普通厂商页点「此服务无需 API Key（本地服务）？设为免鉴权」→ `noAuthVendors` 增加该厂商。
+  8. 互斥：免鉴权厂商页填 Key 保存 → `jq '.noAuthVendors'` 该厂商被移出名单（写 key = 要鉴权）。
+  9. 对照组：不勾免鉴权添加同一个本地服务 → 保存后探活报「还没配 API Key：本次只探了端点连通性……不算连接测试通过」，不进聊天下拉（普通厂商匿名不转正语义未变）。
+- **判据**：
+  1. 【可核对】请求侧空 key = 完全不带鉴权头——`grep -n "api_key.trim().is_empty" src-tauri/src/bot_model_loop/request.rs` 命中条件跳过分支；`grep -n "read_llm_auth" src-tauri/src/bot_model_loop/shell.rs` 命中主循环装配。
+  2. 【可核对】名单判定先于 keyring I/O——`grep -n "vendor_is_no_auth" src-tauri/src/bot/config/keyring.rs` 命中，且 `read_llm_auth` 中名单命中分支不调用 read_vendor_key。
+  3. 【可核对】探活转正分叉——`grep -n "authenticated || no_auth" src-tauri/src/bot/config/commands.rs` 命中 `bot_test_connection` 的 verified 判定；免鉴权厂商匿名通过不给「去填 key」提示（`grep -n "anon_probe_hint" -A 6 src-tauri/src/bot/config/commands.rs` 命中 no_auth 分支返回 None）。
+  4. 【可核对】互斥——`grep -n "no_auth_vendors.retain" src-tauri/src/bot/config/commands.rs` 命中 bot_set_config 的 key 覆盖移出分支。
+  5. 【可观测】步骤 4-5：绿点 + 聊天下拉可见 + 真对话回复（免鉴权厂商可用性闭环）。
+  6. 【可观测】步骤 9：对照组探活失败文案如实（普通厂商「匿名 2xx 不转正」回归未破）。
+- **证据**：bot-config.json 的 noAuthVendors/modelsByProvider 输出 + 厂商页与详情页截图 + Ollama 侧（`ollama ps`）请求到达记录 + 对照组探活失败截图
+- **失败处置**：先分「功能坏了」还是「环境坏了」——Ollama 未起/端口不对时探活失败属环境；`grep -n "no_auth_vendors" src-tauri/src/bot/config/types.rs` 命中 = 字段在；聊天下拉不出现先查 verified_vendors 是否转正（探活是否匿名通过）
+- **缺口补验**：实机全流程未跑（Ollama 真服务对话、Anthropic 格式本地端点、删除厂商同步清名单）；Windows 侧钥匙串路径未验

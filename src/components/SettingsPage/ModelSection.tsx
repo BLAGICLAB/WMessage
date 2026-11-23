@@ -4,8 +4,10 @@
  *  同时挂载的（hidden 切可见性），这里只管内容。
  */
 import { handleCommandError } from "../../lib/errorHandler";
+import { useState } from "react";
 import { Toggle } from "../Toggle/Toggle";
 import { ApiProviderSelect } from "./ApiProviderSelect";
+import { CustomVendorForm } from "./CustomVendorForm";
 import { ModelRow } from "./ModelRow";
 import { ProviderLogo } from "./ProviderLogo";
 import { API_FORMAT_OPTIONS, PROVIDER_PRESETS } from "./constants";
@@ -16,7 +18,7 @@ import { Check, Eye, EyeOff, Info, MoreHorizontal, Plus } from "lucide-react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { MetaModel, MetaProvider } from "../../lib/modelMeta";
 import type { ConfirmOptions } from "../../lib/useConfirm";
-import type { ModelEntry, SettingsConfig } from "./types";
+import type { CustomVendorDraft, ModelEntry, SettingsConfig } from "./types";
 
 export type ModelSectionProps = {
   needVendorReVerify: boolean;
@@ -36,6 +38,9 @@ export type ModelSectionProps = {
   metaSearch: string;
   setMetaSearch: Dispatch<SetStateAction<string>>;
   applyMetaProvider: (p: MetaProvider) => Promise<void>;
+  /** 「自定义厂商」表单提交（自拟名称/URL/协议/key 可空/免鉴权勾选） */
+  addCustomVendor: (draft: CustomVendorDraft) => Promise<void>;
+  customVendorBusy: boolean;
   metaApplyBusy: boolean;
   activeVendorMeta: MetaProvider | null;
   vendorEnabled: boolean;
@@ -54,6 +59,9 @@ export type ModelSectionProps = {
   setVendorProtocol: (prov: "openai" | "anthropic") => void;
   activeVendorHasKey: boolean;
   activeVendorKeyUrl: string | null;
+  /** 当前厂商是否免鉴权（本地模型服务）：Key 输入框换成免鉴权说明 + 开关 */
+  activeVendorNoAuth: boolean;
+  toggleVendorNoAuth: (next: boolean) => Promise<void>;
   showKey: boolean;
   keyInput: string;
   setKeyInput: Dispatch<SetStateAction<string>>;
@@ -95,6 +103,8 @@ export function ModelSection({
   metaSearch,
   setMetaSearch,
   applyMetaProvider,
+  addCustomVendor,
+  customVendorBusy,
   metaApplyBusy,
   activeVendorMeta,
   vendorEnabled,
@@ -113,6 +123,8 @@ export function ModelSection({
   setVendorProtocol,
   activeVendorHasKey,
   activeVendorKeyUrl,
+  activeVendorNoAuth,
+  toggleVendorNoAuth,
   showKey,
   keyInput,
   setKeyInput,
@@ -135,6 +147,8 @@ export function ModelSection({
   saveVendorPage,
   configSaved,
 }: ModelSectionProps) {
+  // 自定义厂商表单的展开态（纯表单 UI 态，不进配置）
+  const [showCustomForm, setShowCustomForm] = useState(false);
   return (
     <>
       {/* 页首：说明（原「刷新」按钮删除——bot_get_config 只合顶层字段，
@@ -240,9 +254,32 @@ export function ModelSection({
                     </div>
                     <p className="text-xs text-[var(--t5)]">
                       点选厂商即添加（同名厂商重新选择会覆盖其 Base URL
-                      与模型列表）；添加后可改 Base URL、API
-                      格式与模型列表。
+                      与模型列表）；本地服务器或自建网关用下方「自定义厂商」自拟名称接入。
                     </p>
+                    <div className="space-y-2">
+                      <button
+                        type="button"
+                        className={`nm-btn px-2.5 py-1.5 text-xs ${
+                          showCustomForm
+                            ? "text-[var(--brand)]"
+                            : "text-[var(--t3)]"
+                        }`}
+                        aria-expanded={showCustomForm}
+                        onClick={() => setShowCustomForm((v) => !v)}
+                      >
+                        ＋ 自定义厂商{showCustomForm ? " ▴" : " ▾"}
+                      </button>
+                      {showCustomForm && (
+                        <CustomVendorForm
+                          onSubmit={async (draft) => {
+                            await addCustomVendor(draft);
+                            // 成功后 picker 已被父级关掉；表单态收起，失败则留着让用户改
+                            setShowCustomForm(false);
+                          }}
+                          busy={customVendorBusy}
+                        />
+                      )}
+                    </div>
                     {metaProviders === null ||
                     metaProviders.length === 0 ? (
                       <>
@@ -493,7 +530,28 @@ export function ModelSection({
                         options={API_FORMAT_OPTIONS}
                       />
                     </div>
-                    {/* API Key：按厂商分存（keyring 条目按厂商名），各厂商独立——挂账记录 */}
+                    {/* API Key：按厂商分存（keyring 条目按厂商名），各厂商独立——挂账记录。
+                        免鉴权厂商（本地模型服务）：请求不带鉴权头，Key 输入框换成说明 + 退出开关 */}
+                    {activeVendorNoAuth ? (
+                      <div className="space-y-1">
+                        <p className="text-xs text-[var(--t5)]">API Key</p>
+                        <p
+                          className="nm-inset rounded-xl px-3 py-2 text-xs text-[var(--t5)]"
+                          role="note"
+                          aria-label="免鉴权厂商说明"
+                        >
+                          此厂商已设为免鉴权：请求不带 API Key（适合 Ollama /
+                          LM Studio 等本地服务）。
+                        </p>
+                        <button
+                          className="text-xs text-[var(--brand)] hover:underline"
+                          onClick={() => toggleVendorNoAuth(false)}
+                          disabled={configBusy}
+                        >
+                          改为需要鉴权（启用下方 Key 输入框）
+                        </button>
+                      </div>
+                    ) : (
                     <div className="space-y-1">
                       <div className="flex items-center justify-between">
                         <p className="text-xs text-[var(--t5)]">
@@ -554,7 +612,17 @@ export function ModelSection({
                           清除已保存的 Key
                         </button>
                       )}
+                      {/* 本地服务快捷入口：普通厂商页一键切到免鉴权 */}
+                      <button
+                        className="text-xs text-[var(--t5)] hover:text-[var(--t2)] hover:underline"
+                        onClick={() => toggleVendorNoAuth(true)}
+                        disabled={configBusy}
+                        title="本地服务（Ollama / LM Studio 等）不需要 API Key：请求将不带鉴权头，连接测试匿名通过即可用"
+                      >
+                        此服务无需 API Key（本地服务）？设为免鉴权
+                      </button>
                     </div>
+                    )}
                     {/* 模型列表：行 = 名称 + 上下文徽标 + 能力徽标 + 插头（连接测试）+ 铅笔编辑 + 开关；flex-1 与添加厂商网格同高对齐 */}
                     <div className="flex min-h-0 flex-1 flex-col gap-1">
                       <div className="flex items-center justify-between">

@@ -127,19 +127,19 @@ src-tauri/src/
 │   └── api_handlers/types.rs    共享类型
 │
 │─ Bot 核心（编排 → 决策 → 工具分发）
-├── bot_chat.rs (838)    入口编排门面：bot_chat / bot_compact / bot_execute_task 命令 + 公共类型
+├── bot_chat.rs (829)    入口编排门面：bot_chat / bot_compact / bot_execute_task 命令 + 公共类型
 │                        （ChatMsg/TaskRef/BotChatResult）+ 子模块转出（旧路径 1:1 保持）
 │   ├── bot_chat/flow.rs (904)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
 │   ├── bot_chat/exec.rs (575)   任务执行面：批量执行 + ExecGuard + run_task_in_chat 全链路
 │   ├── bot_chat/media.rs (152)  多模态图片组装：base64 入模 + 扩展名白名单 + 附件索引
-│   ├── bot_chat/summary.rs (322) 历史摘要面：截断点选择 + 摘要请求 + 压缩
+│   ├── bot_chat/summary.rs (326) 历史摘要面：截断点选择 + 摘要请求 + 压缩
 │   ├── bot_chat/inject.rs (108)  上下文注入面：摘要/记忆块并入末条消息（保缓存前缀稳定）
 │   ├── bot_chat/report.rs (174) 子任务汇报轮：回传结果 + 门控 + 历史映射
 │   ├── bot_chat/input.rs (118)  输入规范化面：不可见字符清洗 + 路由前判定 + 恢复提示
 │   ├── bot_chat/bot_chat_pure_helpers_tests.rs (754) 纯函数与接线守卫单测
 │   ├── bot_chat/inject_tests.rs (145)                 注入面单测（注入位置 + 前缀稳定性）
 │   ├── bot_chat/image_attach_tests.rs (73)             图片附件单测
-│   ├── bot_chat/command_error_mapping_tests.rs (33)    命令错误映射单测
+│   ├── bot_chat/command_error_mapping_tests.rs (22)    命令错误映射单测
 │   └── bot_chat/chat_exec_guard_tests.rs (55)          ChatGuard / ExecGuard 语义单测
 │─ 提示词 prompts/（AI 应用的业务逻辑，与代码同等对待；统一从 `crate::prompts::NAME` 取）
 ├── prompts/mod.rs        模块声明 + `crate::prompts::NAME` 统一出口 + prompt 清单锁测试
@@ -164,8 +164,8 @@ src-tauri/src/
 │   │                                    tool_call 增量累积 / token usage 归一
 │   ├── bot_model_loop/core.rs (1312)     核心循环：run_model_loop_core（可注入 mock）+
 │   │                                    dispatch_round（工具分发/回灌）
-│   ├── bot_model_loop/shell.rs (657)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
-│   ├── bot_model_loop/request.rs (769)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
+│   ├── bot_model_loop/shell.rs (661)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
+│   ├── bot_model_loop/request.rs (775)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
 │   ├── bot_model_loop/sse.rs (892)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
 │   ├── bot_model_loop/guard.rs (725)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
 │   │                                    guard_verdict）+ 自检回复判定 + 工具自检侧调路由

@@ -561,4 +561,150 @@ describe("SettingsPage", () => {
       expect(arg.config.modelsByProvider.openai[0].label).toBe("DeepSeek Chat");
     });
   });
+
+  it("自定义厂商：添加厂商 → 自定义表单（Ollama 预填 + 免鉴权）→ bot_set_config 携带新厂商条目与 noAuthVendors，保存后自动探活", async () => {
+    const user = userEvent.setup();
+    // 空模型库 + 空厂商列表：走「添加厂商」网格的预设分支
+    mockVendorConfig({
+      modelsByProvider: { openai: [], anthropic: [] },
+      activeModelId: { openai: null, anthropic: null },
+      apiProvider: "openai",
+      hasApiKey: false,
+      bypassLlmOnPreStepHit: true,
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "模型设置" }));
+    await user.click(
+      await screen.findByRole("button", { name: /添加厂商/ }),
+    );
+    // 展开自定义表单，Ollama 快捷预填名称与端点
+    await user.click(
+      await screen.findByRole("button", { name: /自定义厂商/ }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "Ollama" }),
+    );
+    await user.type(
+      screen.getByLabelText("模型名称"),
+      "qwen3:8b",
+    );
+    // 勾选免鉴权（本地服务）：key 输入框隐藏
+    const noAuthToggle = screen.getByRole("checkbox", {
+      name: /此服务无需 API Key/,
+    });
+    expect(noAuthToggle).not.toBeChecked();
+    await user.click(noAuthToggle);
+    expect(
+      screen.queryByPlaceholderText(/可留空，之后在厂商页补填/),
+    ).not.toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "添加此厂商" }),
+    );
+    await waitFor(() => {
+      const setCalls = mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "bot_set_config",
+      );
+      expect(setCalls.length).toBeGreaterThan(0);
+      const arg = setCalls[setCalls.length - 1]![1] as {
+        config: {
+          modelsByProvider: {
+            openai: Array<{
+              vendor: string;
+              baseUrl: string;
+              model: string;
+              label: string;
+            }>;
+          };
+          noAuthVendors: string[];
+          activeModelId: { openai: string | null };
+          apiProvider: string;
+        };
+      };
+      expect(arg.config.modelsByProvider.openai).toHaveLength(1);
+      expect(arg.config.modelsByProvider.openai[0]).toMatchObject({
+        vendor: "Ollama",
+        baseUrl: "http://localhost:11434/v1",
+        model: "qwen3:8b",
+        label: "qwen3:8b",
+      });
+      expect(arg.config.noAuthVendors).toEqual(["Ollama"]);
+      // 全局无 active → 新厂商接管协议与 active
+      expect(arg.config.apiProvider).toBe("openai");
+      expect(arg.config.activeModelId.openai).not.toBeNull();
+    });
+    // 保存成功后自动探活该厂商（免鉴权厂商匿名探测即可转正）
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_test_connection", {
+        baseUrl: "http://localhost:11434/v1",
+        apiFormat: "openai",
+        vendor: "Ollama",
+      });
+    });
+  });
+
+  it("免鉴权厂商详情页：Key 输入框换成免鉴权说明，「改为需要鉴权」→ noAuthVendors 移除该厂商", async () => {
+    const user = userEvent.setup();
+    mockVendorConfig({
+      modelsByProvider: {
+        openai: [
+          {
+            id: "m-local",
+            label: "qwen3",
+            model: "qwen3",
+            baseUrl: "http://localhost:11434/v1",
+            vendor: "我的本地服务",
+          },
+        ],
+        anthropic: [],
+      },
+      activeModelId: { openai: "m-local", anthropic: null },
+      apiProvider: "openai",
+      hasApiKey: false,
+      bypassLlmOnPreStepHit: true,
+      noAuthVendors: ["我的本地服务"],
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await openVendorPage(user, "我的本地服务");
+    // 免鉴权说明替代 Key 输入框
+    expect(
+      await screen.findByText(/此厂商已设为免鉴权/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText(/已保存（输入新 Key 可覆盖）|sk-…/),
+    ).not.toBeInTheDocument();
+    // 退出免鉴权 → 落盘 payload 的 noAuthVendors 不再含该厂商
+    await user.click(
+      await screen.findByRole("button", { name: /改为需要鉴权/ }),
+    );
+    await waitFor(() => {
+      const setCalls = mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "bot_set_config",
+      );
+      expect(setCalls.length).toBeGreaterThan(0);
+      const arg = setCalls[setCalls.length - 1]![1] as {
+        config: { noAuthVendors: string[] };
+      };
+      expect(arg.config.noAuthVendors).toEqual([]);
+    });
+  });
+
+  it("普通厂商页「设为免鉴权」：一键把该厂商加进 noAuthVendors 落盘", async () => {
+    const user = userEvent.setup();
+    mockVendorConfig(deepseekVendorConfig);
+    render(<SettingsPage {...defaultProps} />);
+    await openVendorPage(user, "DeepSeek");
+    await user.click(
+      await screen.findByRole("button", { name: /此服务无需 API Key/ }),
+    );
+    await waitFor(() => {
+      const setCalls = mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "bot_set_config",
+      );
+      expect(setCalls.length).toBeGreaterThan(0);
+      const arg = setCalls[setCalls.length - 1]![1] as {
+        config: { noAuthVendors: string[] };
+      };
+      expect(arg.config.noAuthVendors).toEqual(["DeepSeek"]);
+    });
+  });
 });

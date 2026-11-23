@@ -159,8 +159,8 @@ pub(crate) use config::{
     __tauri_command_name_bot_set_config, __tauri_command_name_bot_set_perm_mode,
     __tauri_command_name_memory_tuning_get, __tauri_command_name_memory_tuning_set, bot_log_read,
     bot_set_active_model, bot_set_config, bot_set_perm_mode, check_len, effective_inference,
-    memory_tuning_get, memory_tuning_set, migrate_bot_config_schema, read_llm_key, read_search_key,
-    read_vendor_key, EffectiveInference,
+    memory_tuning_get, memory_tuning_set, migrate_bot_config_schema, read_llm_auth,
+    read_search_key, read_vendor_key, EffectiveInference,
 };
 
 // ── config 核心类型与常量：类型/常量可见性未动，保持 pub ──

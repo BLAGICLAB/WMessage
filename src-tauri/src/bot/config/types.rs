@@ -234,6 +234,14 @@ pub struct BotConfig {
     /// 老配置缺字段 → 空 Vec（struct 级 #[serde(default)] + 字段级 default）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_vendors: Vec<String>,
+    /// 免鉴权厂商名单（本地模型服务）：名单内厂商的请求**不带鉴权头**发出
+    ///（Ollama / LM Studio / vLLM 等本地服务不开鉴权，key 槽位空着是正常态）。
+    /// 判定先于 key 解析：命中名单即匿名请求，即使 keyring 里残留旧 key 也不发——
+    /// 「这厂商要不要带 key」以名单为准。请求侧与探活转正共用此名单
+    ///（探活匿名 2xx 对免鉴权厂商就是有效验证，普通厂商维持「匿名不转正」）。
+    /// 空名单 = 全部厂商照旧要求 key；老配置缺字段 → 空 Vec。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub no_auth_vendors: Vec<String>,
     /// 连接测试通过的厂商名单（可用性依据：设置页左栏绿点 + 聊天模型下拉过滤）。
     /// 厂商 key 被覆盖/清除、条目 Base URL 或 API 格式变化都会使其失效
     ///（bot_set_config 落盘前对比盘上值剔除，见 prune_verified_vendors）。
@@ -342,6 +350,7 @@ impl Default for BotConfig {
             deferred_tool_groups: None, // 未配置 = 全量挂载（D-3 灰度开关默认关）
             auto_gate_classifier: None, // 未配置 = 无分类器兜底（灰度开关默认关）
             disabled_vendors: Vec::new(), // 未配置 = 无厂商被禁用
+            no_auth_vendors: Vec::new(), // 未配置 = 无免鉴权厂商（全部要求 key）
             verified_vendors: Vec::new(), // 未配置 = 无厂商通过连接测试
             schema_version: BOT_CONFIG_SCHEMA_VERSION, // 新建配置即当前版本
             tool_rules: None,
@@ -501,6 +510,8 @@ pub struct BotConfigView {
     pub mcp_servers: Vec<crate::bot::mcp::config::McpServerConfig>,
     /// 厂商级禁用列表原样透传（空 = 全部启用）
     pub disabled_vendors: Vec<String>,
+    /// 免鉴权厂商名单原样透传（本地模型服务；空 = 全部厂商要求 key）
+    pub no_auth_vendors: Vec<String>,
     /// 已存 API Key 的厂商名列表（keyring 无法枚举条目，按配置里出现过的
     /// 厂商名逐个探测 has_vendor_key）：前端厂商页按它显示「已存入 ✓」
     pub vendor_keys: Vec<String>,
@@ -552,10 +563,13 @@ pub struct ResolvedModel {
 /// 先 openai 后 anthropic 列表；条目不存在/禁用 → 响亮报错；
 /// key = 条目厂商 key（有则用）→ 全局主 key 兜底。不走 active 模型厂商回退：
 /// override 条目打自己的 base_url，借 active 厂商的 key 属跨厂商凭据泄漏。
+/// `no_auth_vendors` 命中条目厂商 → api_key 为空串 = 不带鉴权头（本地模型服务；
+/// 名单判定先于 keyring 读取，残留旧 key 也不发），空 key 不再报缺 key。
 pub fn resolve_model_override(
     models_by_provider: Option<&ModelsByProvider>,
     entry_id: &str,
     global_max_tokens: Option<u32>,
+    no_auth_vendors: &[String],
 ) -> Result<ResolvedModel, CommandError> {
     let lists = models_by_provider;
     fn find<'a>(items: &'a [ModelEntry], entry_id: &str) -> Option<&'a ModelEntry> {
@@ -585,27 +599,41 @@ pub fn resolve_model_override(
         )
         .into());
     }
-    // key：厂商 key 优先；厂商没配自己的 key → 报错，**不借用全局主 key**
+    // key：免鉴权厂商（本地模型服务）→ 空串，请求侧跳过鉴权头——名单判定
+    // 先于 keyring I/O，残留旧 key 也不发。
+    // 其余：厂商 key 优先；厂商没配自己的 key → 报错，**不借用全局主 key**
     // （主 key 会带着这个条目自己的 base_url 出门——那个 base_url 是用户填的，
     // 可能指向任何第三方）。无 vendor 的老条目没有厂商概念，用全局主 key。
     // 单次 read_vendor_key 的 Result 直接决策，不做 has 预检——预检+读取两段
     // keyring I/O 之间条目可被改删（check-then-act），且预检失败映射成 false 会吞掉
     // 可行动的错误上下文；读不到条目（空串）等同「该厂商没配 key」→ 报缺 key
-    let api_key = match &entry.vendor {
-        Some(v) => {
-            let k = crate::bot::read_vendor_key(v)?;
-            if k.trim().is_empty() {
-                return Err(CommandError::ApiKeyMissing);
+    let vendor_in_no_auth = entry
+        .vendor
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| no_auth_vendors.iter().any(|x| x == v))
+        .unwrap_or(false);
+    let api_key = if vendor_in_no_auth {
+        String::new()
+    } else {
+        match &entry.vendor {
+            Some(v) => {
+                let k = crate::bot::read_vendor_key(v)?;
+                if k.trim().is_empty() {
+                    return Err(CommandError::ApiKeyMissing);
+                }
+                k
             }
-            k
+            None => crate::bot::config::keyring::read_api_key()?,
         }
-        None => crate::bot::config::keyring::read_api_key()?,
     };
     // 兜底拿不到 key（NoEntry → classify_get_password 把 NoEntry 映射成 Ok("")）
     // 直接返回 ApiKeyMissing 而非包成 Ok("")——后者会被调用方拿空 key 去打 API 拿 401，
     // fail-fast 引导用户去设置页配 key。bot_model_loop.rs:556 / bot_chat.rs:1110
     // （require_api_key）同口径，已是现有惯例；本函数末尾补齐避免调用方各自重复。
-    if api_key.trim().is_empty() {
+    // 免鉴权厂商的空 key 已在上面分支合法化（vendor_in_no_auth），不进此判定。
+    if api_key.trim().is_empty() && !vendor_in_no_auth {
         return Err(CommandError::ApiKeyMissing);
     }
     Ok(ResolvedModel {
@@ -679,7 +707,7 @@ mod model_override_tests {
     #[test]
     fn resolve_finds_entry_across_protocols() {
         let Some(r) =
-            run_with_keychain_guard(|| resolve_model_override(models().as_ref(), "glm", None))
+            run_with_keychain_guard(|| resolve_model_override(models().as_ref(), "glm", None, &[]))
         else {
             eprintln!("[skip] 钥匙串 3 秒无响应（疑似锁屏等待授权），跳过本测");
             return;
@@ -708,20 +736,90 @@ mod model_override_tests {
     #[test]
     fn resolve_rejects_missing_and_disabled() {
         // 错误路径可能在读取 key 前就返回，但守卫兜底同款（锁屏环境不挂死）
-        let ghost =
-            run_with_keychain_guard(|| resolve_model_override(models().as_ref(), "ghost", None));
+        let ghost = run_with_keychain_guard(|| {
+            resolve_model_override(models().as_ref(), "ghost", None, &[])
+        });
         let Some(m) = ghost else {
             eprintln!("[skip] 钥匙串 3 秒无响应（疑似锁屏等待授权），跳过本测");
             return;
         };
         assert!(m.is_err(), "不存在的 id 应报错");
         let disabled = run_with_keychain_guard(|| {
-            resolve_model_override(models().as_ref(), "disabled1", None)
+            resolve_model_override(models().as_ref(), "disabled1", None, &[])
         });
         let Some(err) = disabled else {
             eprintln!("[skip] 钥匙串 3 秒无响应（疑似锁屏等待授权），跳过本测");
             return;
         };
         assert!(err.unwrap_err().to_string().contains("停用"));
+    }
+
+    /// 免鉴权厂商（本地模型服务）的覆盖条目：空 key 合法、不碰 keyring。
+    /// 名单判定先于 key 读取——即使 keyring 里残留旧 key 也不发（名单为准）。
+    #[test]
+    fn resolve_no_auth_vendor_returns_empty_key_without_keyring() {
+        let entry = ModelEntry {
+            id: "local".into(),
+            label: "Ollama".into(),
+            base_url: "http://localhost:11434/v1".into(),
+            model: "qwen3".into(),
+            vendor: Some("我的本地服务".into()),
+            enabled: true,
+            context_k: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            system_prompt: None,
+        };
+        let lists = Some(ModelsByProvider {
+            openai: vec![entry],
+            anthropic: vec![],
+        });
+        let r =
+            resolve_model_override(lists.as_ref(), "local", None, &["我的本地服务".to_string()])
+                .expect("免鉴权厂商不应报缺 key");
+        assert_eq!(r.api_key, "", "免鉴权厂商 key 为空 = 请求侧跳过鉴权头");
+        assert_eq!(r.base_url, "http://localhost:11434/v1");
+        assert_eq!(r.model, "qwen3");
+    }
+
+    /// 同一条目不在免鉴权名单里 → 空白名单维持原语义（keyring 读不到即报缺 key）。
+    /// keychain 不可用/锁屏时读 key 报错或挂起，守卫兜底（其余测试同款）。
+    #[test]
+    fn resolve_vendor_not_in_no_auth_list_still_requires_key() {
+        let lists = Some(ModelsByProvider {
+            openai: vec![ModelEntry {
+                id: "cloud".into(),
+                label: "云端".into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: "m".into(),
+                vendor: Some("云端厂商".into()),
+                enabled: true,
+                context_k: None,
+                temperature: None,
+                top_p: None,
+                max_tokens: None,
+                system_prompt: None,
+            }],
+            anthropic: vec![],
+        });
+        let r = run_with_keychain_guard(move || {
+            resolve_model_override(lists.as_ref(), "cloud", None, &[])
+        });
+        let Some(r) = r else {
+            eprintln!("[skip] 钥匙串 3 秒无响应（疑似锁屏等待授权），跳过本测");
+            return;
+        };
+        match r {
+            Err(CommandError::ApiKeyMissing) => {} // 本机 keychain 无该厂商 key：fail-fast 正确
+            Ok(resolved) => panic!(
+                "空白名单时厂商 key 缺失必须报错，实际解析成功且 key={}",
+                resolved.api_key.len()
+            ),
+            Err(e) => {
+                // keychain 真实故障（沙箱环境）也算「没拿到 key」，语义一致
+                let _ = e;
+            }
+        }
     }
 }

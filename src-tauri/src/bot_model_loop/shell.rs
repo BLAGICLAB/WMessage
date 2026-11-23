@@ -164,14 +164,14 @@ pub async fn run_model_loop(
     )
     .and_then(|e| e.vendor.clone());
     crate::bot::ensure_vendor_verified(serving_vendor.as_deref(), &cfg.verified_vendors)?;
-    let api_key = crate::bot::read_llm_key(
+    // 免鉴权感知的鉴权解析：返回空串 = active 厂商在免鉴权名单（本地模型服务），
+    // 请求侧跳过鉴权头；其余空 key 已在 read_llm_auth 内收敛成 ApiKeyMissing
+    let api_key = crate::bot::read_llm_auth(
         cfg.api_provider.as_deref(),
         cfg.active_model_id.as_ref(),
         cfg.models_by_provider.as_ref(),
+        &cfg.no_auth_vendors,
     )?;
-    if api_key.trim().is_empty() {
-        return Err(CommandError::ApiKeyMissing);
-    }
     // 共享客户端（连接池复用）；总超时取消，流式路径逐 chunk idle 超时兜底
     let client = shared_llm_client().clone();
     // None/非法值 → Openai（旧行为零影响）
@@ -190,8 +190,12 @@ pub async fn run_model_loop(
     // model/协议/key）；解析失败 → 响亮审计 + 回落主循环内自检，不阻断。
     // 必须在主 http 构造前完成——那里会 move cfg 的字段。
     let selfcheck_http = cfg.selfcheck_model_id.as_ref().and_then(|entry_id| {
-        let resolved =
-            crate::bot::resolve_model_override(cfg.models_by_provider.as_ref(), entry_id, None);
+        let resolved = crate::bot::resolve_model_override(
+            cfg.models_by_provider.as_ref(),
+            entry_id,
+            None,
+            &cfg.no_auth_vendors,
+        );
         match decide_selfcheck(resolved, &cfg.verified_vendors) {
             SelfcheckDecision::Use(r) => Some(LlmHttp {
                 client: shared_llm_client().clone(),

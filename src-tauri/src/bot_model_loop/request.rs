@@ -687,12 +687,18 @@ pub(crate) async fn request_round(
     let resp = loop {
         attempt += 1;
         // 鉴权头按协议分支
-        //（Anthropic 用 x-api-key + anthropic-version，OpenAI 用 Bearer）
+        //（Anthropic 用 x-api-key + anthropic-version，OpenAI 用 Bearer）。
+        // 空 key = 免鉴权厂商（本地模型服务，read_llm_auth 唯一的空串出口）：
+        // 完全不带鉴权头——发 `Bearer ` 空值头会让部分严格网关直接 400
         let req = http.client.post(&plan.url).json(&work.body);
-        let req = match http.provider {
-            crate::bot::ApiProvider::Openai => req.bearer_auth(http.api_key.trim()),
-            crate::bot::ApiProvider::Anthropic => {
-                crate::bot_anthropic::apply_anthropic_auth(req, http.api_key.trim())
+        let req = if http.api_key.trim().is_empty() {
+            req
+        } else {
+            match http.provider {
+                crate::bot::ApiProvider::Openai => req.bearer_auth(http.api_key.trim()),
+                crate::bot::ApiProvider::Anthropic => {
+                    crate::bot_anthropic::apply_anthropic_auth(req, http.api_key.trim())
+                }
             }
         };
         // send() 单独挂响应头超时——共享客户端无默认

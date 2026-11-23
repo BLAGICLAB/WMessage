@@ -12,7 +12,7 @@
 //! ```
 //!
 //! 为什么住 lib 而不是 tests/：被测面包括生产提示词（crate::prompts，crate 内
-//! 可见）与 keyring/条目解析装配（read_llm_key / effective_inference 是
+//! 可见）与 keyring/条目解析装配（keyring::read_llm_key / effective_inference 是
 //! pub(crate)）——集成测试够不到这两层，mock LLM 又测不了「模型服不服从」。
 //! 配置走显式快照而不是现读：测试进程的数据目录被隔离到 temp，真实配置
 //! 只能拷进来；key 不落快照（仍在 keyring）。
@@ -60,7 +60,8 @@ fn eval_http() -> (LlmHttp, u32) {
     });
     let cfg: crate::bot::BotConfig =
         serde_json::from_str(&raw).unwrap_or_else(|e| panic!("评估配置快照解析失败：{e}"));
-    let api_key = crate::bot::read_llm_key(
+    // 评估层刻意走 read_llm_key 原语义（要真 key 才跑得起），不接免鉴权名单
+    let api_key = crate::bot::config::keyring::read_llm_key(
         cfg.api_provider.as_deref(),
         cfg.active_model_id.as_ref(),
         cfg.models_by_provider.as_ref(),
