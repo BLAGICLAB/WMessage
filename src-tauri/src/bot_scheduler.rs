@@ -441,7 +441,9 @@ async fn delete_job_row(app: &AppHandle, id: &str) {
     let id = id.to_string();
     let id_audit = id.clone();
     let outcome = crate::db::lock::with_write_conn(app, move |conn| {
-        crate::db::delete_scheduled_job(conn, &id)
+        // 自动消费（at: 到点 / 过期清理）只删作业行、runs 留档——「跑过什么」
+        // 的账不随消费消失；孤儿 runs 由 sweep_orphan_runs 到期回收
+        crate::db::delete_scheduled_job_row(conn, &id)
             .map(|_| ())
             .map_err(|e| e.to_string())
     })
@@ -1180,9 +1182,11 @@ async fn scheduler_tick(app: &AppHandle) {
     // 提醒扫描（到点发系统通知，不建卡不执行）
     crate::bot_reminders::reminders_tick(app).await;
     // 工作单元阶段重估：working 行超时无更新（轮死残留）按中断收尾。
-    // awaiting_answer 不参与——提问等待可达 24h，属合法长挂
+    // awaiting_answer 不参与——提问等待可达 24h，属合法长挂。
+    // 执行历史留档一并收：自动消费留下的孤儿 runs 到 30 天才回收
     let _ = crate::db::lock::with_write_conn(app, |conn| {
-        crate::db::work_items::sweep_stale_working(conn, 2 * 60 * 60 * 1000)
+        crate::db::work_items::sweep_stale_working(conn, 2 * 60 * 60 * 1000)?;
+        crate::db::sweep_orphan_runs(conn, 30)
     })
     .await
     .map_err(|e| {

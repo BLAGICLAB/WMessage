@@ -329,9 +329,8 @@ pub fn load_job_runs(
     Ok(out)
 }
 
-/// 删作业连同执行历史（同一事务，参照 bot_session_delete_inner 的级联写法）：
-/// 只删父行会让 scheduled_job_runs 变成永久孤儿——它既没有外键约束，也不会
-/// 被任何保留期清扫回收
+/// 删作业连同执行历史（同一事务）：用户手动删除 = 明确要删干净，级联删 runs。
+/// 与 `delete_scheduled_job_row`（自动消费路径只删父行留档）的区分见后者注释。
 pub fn delete_scheduled_job(conn: &mut rusqlite::Connection, id: &str) -> Result<bool, String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM scheduled_job_runs WHERE job_id = ?1", [id])
@@ -341,6 +340,36 @@ pub fn delete_scheduled_job(conn: &mut rusqlite::Connection, id: &str) -> Result
         .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(n > 0)
+}
+
+/// 只删作业行、执行历史留档（同一事务）：一次性作业到点消费 / 过期清理的
+/// 自动路径——runs 是「它跑过什么」的账，作业被系统消费掉不等于用户要抹历史
+///（与手动删除的级联口径区分）。留下的孤儿 runs 由 `sweep_orphan_runs` 到期
+/// 回收，不会永久堆积。
+pub fn delete_scheduled_job_row(conn: &mut rusqlite::Connection, id: &str) -> Result<bool, String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let n = tx
+        .execute("DELETE FROM scheduled_jobs WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(n > 0)
+}
+
+/// 孤儿 runs 的保留期清扫：作业行已不存在（自动消费留档）**且**超过保留期
+/// 的 runs 才删——两个条件缺一不可：只看孤儿 = 留档下一个 tick 就没了；
+/// 只看时间 = 会截短现存周/月作业的历史（它们按条数裁剪，20 条可跨数月）。
+/// 挂调度器 tick（30s）随跑，量小无热点。
+pub fn sweep_orphan_runs(conn: &rusqlite::Connection, keep_days: i64) -> Result<usize, String> {
+    let cutoff = crate::db::now_ms() - keep_days * 24 * 3600 * 1000;
+    let n = conn
+        .execute(
+            "DELETE FROM scheduled_job_runs \
+               WHERE job_id NOT IN (SELECT id FROM scheduled_jobs) \
+                 AND fired_at < ?1",
+            [cutoff],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n)
 }
 
 // Tauri commands
@@ -545,6 +574,89 @@ mod tests {
         conn.execute_batch(SCHEDULED_JOBS_DDL).unwrap();
         conn.execute_batch(SCHEDULED_JOB_RUNS_DDL).unwrap();
         conn
+    }
+
+    /// 自动消费（delete_scheduled_job_row）只删作业行、runs 留档；手动删除
+    /// （delete_scheduled_job）级联删 runs。留档的回收分三种情形各自可区分——
+    /// 只测「孤儿且超期」会让 AND / OR 两种写法都通过，抓不住「孤儿即刻被清」。
+    #[test]
+    fn auto_consume_keeps_runs_until_orphan_retention_expires() {
+        let conn = mem_conn();
+        let _g = crate::db::lock_db_write();
+        let now = crate::db::now_ms();
+        let day = 24 * 3600 * 1000;
+        for (id, schedule, fired_at) in [
+            // j1 被自动消费，runs 仍在留档期内
+            ("j1", "at:+1m", now - day),
+            // j2 被自动消费，runs 超过留档期
+            ("j2", "at:+1m", now - 40 * day),
+            // j3 现存作业（周作业 20 条可跨数月），旧 runs 不受时间清扫影响
+            ("j3", "weekly:1", now - 40 * day),
+        ] {
+            conn.execute(
+                "INSERT INTO scheduled_jobs (id, content, schedule) VALUES (?1, '做 X', ?2)",
+                [id, schedule],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scheduled_job_runs (job_id, fired_at, status) VALUES (?1, ?2, 'ok')",
+                rusqlite::params![id, fired_at],
+            )
+            .unwrap();
+        }
+        let mut conn = conn;
+        assert!(delete_scheduled_job_row(&mut conn, "j1").unwrap());
+        assert!(delete_scheduled_job_row(&mut conn, "j2").unwrap());
+        let runs_of = |id: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM scheduled_job_runs WHERE job_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        // 自动消费后、清扫前：留档都在
+        assert_eq!(runs_of("j1"), 1, "自动消费必须留 runs");
+        assert_eq!(runs_of("j2"), 1);
+        let swept = sweep_orphan_runs(&conn, 30).unwrap();
+        assert_eq!(swept, 1, "只收「孤儿且超期」的那一行");
+        assert_eq!(
+            runs_of("j1"),
+            1,
+            "留档期内的孤儿不得被清（否则留档形同虚设）"
+        );
+        assert_eq!(runs_of("j2"), 0, "超过留档期的孤儿回收");
+        assert_eq!(
+            runs_of("j3"),
+            1,
+            "现存作业的历史按条数裁剪，不受时间清扫影响"
+        );
+    }
+
+    #[test]
+    fn manual_delete_still_cascades_runs() {
+        let conn = mem_conn();
+        let _g = crate::db::lock_db_write();
+        conn.execute(
+            "INSERT INTO scheduled_jobs (id, content, schedule) VALUES ('j2', '做 Y', 'daily:09:00')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO scheduled_job_runs (job_id, fired_at, status) VALUES ('j2', 1000, 'ok')",
+            [],
+        )
+        .unwrap();
+        let mut conn = conn;
+        assert!(delete_scheduled_job(&mut conn, "j2").unwrap());
+        let jobs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scheduled_jobs", [], |r| r.get(0))
+            .unwrap();
+        let runs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scheduled_job_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(jobs, 0);
+        assert_eq!(runs, 0, "手动删除必须级联删 runs");
     }
 
     #[test]
