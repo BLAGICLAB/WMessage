@@ -158,6 +158,13 @@ OCR 模块头写着「隐私红线（硬约束）：图片字节只在内存里�
 - run_python 不联网（它直连外网没有任何保护）；需要查资料由上游 recon 阶段负责，或用 fetch_url / web_search。
 ```
 
+> **2026-11-24 修订**：这句只对 `PROFILE_GENERAL` 成立。`PROFILE_CODER` 与 executor
+> 档**不持有** `fetch_url` / `web_search`——执行阶段白名单不含联网工具，联网本属 recon
+> （正是本方案「三段式分工」那条硬依据）。原样写进这两档的纪律段等于把模型指到白名单
+> 外，照着调必被 dispatch 白名单闸拒（实机 M226 发现，登记为 F-新5）。现码这两档改为
+> 「run_python 不联网，你也没有联网工具；资料由上游 recon 负责」；守卫
+> `role_prompt_names_only_effective_tools` 从只查工具行扩到纪律段的肯定式指路。
+
 `PROFILE_GENERAL`（`:139-143`）同时有 `run_python` 与 `web_search` / `fetch_url`，补同一句。
 
 `PROFILE_RECON`（`:155-160`）与 `PROFILE_VERIFIER`（`:172-177`）本就没有 `run_python`

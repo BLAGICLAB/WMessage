@@ -151,7 +151,7 @@ pub(crate) const PROFILE_CODER: &str = r#"你是 coder 子 agent。
 - 压缩包用 unpack_archive 解压、pack_archive 打包（zip / tar / tar.gz）；包内带 .. 或软链的条目会被跳过并列出，被跳过的部分要如实转述。
 - 改文件用 edit_file（oldString 唯一精确匹配；批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）；新建用 write_file（覆盖已有文件在后台执行会被拒）。
 - 摸清陌生 Python 代码结构用 ast_inspect（op=symbols 出符号树 / defs 定位定义 / refs 找引用 / callgraph 出调用链），别靠 grep 猜调用关系；只支持 .py。
-- run_python 不联网（它直连外网没有任何保护）；需要查资料由上游 recon 阶段负责，或用 fetch_url / web_search。
+- run_python 不联网（它直连外网没有任何保护），你也没有联网工具；需要外部资料在 summary 里写明缺什么，由上游 recon 阶段负责，不要试图绕路。
 - 先读后改，小步验证；能跑测试就跑测试。
 - 产物路径写入 artifacts；交卷用 submit_result。
 - 不要改任务卡主状态。"#;
@@ -200,7 +200,7 @@ pub(crate) fn profile_executor(tools: &str) -> String {
 可用工具：{tools}。
 - 优先读 recon 报告路径（contextSummary 给的）作为输入，不重新调研。
 - 改文件用 edit_file（oldString 唯一精确匹配；批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）；新建用 write_file（覆盖已有文件在后台执行会被拒）。
-- run_python 不联网（它直连外网没有任何保护）；需要查资料由上游 recon 阶段负责，或用 fetch_url / web_search。
+- run_python 不联网（它直连外网没有任何保护），你也没有联网工具；资料以上游 recon 报告为准，报告里缺的在 summary 里写明，不要试图绕路。
 - 先读后改，小步验证；能跑测试就跑测试。
 - 收尾输出改动清单 + 产物路径 + 自评（哪些 acceptanceCriteria 已达成、哪些等 verifier 验收）；交卷用 submit_result。"#
     )
@@ -317,18 +317,24 @@ mod subagent_prompt_tests {
         }
     }
 
-    /// 提示词工具行点名的每个工具都必须在实际生效集（profile 白名单 ∩
-    /// stage 配置档 allowed）里——点名集外工具，模型照着调用必撞 dispatch
-    /// 白名单闸，每次白烧一轮预算。漂移的实证形态：配置档收窄清单漏列
-    /// `submit_result`，而全部 profile 的交卷指引都点名它（spawn 时每段
-    /// 第一次交卷必被拒）。
+    /// 提示词点名的每个工具都必须在实际生效集（profile 白名单 ∩ stage
+    /// 配置档 allowed）里——点名集外工具，模型照着调用必撞 dispatch 白名单闸，
+    /// 每次白烧一轮预算。点名包括两处：工具行，以及**纪律段里的肯定式指路**
+    /// （只看工具行会漏：coder/executor 的纪律段曾让模型「或用
+    /// fetch_url / web_search」查资料，而这两档根本不持有联网工具）。
+    /// 漂移的另一种实证形态：配置档收窄清单漏列 `submit_result`，而全部
+    /// profile 的交卷指引都点名它（spawn 时每段第一次交卷必被拒）。
     #[test]
-    fn role_prompt_tool_lines_name_only_effective_tools() {
+    fn role_prompt_names_only_effective_tools() {
         let probe = yaml_allowed(include_str!("../../resources/onions/probe.yaml"));
         let validator = yaml_allowed(include_str!("../../resources/onions/validator.yaml"));
+        let writereditor = yaml_allowed(include_str!("../../resources/onions/writereditor.yaml"));
         use crate::bot::registry::{CODER_TOOLS, GENERAL_TOOLS, RESEARCH_TOOLS};
-        // 无 stage 配置档的裸 profile：生效集 = 白名单本身
-        for (role, prompt, effective) in [
+        // 无 stage 配置档的裸 profile：生效集 = 白名单本身；executor 工具行按
+        // stage 配置档（writereditor）收窄后的生效集渲染——与生产同形
+        let executor_effective = effective_tools(CODER_TOOLS, &writereditor);
+        let executor_prompt = profile_executor(&executor_effective.join("、"));
+        let cases: Vec<(&str, &str, Vec<&str>)> = vec![
             (
                 "research",
                 PROFILE_RESEARCH,
@@ -354,11 +360,13 @@ mod subagent_prompt_tests {
                 PROFILE_VERIFIER,
                 effective_tools(CODER_TOOLS, &validator),
             ),
-        ] {
-            for tool in prompt_tool_line(prompt) {
+            ("executor", &executor_prompt, executor_effective.clone()),
+        ];
+        for (role, prompt, effective) in cases {
+            for tool in prompt_named_tools(prompt) {
                 assert!(
                     effective.contains(&tool),
-                    "{role} 提示词工具行点名了生效集外的工具 {tool:?}——模型照着调用必撞白名单闸"
+                    "{role} 提示词点名了生效集外的工具 {tool:?}——模型照着调用必撞白名单闸"
                 );
             }
         }
@@ -402,18 +410,65 @@ mod subagent_prompt_tests {
             .collect()
     }
 
-    /// profile/角色提示里的工具清单行 → 工具名数组（全角冒号后顿号分词）。
-    fn prompt_tool_line(prompt: &str) -> Vec<&str> {
-        let line = prompt
+    /// profile/角色提示的工具清单行（`可用工具：…` / `工具：…`）。每个提示
+    /// 都必须有这一行——没有工具行的提示词等于让模型自己猜能用什么。
+    fn tool_line_of(prompt: &str) -> &str {
+        prompt
             .lines()
             .find(|l| l.contains("可用工具：") || l.starts_with("工具："))
-            .expect("profile 提示必须有一行工具清单");
-        let idx = line.find('：').expect("工具行必带全角冒号");
-        line[idx + '：'.len_utf8()..]
-            .split('、')
-            .map(|s| s.trim().trim_end_matches('。'))
-            .filter(|s| !s.is_empty())
+            .expect("profile 提示必须有一行工具清单")
+    }
+
+    /// 文本里出现的已知工具名（带标识符边界：`grep` 不算 `grep_files`）。
+    fn tool_names_in(text: &str) -> Vec<&'static str> {
+        let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        crate::bot::registry::TOOLS_TABLE
+            .iter()
+            .map(|t| t.name)
+            .filter(|name| {
+                text.match_indices(name).any(|(at, _)| {
+                    let before_ok = text[..at].chars().next_back().is_none_or(|c| !is_ident(c));
+                    let after_ok = text[at + name.len()..]
+                        .chars()
+                        .next()
+                        .is_none_or(|c| !is_ident(c));
+                    before_ok && after_ok
+                })
+            })
             .collect()
+    }
+
+    /// 提示里点名的工具名：工具行的全部 + 纪律段里**肯定式**点名的。
+    ///
+    /// 纪律段按分句看：含否定标记的分句（「禁止调用 X」「X 均不可用」「不要用 X」）
+    /// 是在划边界，不是在指路。工具行没列、纪律段却肯定式点名的工具，模型照着
+    /// 调必撞白名单闸。按分句而不是按行判否定——「run_python 不联网……；或用
+    /// fetch_url」这种一行里前半句否定、后半句指路的写法，按行判会被整行放过。
+    fn prompt_named_tools(prompt: &str) -> Vec<&'static str> {
+        const NEGATIVE_MARKS: [&str; 8] = [
+            "不可用",
+            "禁止",
+            "没有",
+            "不得",
+            "不要",
+            "不会",
+            "不含",
+            "不联网",
+        ];
+        let tool_line = tool_line_of(prompt);
+        let mut out = tool_names_in(tool_line);
+        for line in prompt.lines() {
+            if line == tool_line {
+                continue;
+            }
+            for clause in line.split(['；', '。', '！', '？', ';']) {
+                if NEGATIVE_MARKS.iter().any(|m| clause.contains(m)) {
+                    continue;
+                }
+                out.extend(tool_names_in(clause));
+            }
+        }
+        out
     }
 
     /// 生效集 = profile 白名单 ∩ 配置档 allowed（与 bot_onions::effective_tools
