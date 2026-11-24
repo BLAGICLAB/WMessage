@@ -251,6 +251,10 @@ pub fn open_db<R: tauri::Runtime>(
     crate::db::schedule_jobs::ensure_scheduled_jobs_columns(&conn).map_err(|e| e.to_string())?;
     conn.execute_batch(crate::db::schedule_jobs::SCHEDULED_JOB_RUNS_DDL)
         .map_err(|e| e.to_string())?;
+    // 老库补执行记录的快照列（作业内容/规则）——一次性作业被消费后，
+    // 留档行靠这两列认得出是哪个作业
+    crate::db::schedule_jobs::ensure_scheduled_job_runs_columns(&conn)
+        .map_err(|e| e.to_string())?;
     // 提醒表：到点发系统通知，不建卡不执行（与内容型作业分表存）
     conn.execute_batch(crate::db::reminders::REMINDERS_DDL)
         .map_err(|e| e.to_string())?;

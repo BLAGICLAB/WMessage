@@ -833,6 +833,7 @@ pub fn run() {
             crate::ui::ui_get_enabled,
             crate::ui::ui_set_enabled,
             crate::db::schedule_jobs::scheduled_job_history,
+            crate::db::schedule_jobs::scheduled_job_finished,
             crate::db::reminders::reminder_create,
             crate::db::reminders::reminder_update,
             crate::db::reminders::reminder_delete,

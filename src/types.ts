@@ -193,17 +193,34 @@ export type ScheduleEntry = JobEntry | ReminderEntry;
 
 /** scheduled_job_history 返回的单次执行记录（倒序，最新在前；与 Rust 侧 camelCase 对齐） */
 export interface ScheduledJobRun {
-  id: string;
+  /** 记录行 id（Rust 侧 i64） */
+  id: number;
   /** 所属作业 id */
   jobId: string;
   /** 触发时间（epoch ms） */
   firedAt: number;
-  /** 执行结果 */
-  status: "ok" | "fail";
-  /** 耗时（ms） */
-  durationMs: number;
+  /** 执行结果：ok=成功 / fail=失败 / preview=预演（建了提案卡未执行） */
+  status: "ok" | "fail" | "preview";
+  /** 耗时（ms；预演无耗时为 null） */
+  durationMs: number | null;
   /** 结果摘要（失败时为原因摘要） */
   summary: string | null;
-  /** 本次执行新建的任务卡 id（前端可跳卡片，v1 先不接线） */
+  /** 本次执行新建的任务卡 id（「痕迹」按钮跳执行详情） */
   cardId: string | null;
+}
+
+/** scheduled_job_finished 返回的已结束一次性作业（作业行已被消费掉、
+ *  执行记录留档的）。同一作业的多次尝试聚合成一条。 */
+export interface FinishedJob {
+  jobId: string;
+  /** 作业内容快照（消费时刻留档） */
+  content: string;
+  /** 当时的定时规则快照（at:…） */
+  schedule: string | null;
+  /** 最近一次执行时间（epoch ms） */
+  lastFiredAt: number;
+  /** 最近一次结果 */
+  lastStatus: string;
+  /** 该作业的全部执行记录（倒序） */
+  runs: ScheduledJobRun[];
 }

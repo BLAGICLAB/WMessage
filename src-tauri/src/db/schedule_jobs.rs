@@ -33,6 +33,11 @@ pub const SCHEDULED_JOBS_DDL: &str = "CREATE TABLE IF NOT EXISTS scheduled_jobs 
 pub const JOB_RUNS_KEEP: usize = 20;
 
 /// 单次执行历史 DDL：借鉴 XXL-JOB/Temporal 的 recent activity
+///
+/// job_content / job_schedule 是**消费时刻的快照**：一次性作业到点执行完，
+/// 作业行会被删掉（作业即配置，不需要再留着）——但「它跑过什么」的账要留，
+/// 留档行得自己认得出是哪个作业，否则只剩一串 uuid。快照随执行记录一起写，
+/// 作业还在时以作业行为准（快照只是消费后的归属凭据）。
 pub const SCHEDULED_JOB_RUNS_DDL: &str = "CREATE TABLE IF NOT EXISTS scheduled_job_runs (
    id         INTEGER PRIMARY KEY AUTOINCREMENT,
    job_id     TEXT NOT NULL,
@@ -40,9 +45,20 @@ pub const SCHEDULED_JOB_RUNS_DDL: &str = "CREATE TABLE IF NOT EXISTS scheduled_j
    status     TEXT NOT NULL,
    duration_ms INTEGER,
    summary    TEXT,
-   card_id    TEXT
+   card_id    TEXT,
+   job_content TEXT,
+   job_schedule TEXT
  );
  CREATE INDEX IF NOT EXISTS idx_job_runs_job ON scheduled_job_runs(job_id, id DESC);";
+
+/// 幂等补列（老库缺快照列）：与 ensure_scheduled_jobs_columns 同模式
+pub fn ensure_scheduled_job_runs_columns(conn: &rusqlite::Connection) -> Result<(), String> {
+    super::ensure_columns(
+        conn,
+        "scheduled_job_runs",
+        &[("job_content", "TEXT"), ("job_schedule", "TEXT")],
+    )
+}
 
 /// 幂等补列：v1 已建表（无状态/重试列）的老库补齐，与 open_db 的 tasks 补列同模式
 pub fn ensure_scheduled_jobs_columns(conn: &rusqlite::Connection) -> Result<(), String> {
@@ -280,11 +296,15 @@ pub fn record_job_run_in_tx(
     duration_ms: Option<i64>,
     summary: Option<&str>,
     card_id: Option<&str>,
+    job_snapshot: Option<(&str, &str)>,
 ) -> Result<(), String> {
+    let (content, schedule) = job_snapshot
+        .map(|(c, s)| (Some(c), Some(s)))
+        .unwrap_or((None, None));
     conn.execute(
-        "INSERT INTO scheduled_job_runs (job_id, fired_at, status, duration_ms, summary, card_id) \
-         VALUES (?1,?2,?3,?4,?5,?6)",
-        rusqlite::params![job_id, fired_at, status, duration_ms, summary, card_id],
+        "INSERT INTO scheduled_job_runs (job_id, fired_at, status, duration_ms, summary, card_id, job_content, job_schedule) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![job_id, fired_at, status, duration_ms, summary, card_id, content, schedule],
     )
     .map_err(|e| e.to_string())?;
     conn.execute(
@@ -325,6 +345,73 @@ pub fn load_job_runs(
     let mut out = Vec::new();
     for r in rows {
         out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// 已结束的一次性作业（作业行已被系统消费掉、只剩执行记录留档的）。
+///
+/// 按作业聚合：同一个一次性作业可能留下多条记录（失败重试每次一条），
+/// 逐条列会散成「同一个作业出现 N 次」——聚合后一条作业一行，内含它的
+/// 全部尝试。作业内容取消费时刻的快照（job_content），老记录没快照时
+/// 退回作业 id 片段，不留空白。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct FinishedJob {
+    /// 作业 id
+    pub job_id: String,
+    /// 作业内容快照（消费时留档）
+    pub content: String,
+    /// 当时的定时规则快照（at:…）
+    pub schedule: Option<String>,
+    /// 最近一次执行时间
+    pub last_fired_at: i64,
+    /// 最近一次结果（ok / fail / preview / retrying）
+    pub last_status: String,
+    /// 该作业的全部执行记录（倒序）
+    pub runs: Vec<ScheduledJobRun>,
+}
+
+/// 读已结束的一次性作业（作业行已不存在的执行记录），按最近执行时间倒序。
+pub fn load_finished_jobs(
+    conn: &rusqlite::Connection,
+    limit: usize,
+) -> Result<Vec<FinishedJob>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT job_id, MAX(job_content), MAX(job_schedule), MAX(fired_at), \
+                    (SELECT status FROM scheduled_job_runs r2 WHERE r2.job_id = r1.job_id \
+                      ORDER BY r2.id DESC LIMIT 1) \
+               FROM scheduled_job_runs r1 \
+              WHERE job_id NOT IN (SELECT id FROM scheduled_jobs) \
+              GROUP BY job_id \
+              ORDER BY MAX(fired_at) DESC LIMIT ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![limit as i64], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (job_id, content, schedule, last_fired_at, last_status) =
+            row.map_err(|e| e.to_string())?;
+        let runs = load_job_runs(conn, &job_id, JOB_RUNS_KEEP)?;
+        out.push(FinishedJob {
+            content: content.unwrap_or_else(|| format!("已结束的定时任务（{job_id}）")),
+            job_id,
+            schedule,
+            last_fired_at,
+            last_status: last_status.unwrap_or_else(|| "ok".to_string()),
+            runs,
+        });
     }
     Ok(out)
 }
@@ -565,6 +652,21 @@ pub async fn scheduled_job_history(
     .map_err(|e| CommandError::from(format!("作业历史线程 join 失败：{e}")))?
 }
 
+/// 已结束的一次性作业（作业行已被消费掉、执行记录留档的）：按作业聚合，
+/// 倒序（最近执行的在前）。给定时页「已结束」区展示。
+#[tauri::command]
+pub async fn scheduled_job_finished(
+    app: AppHandle,
+    limit: Option<usize>,
+) -> CommandResult<Vec<FinishedJob>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = super::open_db(&app).map_err(CommandError::DbError)?;
+        load_finished_jobs(&conn, limit.unwrap_or(20)).map_err(CommandError::DbError)
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("已结束作业线程 join 失败：{e}")))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -659,13 +761,125 @@ mod tests {
         assert_eq!(runs, 0, "手动删除必须级联删 runs");
     }
 
+    /// 执行记录带作业快照（内容/规则）：一次性作业被消费后作业行会消失，
+    /// 留档行得自己认得出是哪个作业。
+    #[test]
+    fn job_run_records_job_snapshot() {
+        let conn = mem_conn();
+        let _g = crate::db::lock_db_write();
+        record_job_run_in_tx(
+            &conn,
+            "j-snap",
+            1_000,
+            "ok",
+            Some(12),
+            Some("跑完了"),
+            Some("card-1"),
+            Some(("站起来活动一下", "at:2026-11-20T09:00")),
+        )
+        .unwrap();
+        let (content, schedule): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT job_content, job_schedule FROM scheduled_job_runs WHERE job_id = 'j-snap'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(content.as_deref(), Some("站起来活动一下"));
+        assert_eq!(schedule.as_deref(), Some("at:2026-11-20T09:00"));
+    }
+
+    /// 已结束的一次性作业：按作业聚合（同一作业的多次重试合成一条），
+    /// 只收作业行已不存在的记录；现存作业不进这个列表。
+    #[test]
+    fn finished_jobs_group_orphan_runs_and_skip_live_jobs() {
+        let conn = mem_conn();
+        let _g = crate::db::lock_db_write();
+        // 现存作业（还在跑/还在配置）→ 不该出现在已结束列表
+        conn.execute(
+            "INSERT INTO scheduled_jobs (id, content, schedule) VALUES ('live', '每天跑', 'daily:09:00')",
+            [],
+        )
+        .unwrap();
+        record_job_run_in_tx(&conn, "live", 5_000, "ok", Some(1), Some("好"), None, None).unwrap();
+        // 已被消费的一次性作业：两条记录（失败 + 重试成功）→ 聚合成一条
+        conn.execute(
+            "INSERT INTO scheduled_jobs (id, content, schedule) VALUES ('done', '一次性', 'at:2026-11-20T09:00')",
+            [],
+        )
+        .unwrap();
+        record_job_run_in_tx(
+            &conn,
+            "done",
+            1_000,
+            "fail",
+            None,
+            Some("炸了"),
+            None,
+            Some(("一次性", "at:2026-11-20T09:00")),
+        )
+        .unwrap();
+        record_job_run_in_tx(
+            &conn,
+            "done",
+            2_000,
+            "ok",
+            Some(50),
+            Some("成了"),
+            None,
+            Some(("一次性", "at:2026-11-20T09:00")),
+        )
+        .unwrap();
+        // 消费：作业行没了，记录留档
+        let mut conn = conn;
+        assert!(delete_scheduled_job_row(&mut conn, "done").unwrap());
+        let finished = load_finished_jobs(&conn, 20).unwrap();
+        assert_eq!(finished.len(), 1, "只收已结束的作业");
+        let f = &finished[0];
+        assert_eq!(f.job_id, "done");
+        assert_eq!(f.content, "一次性", "内容取消费时刻的快照");
+        assert_eq!(f.schedule.as_deref(), Some("at:2026-11-20T09:00"));
+        assert_eq!(f.last_fired_at, 2_000, "最近一次执行时间");
+        assert_eq!(f.last_status, "ok", "最近一次结果");
+        assert_eq!(f.runs.len(), 2, "同一作业的多次尝试都在这一条里");
+    }
+
+    /// 老记录没有快照列（迁移前落的历史）：内容退回可辨识的兜底文案，
+    /// 不能是空白——空白行等于「这段历史不知道是什么」。
+    #[test]
+    fn finished_jobs_fall_back_when_snapshot_missing() {
+        let conn = mem_conn();
+        let _g = crate::db::lock_db_write();
+        conn.execute(
+            "INSERT INTO scheduled_job_runs (job_id, fired_at, status) VALUES ('old-job', 1_000, 'ok')",
+            [],
+        )
+        .unwrap();
+        let finished = load_finished_jobs(&conn, 20).unwrap();
+        assert_eq!(finished.len(), 1);
+        assert!(
+            finished[0].content.contains("old-job"),
+            "无快照时退回含 id 的可辨识文案：{}",
+            finished[0].content
+        );
+    }
+
     #[test]
     fn job_runs_trimmed_to_keep_limit() {
         let conn = mem_conn();
         let _g = crate::db::lock_db_write();
         for i in 0..(JOB_RUNS_KEEP + 5) as i64 {
-            record_job_run_in_tx(&conn, "j1", 1_000 + i, "ok", Some(i), Some("ok"), Some("c"))
-                .unwrap();
+            record_job_run_in_tx(
+                &conn,
+                "j1",
+                1_000 + i,
+                "ok",
+                Some(i),
+                Some("ok"),
+                Some("c"),
+                None,
+            )
+            .unwrap();
         }
         let runs = load_job_runs(&conn, "j1", JOB_RUNS_KEEP).unwrap();
         assert_eq!(runs.len(), JOB_RUNS_KEEP, "只保留最近 N 条");
@@ -675,7 +889,7 @@ mod tests {
             "倒序最新在前"
         );
         // 其他作业的历史互不干扰
-        record_job_run_in_tx(&conn, "j2", 9_999, "fail", None, Some("boom"), None).unwrap();
+        record_job_run_in_tx(&conn, "j2", 9_999, "fail", None, Some("boom"), None, None).unwrap();
         assert_eq!(load_job_runs(&conn, "j2", 10).unwrap().len(), 1);
     }
 
@@ -688,19 +902,20 @@ mod tests {
         conn.execute_batch("DROP TABLE scheduled_jobs;").unwrap();
         let _g = crate::db::lock_db_write();
         let tx = conn.unchecked_transaction().unwrap();
-        let outcome = record_job_run_in_tx(&tx, "j1", 1_000, "fail", None, Some("boom"), None)
-            .and_then(|_| {
-                update_job_run_state(
-                    &tx,
-                    "j1",
-                    Some("fail"),
-                    Some("boom"),
-                    Some(2_000),
-                    Some(1),
-                    false,
-                    1_500,
-                )
-            });
+        let outcome =
+            record_job_run_in_tx(&tx, "j1", 1_000, "fail", None, Some("boom"), None, None)
+                .and_then(|_| {
+                    update_job_run_state(
+                        &tx,
+                        "j1",
+                        Some("fail"),
+                        Some("boom"),
+                        Some(2_000),
+                        Some(1),
+                        false,
+                        1_500,
+                    )
+                });
         assert!(outcome.is_err(), "scheduled_jobs 已删，状态写应失败");
         drop(tx); // Err 路径不 commit → 回滚
         let n: i64 = conn

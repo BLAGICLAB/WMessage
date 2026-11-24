@@ -5,13 +5,15 @@ import { isPermissionGranted } from "@tauri-apps/plugin-notification";
 import { AlarmClock, Bell, Plus } from "lucide-react";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
-import { formatMsShort, formatSchedule, relativeTime, untilTime } from "../../format";
+import { formatSchedule, relativeTime, untilTime } from "../../format";
 import { useRaceSeq } from "../../lib/useRaceSeq";
 import { EmptyState } from "../EmptyState";
 import { TracePanel } from "../TracePanel";
 import { ScheduleEntryEditor } from "./ScheduleEntryEditor";
 import { ReminderRow } from "./ReminderRow";
+import { JobRunList } from "./JobRunList";
 import type {
+  FinishedJob,
   JobEntry,
   ReminderEntry,
   ScheduleEntry,
@@ -64,6 +66,11 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
   const [jobSessions, setJobSessions] = useState<Record<string, string>>({});
   /** 执行痕迹弹层目标（本次执行新建的任务卡 id） */
   const [traceCardId, setTraceCardId] = useState<string | null>(null);
+  /** 已结束的一次性作业（作业行已被消费掉、执行记录留档的） */
+  const [finished, setFinished] = useState<FinishedJob[]>([]);
+  const [finishedError, setFinishedError] = useState<string | null>(null);
+  /** 已结束区展开目标（作业 id） */
+  const [finishedOpenId, setFinishedOpenId] = useState<string | null>(null);
 
   useEffect(
     () => () => {
@@ -96,6 +103,25 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
     // oxlint-disable-next-line react/set-state-in-effect
     void reload();
   }, [reload]);
+
+  /** 已结束的一次性作业：作业行被系统消费掉后不在列表里了，它的执行记录
+   *  留档 30 天——这批留档单独拉。失败不吞：留着错误行，比显示成「没有已结束
+   *  的作业」诚实（空态会被读成「从没跑过」）。 */
+  const reloadFinished = useCallback(async () => {
+    try {
+      // ?? []：命令回空/异常形态时不得让整页崩（列表区读 length 会炸）
+      const list = await invoke<FinishedJob[]>("scheduled_job_finished");
+      setFinished(list ?? []);
+      setFinishedError(null);
+    } catch (e) {
+      handleCommandError(e, "读取已结束的定时任务", { silent: true });
+      setFinishedError(formatCommandError(e));
+    }
+  }, []);
+  useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect
+    void reloadFinished();
+  }, [reloadFinished]);
   // 到点执行会新建任务卡 → tasks-changed 广播，顺手刷新「上次执行」等状态
   useTauriListen("tasks-changed", () => {
     void reload();
@@ -129,6 +155,11 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
     phase?: "started" | "done" | "failed" | "skipped";
     sessionId?: string | null;
   }>("sched-status", (payload) => {
+    // 作业被消费（done/failed）→ 已结束的一次性作业列表会多一条，跟着刷新。
+    // 放在 jobId 判定之前：消费事件未必带 jobId
+    if (payload.phase === "done" || payload.phase === "failed") {
+      void reloadFinished();
+    }
     const jobId = payload.jobId;
     if (!jobId) return;
     if (payload.phase === "started") {
@@ -474,60 +505,13 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
             </p>
             {historyLoadingId === e.targetId && !history[e.targetId] ? (
               <p className="mt-1 text-[11px] text-[var(--t5)]">加载中…</p>
-            ) : (history[e.targetId] ?? []).length === 0 ? (
-              <p className="mt-1 text-[11px] text-[var(--t5)]">
-                还没有执行记录
-              </p>
             ) : (
-              <ul className="mt-1 flex flex-col divide-y divide-[color-mix(in_srgb,var(--edge),transparent_55%)]">
-                {(history[e.targetId] ?? []).map((r) => (
-                  <li
-                    key={r.id}
-                    className="flex items-center gap-2 py-1 text-[11px] text-[var(--t4)]"
-                  >
-                    <span
-                      className={`shrink-0 ${
-                        r.status === "ok"
-                          ? "text-[var(--success)]"
-                          : "text-[var(--danger)]"
-                      }`}
-                    >
-                      {r.status === "ok" ? "成功" : "失败"}
-                    </span>
-                    <span className="shrink-0">{relativeTime(r.firedAt)}</span>
-                    <span className="shrink-0 tabular-nums">
-                      {formatMsShort(r.durationMs)}
-                    </span>
-                    {r.summary && (
-                      <span
-                        className="min-w-0 flex-1 truncate"
-                        title={r.summary}
-                      >
-                        {r.summary}
-                      </span>
-                    )}
-                    {/* 执行痕迹（本次执行新建的卡）+ 会话跳转（围观 ⏰ 会话） */}
-                    {r.cardId && (
-                      <button
-                        className="nm-btn shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--t3)]"
-                        title="查看本次执行痕迹（工具时间线 / 文件 diff / 回滚）"
-                        onClick={() => setTraceCardId(r.cardId!)}
-                      >
-                        痕迹
-                      </button>
-                    )}
-                    {jobSessions[e.targetId] && (
-                      <button
-                        className="nm-btn shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--t3)]"
-                        title="跳转聊天页，围观本次执行会话"
-                        onClick={() => jumpToSession(jobSessions[e.targetId])}
-                      >
-                        会话
-                      </button>
-                    )}
-                  </li>
-                ))}
-              </ul>
+              <JobRunList
+                runs={history[e.targetId] ?? []}
+                sessionId={jobSessions[e.targetId] ?? null}
+                onTrace={(cardId) => setTraceCardId(cardId)}
+                onJumpSession={jumpToSession}
+              />
             )}
           </div>
         )}
@@ -680,6 +664,85 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
             ))}
           </div>
         )
+      )}
+      {/* 已结束的一次性作业：作业行被系统消费掉后不在列表里了，但它的执行
+          记录留档 30 天——「它跑过什么」要查得到。只在作业 tab 出现（提醒
+          没有这类记录）。失败留错误行，不渲染成「没有已结束的作业」。 */}
+      {tab === "jobs" && (finishedError || (finished?.length ?? 0) > 0) && (
+        <section className="mt-1">
+          <p className="mb-1 text-[11px] text-[var(--t5)]">
+            已结束的一次性作业（执行记录留档 30 天）
+          </p>
+          {finishedError && (
+            <div className="nm-inset flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-[var(--danger)]">
+              <span className="min-w-0 flex-1 truncate" title={finishedError}>
+                已结束的定时任务读取失败：{finishedError}
+              </span>
+              <button
+                className="nm-btn shrink-0 px-2 py-0.5 text-[11px] text-[var(--t3)]"
+                onClick={() => void reloadFinished()}
+              >
+                重试
+              </button>
+            </div>
+          )}
+          {!finishedError &&
+            (finished ?? []).map((f) => {
+              const open = finishedOpenId === f.jobId;
+              return (
+                <div
+                  key={f.jobId}
+                  data-testid={`finished-job-${f.jobId}`}
+                  className="nm-card mt-1 p-3 opacity-80"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="nm-inset shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--t4)]">
+                      已结束
+                    </span>
+                    <p className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--t2)]">
+                      {f.content}
+                    </p>
+                    <span
+                      className={`nm-inset shrink-0 px-1.5 py-0.5 text-[10px] ${
+                        f.lastStatus === "ok"
+                          ? "text-[var(--success)]"
+                          : f.lastStatus === "preview"
+                            ? "text-[var(--brand)]"
+                            : "text-[var(--danger)]"
+                      }`}
+                    >
+                      {f.lastStatus === "ok"
+                        ? "成功"
+                        : f.lastStatus === "preview"
+                          ? "预演"
+                          : "失败"}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-[var(--t4)]">
+                    {f.schedule && <span>{formatSchedule(f.schedule)}</span>}
+                    <span>最后执行 {relativeTime(f.lastFiredAt)}</span>
+                    <span>共 {f.runs.length} 次尝试</span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    <button
+                      className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)]"
+                      onClick={() => setFinishedOpenId(open ? null : f.jobId)}
+                    >
+                      {open ? "收起记录" : "执行记录"}
+                    </button>
+                  </div>
+                  {open && (
+                    <div className="mt-2 nm-inset rounded-lg p-2">
+                      <JobRunList
+                        runs={f.runs}
+                        onTrace={(cardId) => setTraceCardId(cardId)}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+        </section>
       )}
       {/* 执行痕迹弹层（按本次执行新建的任务卡查 trace；TracePanel 自带 portal） */}
       {traceCardId && (

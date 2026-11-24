@@ -450,3 +450,29 @@
 - **证据**：bot-config.json 的 noAuthVendors/modelsByProvider 输出 + 厂商页与详情页截图 + Ollama 侧（`ollama ps`）请求到达记录 + 对照组探活失败截图
 - **失败处置**：先分「功能坏了」还是「环境坏了」——Ollama 未起/端口不对时探活失败属环境；`grep -n "no_auth_vendors" src-tauri/src/bot/config/types.rs` 命中 = 字段在；聊天下拉不出现先查 verified_vendors 是否转正（探活是否匿名通过）
 - **缺口补验**：实机全流程未跑（Ollama 真服务对话、Anthropic 格式本地端点、删除厂商同步清名单）；Windows 侧钥匙串路径未验
+
+### ACC-P-24 · 已结束的一次性作业区（执行记录留档 30 天）
+
+- **SPEC**：6-130
+- **层级**：L1+L2（自动档 `src-tauri/src/db/schedule_jobs.rs` 3 例 + `src/components/SchedulePage/SchedulePage.test.tsx` 3 例）+ 实机观察
+- **历史卡**：—（口径来自 2026-11-04 冒烟的 F-4「一次性作业清理级联删执行历史」，2026-11-24 拍板留档区分）
+- **前置**：应用已启动；定时模块里有一个 `at:` 一次性作业（到点已执行过）
+- **步骤**：
+  1. 建一个一次性作业（内容「喝水」、`at:+2m`）→ 等它到点执行完。
+  2. 定时模块 → 「定时任务」tab：该作业行**已消失**（作业行被系统消费掉了——作业即配置，不留占位）。
+  3. 列表下方出现「已结束的一次性作业（执行记录留档 30 天）」区，里面有一条：内容「喝水」、当时的规则、最后执行时间、「共 N 次尝试」。
+  4. 点该条的「执行记录」→ 展开逐次记录（时间、耗时、摘要）；成功记「成功」、失败记「失败」、预演记「**预演**」（预演既不是成功也不是失败）。
+  5. 查库：`sqlite3 "<data_dir>/wmessage.db" "SELECT job_id, job_content, job_schedule, status FROM scheduled_job_runs ORDER BY id DESC LIMIT 5;"` → 有 `job_content`（消费时刻的内容快照）与 `job_schedule`。
+  6. 失败重试的作业：把「失败重试次数上限」设成 ≥1 并让它第一次失败 → 执行记录里有多条尝试（同一作业聚合在一条里，不散成 N 行）。
+  7. 手动删除一个仍在配置的作业 → 它的执行历史**一并消失**（手动删除 = 用户明确要删干净；只自动消费路径留档）。
+- **判据**：
+  1. 【可观测】步骤 2-3：一次性作业执行完后行消失，但「已结束」区出现它——执行历史不是只躺在库里（留档 30 天）。
+  2. 【可核对】步骤 5：留档行带 `job_content` / `job_schedule` 快照（作业行已删，靠快照认出是哪个作业）——`grep -n "job_content" src-tauri/src/db/schedule_jobs.rs` 命中。
+  3. 【可核对】步骤 6：同一作业的多条记录聚合为一条——`grep -n "fn load_finished_jobs" -A 20 src-tauri/src/db/schedule_jobs.rs` 命中 `GROUP BY job_id`。
+  4. 【可核对】步骤 7：手动删除级联删历史——`grep -n "fn delete_scheduled_job" -A 8 src-tauri/src/db/schedule_jobs.rs` 命中先删 `scheduled_job_runs`；自动消费路径走 `delete_scheduled_job_row`（只删作业行）。
+  5. 【可核对】留档回收条件是「孤儿且超 30 天」——`grep -n "fn sweep_orphan_runs" -A 12 src-tauri/src/db/schedule_jobs.rs` 命中 `AND fired_at < ?1`（只看孤儿 = 留档下个 tick 就没了；只看时间 = 截短现存周作业历史）。
+  6. 【可核对】预演是第三态标签——`grep -n "preview" src/components/SchedulePage/JobRunList.tsx` 命中独立分支（按「非 ok 即失败」渲染会把预演说成失败）。
+  7. 【可观测】读取失败时留错误行 + 「重试」钮，不渲染成「没有已结束的作业」（空态会被读成「从没跑过」）。
+- **证据**：已结束区截图（含展开的记录）+ scheduled_job_runs 查询输出 + 手动删除前后的对比查询
+- **失败处置**：先分「功能坏了」还是「数据没了」——查 `scheduled_job_runs` 有行但界面不显示 = 界面问题；表里没行 = 执行记录本就没落（查 bot.log 的 `sched_job_finalize_skip`）
+- **缺口补验**：实机未跑（一次性作业到点消费后的已结束区、失败重试的聚合展示、手动删除级联）；30 天保留期的到期清扫未实机验证

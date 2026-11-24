@@ -471,6 +471,35 @@ fn preview_gate_hits(job_mode: Option<&str>, manual: bool) -> bool {
 /// 既有链路：新会话流式可见、结果写卡、完成/失败系统通知全继承）。
 /// `manual`：用户在作业页点「立即执行」（true）或到点/重试自动触发（false）——
 /// 只有后者受预演闸拦截。
+/// 预演档的执行记录（建了提案卡、未执行）：单独一个函数——
+/// run_scheduled_job 已贴着行数上限（clippy 200 行闸），执行记录这段单长
+/// 只会继续顶它。作业内容/规则随记录留档：一次性作业被消费后作业行会消失，
+/// 留档行得自己认得出是哪个作业。
+async fn record_preview_run(
+    app: &AppHandle,
+    job: &crate::db::ScheduledJob,
+    card_id: &str,
+    fired_at: i64,
+) {
+    let job_id = job.id.clone();
+    let card_id = card_id.to_string();
+    let content = job.content.clone();
+    let schedule = job.schedule.clone();
+    let _ = crate::db::lock::with_write_conn(app, move |conn| {
+        crate::db::record_job_run_in_tx(
+            conn,
+            &job_id,
+            fired_at,
+            "preview",
+            None,
+            Some("预演：已建提案卡，未执行；确认后用「立即执行」真跑"),
+            Some(&card_id),
+            Some((&content, &schedule)),
+        )
+    })
+    .await;
+}
+
 async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob, manual: bool) {
     // 防重入守卫：与任务卡/工作流共用 SchedGuard 表（id 空间不相交）。
     // 拒绝也要留痕：ask_user 等待可达 24h，期间守卫不放，次日到点的同作业
@@ -586,22 +615,7 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob, manual:
     // 预演档：卡即提案——建卡广播后只记历史与通知，不执行。
     // 「要做什么」显式化，用户确认（行内「立即执行」）后才真跑
     if preview_gate_hits(job.mode.as_deref(), manual) {
-        {
-            let job_id = job.id.clone();
-            let card_id = card.id.clone();
-            let _ = crate::db::lock::with_write_conn(&app, move |conn| {
-                crate::db::record_job_run_in_tx(
-                    conn,
-                    &job_id,
-                    now.timestamp_millis(),
-                    "preview",
-                    None,
-                    Some("预演：已建提案卡，未执行；确认后用「立即执行」真跑"),
-                    Some(&card_id),
-                )
-            })
-            .await;
-        }
+        record_preview_run(&app, &job, &card.id, now.timestamp_millis()).await;
         let key = format!("sched_preview:{}", job.id);
         if let Err(e) = crate::bot::effects::enqueue_notify(
             &app,
@@ -740,6 +754,10 @@ async fn finalize_job_run(
         let job_id = job.id.clone();
         let card_id = card_id.to_string();
         let status = last_status.to_string();
+        // 作业内容/规则随记录一起留档：一次性作业被消费后作业行会消失，
+        // 留档行得自己认得出是哪个作业
+        let job_content = job.content.clone();
+        let job_schedule = job.schedule.clone();
         let outcome = crate::db::tx::with_tx(app, move |tx| {
             crate::db::record_job_run_in_tx(
                 tx,
@@ -749,6 +767,7 @@ async fn finalize_job_run(
                 Some(duration_ms),
                 history_summary.as_deref(),
                 Some(card_id.as_str()),
+                Some((&job_content, &job_schedule)),
             )?;
             crate::db::update_job_run_state(
                 tx,

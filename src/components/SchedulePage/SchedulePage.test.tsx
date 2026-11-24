@@ -525,3 +525,89 @@ describe("SchedulePage 通知授权提示", () => {
     expect(screen.queryByText(/系统通知未授权/)).not.toBeInTheDocument();
   });
 });
+
+describe("SchedulePage 已结束的一次性作业", () => {
+  /** 已结束的一次性作业：作业行已被消费掉，执行记录留档 */
+  const finished = {
+    jobId: "j-done",
+    content: "站起来活动一下",
+    schedule: "at:2026-11-20T09:00",
+    lastFiredAt: Date.now() - 3600_000,
+    lastStatus: "ok",
+    runs: [
+      {
+        id: 2,
+        jobId: "j-done",
+        firedAt: Date.now() - 3600_000,
+        status: "ok" as const,
+        durationMs: 1200,
+        summary: "做完了",
+        cardId: "card-9",
+      },
+      {
+        id: 1,
+        jobId: "j-done",
+        firedAt: Date.now() - 7200_000,
+        status: "fail" as const,
+        durationMs: null,
+        summary: "炸了",
+        cardId: null,
+      },
+    ],
+  };
+
+  it("已结束区列出留档作业并能展开执行记录", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "schedule_overview") return [];
+      if (cmd === "scheduled_job_finished") return [finished];
+      return null;
+    });
+    render(<SchedulePage onOpenChat={noop} />);
+    const row = await screen.findByTestId("finished-job-j-done");
+    // 内容快照在（作业行已删，靠快照认出是哪个作业）
+    expect(within(row).getByText("站起来活动一下")).toBeInTheDocument();
+    expect(within(row).getByText("共 2 次尝试")).toBeInTheDocument();
+    // 展开后才出记录（默认收起）
+    expect(screen.queryByText("做完了")).toBeNull();
+    await user.click(within(row).getByRole("button", { name: "执行记录" }));
+    expect(await screen.findByText("做完了")).toBeInTheDocument();
+    expect(screen.getByText("炸了")).toBeInTheDocument();
+    // 失败记录显示「失败」；预演不是失败（老渲染把它说成失败）
+    expect(screen.getByText("失败")).toBeInTheDocument();
+  });
+
+  it("预演记录显示「预演」而不是「失败」", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "schedule_overview") return [];
+      if (cmd === "scheduled_job_finished")
+        return [
+          {
+            ...finished,
+            lastStatus: "preview",
+            runs: [{ ...finished.runs[0], status: "preview", durationMs: null }],
+          },
+        ];
+      return null;
+    });
+    render(<SchedulePage onOpenChat={noop} />);
+    const row = await screen.findByTestId("finished-job-j-done");
+    await user.click(within(row).getByRole("button", { name: "执行记录" }));
+    // 徽标与记录两处都显示「预演」（预演既不是成功也不是失败）
+    expect((await screen.findAllByText("预演")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("失败")).toBeNull();
+  });
+
+  it("读取失败 → 留错误行，不渲染成「没有已结束的作业」", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "schedule_overview") return [];
+      if (cmd === "scheduled_job_finished") throw "库读不了";
+      return null;
+    });
+    render(<SchedulePage onOpenChat={noop} />);
+    expect(
+      await screen.findByText(/已结束的定时任务读取失败/),
+    ).toBeInTheDocument();
+  });
+});
