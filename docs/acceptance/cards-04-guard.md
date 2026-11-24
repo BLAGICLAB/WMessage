@@ -506,7 +506,7 @@
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -rnF "bot_fs.read" src-tauri/src` 确认事件名还在源码里；超长行原样穿过（无标注）= 单行闸没生效（应用侧缺陷），中文页仍是 500 行 = 字节预算闸没生效（应用侧缺陷）
 - **缺口补验**：10-29 新增：单行 2000 字符截断闸、默认页 56KB 收页未验
 
-### ACC-E-22 · 工具清单 65 个
+### ACC-E-22 · 工具清单 69 个（2026-11-24 更正：原 65 → 现 69）
 
 - **SPEC**：3-78
 - **层级**：L1+L2（L1 自动化 `src-tauri/src/bot/registry/registry_tests.rs`；实机档见下）
@@ -518,12 +518,12 @@
   3. 在聊天里让模型列出它这次拿到的工具清单里与「任务 CRUD / 文档生成 / 文件编辑 / 沙箱 / 联网 / 桌面自动化 / 技能 / 计划」无关的冷门工具各叫什么。
   4. 抽查三个工具的实际可用性（`get_current_time`、`list_reminders`、`update_plan`）。
 - **判据**：
-  1. 【可核对】`grep -c 'name: "' src-tauri/src/bot/registry/schemas.rs` 输出 **65**——`TOOLS_TABLE` 实列 65 条，本卡以 `TOOLS_TABLE` 为准。
-  2. 【可核对】`grep -n "pub static TOOLS_TABLE" -A 3 src-tauri/src/bot/registry/schemas.rs` 命中该表；`grep -n "65" docs/TOOL-EXECUTION-FACT-SHEET-2026-10-30.md` 命中事实表自述的 65 条口径。
+  1. 【可核对】`grep -c 'name: "' src-tauri/src/bot/registry/schemas.rs` 输出 **69**——`TOOLS_TABLE` 实列 69 条（`BUILTIN_TOOL_COUNT = 69`），本卡以 `TOOLS_TABLE` 为准。
+  2. 【可核对】`grep -n "pub static TOOLS_TABLE" -A 3 src-tauri/src/bot/registry/schemas.rs` 命中该表；`grep -n "事实表 A" docs/TOOL-EXECUTION-FACT-SHEET-2026-10-30.md` 命中事实表自述的 69 条口径。
   3. 【可核对】事实表逐条对拍：`docs/TOOL-EXECUTION-FACT-SHEET-2026-10-30.md` 里**每个**工具名都被点名——实测 `complete_task` 漏了（事实表实点 64 个），本卡把它列为已知缺口（见下方缺口补验）。
-  4. 【可观测】模型这一轮拿到的工具清单条数 = 65（模型自己列出的数量与注册表一致）。
+  4. 【可观测】模型这一轮拿到的工具清单条数 = 69（模型自己列出的数量与注册表一致）。
   5. 【可观测】第 4 步抽查的三个工具都可用：`get_current_time` 返回当前时间、`list_reminders` 返回提醒清单（空列表也是正常返回）、`update_plan` 在聊天窗右上角浮层里显示步骤。
   6. 【可核对】分类对照：清单按 SPEC 附录 A 的口径覆盖任务 CRUD/子任务/绑定、文档生成（Word/修订/Excel/PPT/PDF）、文件编辑（`edit_file`/`write_file`）、文件读写+grep、`run_python` 沙箱、`ast_inspect`、联网（`web_search`/`fetch_url`）、`ocr_image`、截图、电脑辅助五件、桌面 UI 自动化六件、时间、记忆工具、`use_skill`、远程技能安装与检索、`ask_user`、`update_plan`。
 - **证据**：截图（模型列出的工具清单）+ 注册表条目数与事实表对拍的终端输出
-- **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -rnF "TOOLS_TABLE" src-tauri/src` 确认工具表还在源码里；条数 ≠ 65 = 事实表与注册表分家（先核注册表，再改文档），注册表本身条数变了 = 应用侧改动需同步 SPEC 附录 A
-- **缺口补验**：事实表漏 complete_task（实列 64 vs 实际 65）；逐工具行为覆盖不均，9/10 任务卡工具本体无直接单测
+- **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -rnF "TOOLS_TABLE" src-tauri/src` 确认工具表还在源码里；条数 ≠ 69 = 事实表与注册表分家（先核注册表，再改文档），注册表本身条数变了 = 应用侧改动需同步 SPEC 附录 A
+- **缺口补验**：事实表漏 `activate_tools`（实列 68 vs 实际 69，组挂载元工具）；逐工具行为覆盖不均，9/10 任务卡工具本体无直接单测

@@ -55,15 +55,15 @@
 3-54,3 机器人聊天与模型,空会话引导,D3a,ACC-I-22,—,无,(无),L2,未验,无实机卡：三枚起始短语只填入不自动发送
 3-55,3 机器人聊天与模型,一次执行 = 一个新会话,D3a,ACC-I-23,—,无,src-tauri/tests/task_chat_exec.rs,L2,未验,无实机卡：任务卡 🤖 与定时执行统一走新会话
 3-56,3 机器人聊天与模型,双协议,D3a,ACC-I-24,"M14,M68,M78",部分,src-tauri/src/bot/config/mod.rs(49例),L1+L2,未验,厂商级 key、每模型推理参数、可用性门禁、聊天内快切模型未逐项验
-3-57,3 机器人聊天与模型,截断自愈,D3b,ACC-E-01,—,无,(无),L2,未验,全库无命中：Anthropic 撞 max_tokens 后续跑 ≤2 轮拼接
+3-57,3 机器人聊天与模型,截断自愈,D3b,ACC-E-01,—,无,(无),L2,未验,L1 已过：src-tauri/tests/llm_integration/anthropic.rs 两条集成用例覆盖续跑≤2 轮、两段拼接、无截断兜底提示与 llm.length_continued（矩阵「自动化覆盖=(无)」已过期）；缺实机：Anthropic 撞 max_tokens 后续跑拼接 + bot.log 的 llm.length_continued（attempt≤2）从未在真机撞过
 3-58,3 机器人聊天与模型,大模型 API 错误说人话,D3b,ACC-E-02,rerun§2.2,全,src/components/ChatPanel.stream.test.tsx,L1+L2,未验,—
 3-59,3 机器人聊天与模型,200 流内错误也进重试网,D3b,ACC-E-03,—,无,(无),L2,未验,10-26 新增，全库无命中：HTTP 200 流内报错按 type 归一状态码并进重试网
 3-60,3 机器人聊天与模型,新增代码不得再走 blanket 降级,D3b,ACC-E-04,—,无(门禁),scripts/test-fast.sh 降级防线,L0,未验,属 L0 门禁项，不进实机；新增行命中 CommandError::from( 即拦
 3-61,3 机器人聊天与模型,语义性失败不再降级成不可恢复的内部错误,D3b,ACC-E-05,—,无,src-tauri/src/bot_chat/command_error_mapping_tests.rs,L1+L2,通过,实机 2026-11-15：读侧断流分层文案实证（idle 成因专属+本轮未完成+重试指引，stream_idle_timeout bytes/phase/cause 留痕）；发现 F-新2：读侧失败气泡重试按钮不渲染（投影 turnStatus 缺 failed，/retry 命令面可用）；F-新1：send 层失败文案亮原始 reqwest 串未分层
 3-62,3 机器人聊天与模型,执行类谎报守卫,D3b,ACC-E-06,"S16,M89,M90,overflow H/J",部分,src-tauri/tests/llm_integration/guard.rs,L1+L2,未验,点名判据、中文别名表、子 agent 保守让开、入参不参与判决四项未验
 3-63,3 机器人聊天与模型,易错工具的 schema 里带真实示例,D3b,ACC-E-07,"M82,V89",全,src-tauri/src/bot/registry/schemas.rs,L1+L2,未验,V89 实测「无牙齿（强模型）」——护栏价值声明需改口径
-3-64,3 机器人聊天与模型,互不依赖的调用合并到同一轮,D3b,ACC-E-08,"M83,V90",全,(无),L2,未验,V90 同为「无牙齿（强模型）」
-3-65,3 机器人聊天与模型,旧轮工具结果可召回,D3b,ACC-E-09,"M76,V78,V79",全,src-tauri/src/bot/tools/trace_tests.rs(8例),L1+L2,未验,V79 判据被变异报告判为需改（强模型自愈成多跳回）
+3-64,3 机器人聊天与模型,互不依赖的调用合并到同一轮,D3b,ACC-E-08,"M83,V90",全,(无),L2,未验,L1 已过：llm_integration/core.rs 的 core_multiple_tool_calls_in_one_round_costs_one_round + 系统提示词并行引导条目核对（check_subagent/run_python 不在并行点名范围内）+ dispatch 逐个调用；实机 2026-10-25 M83 PASS：同 turn 三条 read_text_file、run_python 在下一 turn、未见不该并行的合并（check_subagent 恒单发）。**判据 2 缺实证**：M83 给的是 exec_spans 的 turn 号，未给「一轮只一条 llm.request」的计数（11-15 报告只提 reasoning 参数每条在案，非计数）——缺实机：bot.log 里该轮 llm.request 计数 = 1
+3-65,3 机器人聊天与模型,旧轮工具结果可召回,D3b,ACC-E-09,"M76,V78,V79",全,src-tauri/src/bot/tools/trace_tests.rs(8例),L1+L2,通过,实机 2026-10-25 M76 PASS：lookup_receipt 无参列 6 条凭证、按 span_id=863 调回完整原文、模型复述与文件逐字一致（未重读未编造）；反向 call_does_not_exist 明确「查不到」且模型如实转告；M213（11-16）再验一次。L1：bot/tools/trace_tests.rs 7 例（矩阵写 8 例已过期）+ schemas/实现 grep 命中。残留：V79 判「桩子一步直达不可靠、契约断多跳回」——判据 2 建议放宽，非阻断
 3-66,3 机器人聊天与模型,思考段可回灌（DeepSeek/Moonshot/MiniMax 硬要求）,D3b,ACC-E-10,"M78,V82,V83",部分,src-tauri/src/bot_model_loop/tests/sse.rs,L1+L2,未验,10-29 改「发了就回」后卡面口径过时；V82/V83 本机不可激活
 3-67,3 机器人聊天与模型,轮内工具结果滑动窗,D3b,ACC-E-11,"M75,V76,V77",全,scripts/mutation-trace-funnel.sh(M1–M12),L1+L2,未验,F5「一次性门空消费」已修 fd43e4da，需复验
 3-68,3 机器人聊天与模型,长历史的工具自检走侧调通道,D3b,ACC-E-12,"M79,V84,V85,V86",全,(无),L2,未验,V86 注入面成立但行为面不敏感
