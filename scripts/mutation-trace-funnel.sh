@@ -24,7 +24,10 @@ if ! git diff --quiet -- "$SRC" 2>/dev/null; then
   exit 1
 fi
 
-PASSED=0; KILLED=0; SURVIVED=0; BUILDERR=0
+# KILLED/SURVIVED/BUILD_ERR 是三种真结果；NOOP 单列——「变异没生效」既不是杀掉
+# 也不是存活，混进 PASSED 会让汇总行看起来全绿（2026-11-24 修：12 个变异里
+# 10 个锚点漂移，全部退化成 NO-OP，而汇总照旧显示 PASSED）
+PASSED=0; KILLED=0; SURVIVED=0; BUILDERR=0; NOOP=0
 RESULTS=()
 # 空 = 全跑；给了 id 就只跑那几个（复核单个变异时省十几分钟编译）
 SELECT=("$@")
@@ -44,7 +47,7 @@ run_mutant() {
     printf '  %-4s %-10s ⚠️  变异未生效（行号或模式对不上，检查脚本）\n' "$id" "NO-OP"
     RESULTS+=("$id|NO-OP|$desc")
     rm -f "$tmp"
-    PASSED=$((PASSED+1))
+    NOOP=$((NOOP+1))
     return
   fi
   mv -f "$tmp" "$path"
@@ -91,40 +94,41 @@ echo "══ 变异测试：trace 观测面 + 溢出回灌 ══"
 echo
 
 # ── 溢出回灌漏斗 ────────────────────────────────────────────────
-# 行号锚点 2026-10-24 刷新（漏斗判定已抽成 apply_output_cap 泛型函数，见
-# bot_model_loop.rs；锚点漂移时 run_mutant 会报 NO-OP，照 grep 重对即可）。
+# 行号锚点 2026-11-24 刷新：漏斗已抽到 bot_model_loop/output.rs（bot_model_loop.rs
+# 只剩 128 行，早前的锚点全失效——run_mutant 会报 NO-OP，而汇总行把 NO-OP 计入
+# PASSED，是假绿的来源）。锚点再漂时照 grep 重对，别让 NO-OP 混进 PASSED。
 run_mutant M1 "L1/L2 取小写成取大 → run_python 不再溢出" \
-  bot_model_loop.rs 574 '/\.min(global_cap_bytes)/.max(global_cap_bytes)/' effective_cap
+  bot_model_loop/output.rs 49 '/\.min(global_cap_bytes)/.max(global_cap_bytes)/' effective_cap
 
 # M2 原表达式 unwrap_or(usize::MAX) 是等价变异：后面同一行的 .min(global) 会
 # 把 MAX 钳回 global，任何行为测试都杀不死它。改成 unwrap_or(0)——未注册工具
 # 的兜底既不能放大也不能归零，既有测试（mcp_unknown → 全局 cap）即可杀死。
 run_mutant M2 "未注册工具兜底归零 → MCP 工具全部转存" \
-  bot_model_loop.rs 573 '/\.unwrap_or(global_cap_bytes)/.unwrap_or(0)/' effective_cap
+  bot_model_loop/output.rs 45 '/\.unwrap_or(global_cap_bytes)/.unwrap_or(0)/' effective_cap
 
 run_mutant M3 "SEPS 归零 → 节选凭空超出 cap 4 字符" \
-  bot_model_loop.rs 663 '/const SEPS: usize = 4;/const SEPS: usize = 0;/' preview_keeps_head
+  bot_model_loop/output.rs 154 '/const SEPS: usize = 4;/const SEPS: usize = 0;/' preview_keeps_head
 
 run_mutant M4 "指针长度按字符算 → 中文指针把正文预算算少" \
-  bot_model_loop.rs 664 '/notice\.len()/notice.chars().count()/' preview_
+  bot_model_loop/output.rs 155 '/notice\.len()/notice.chars().count()/' preview_
 
 run_mutant M5 "边界 > 改成 >= → 恰好等于 cap 的结果被白转存一次" \
-  bot_model_loop.rs 632 '/if text\.len() > cap/if text.len() >= cap/' preview_
+  bot_model_loop/output.rs 123 '/if text\.len() > cap/if text.len() >= cap/' preview_
 
 run_mutant M6 "落盘失败兜底返回空串 → 工具结果凭空消失" \
-  bot_model_loop.rs 615 '/cap_tool_output(&text, cap_bytes)/String::new()/' preview_
+  bot_model_loop/output.rs 90 '/cap_tool_output(&text, cap_bytes)/String::new()/' preview_
 
 run_mutant M7 "白名单里的溢出目录路径写坏 → 指针成废纸" \
-  bot_fs.rs 285 '|crate::overflow::root(app)|crate::overflow::root(app).join("nope")|' preview_
+  bot_fs.rs 254 '|crate::overflow::root(app)|crate::overflow::root(app).join("nope")|' preview_
 
 run_mutant M8 "保留期判定方向反过来 → 只删新文件、老的永远留着" \
-  overflow.rs 126 '/mtime < cutoff/mtime > cutoff/' sweep
+  overflow.rs 149 '/if day_date > cutoff/if day_date < cutoff/' sweep
 
-run_mutant M9 "保留期天数去掉 max(0) 下限" \
-  overflow.rs 103 '/\.max(0)//' sweep
+run_mutant M9 "指针行数统计口径改错 → read_text_file 的 offset 报错" \
+  overflow.rs 85 '/text\.lines()\.count()/1/' pointer_text
 
 run_mutant M10 "指针里的行数按字符算 → read_text_file 的 offset 报错" \
-  overflow.rs 73 '/text\.lines()\.count()/text.chars().count()/' pointer_text
+  overflow.rs 86 '/text\.len()/text\.len() + 1/' pointer_text
 
 # ── trace 观测面（commit 7e474ff）────────────────────────────────
 run_mutant M11 "钳制标记预算不再扣标记长度 → span 字段超上限" \
@@ -135,7 +139,9 @@ run_mutant M12 "满队列只记日志不计数 → 健康检查看不到观测�
 
 echo
 echo "── 汇总 ──"
-echo "  KILLED=$KILLED  SURVIVED=$SURVIVED  BUILD_ERR=$BUILDERR  NO-OP=$PASSED"
+echo "  KILLED=$KILLED  SURVIVED=$SURVIVED  BUILD_ERR=$BUILDERR  NO-OP=$NOOP"
+# NO-OP 非零退出：锚点漂移的变异不算验过——静默放行会让这张脚本变成假绿来源
+[ "$NOOP" -eq 0 ] || exit 2
 echo
 SURVIVORS=$(printf '%s\n' "${RESULTS[@]}" | grep 'SURVIVED' | cut -d'|' -f1 | paste -sd' ' -)
 if [ -n "$SURVIVORS" ]; then
