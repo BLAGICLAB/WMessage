@@ -79,17 +79,17 @@
 - **前置**：机器人总开关已开；已配至少一个可用模型
 - **步骤**：
   1. 造出会话锁被占：对一个会话发起耗时执行（任务卡 🤖 触发的执行会话，或长跑的模型回合），让该会话后端有执行实例在跑。
-  2. 在同一个会话上再发一条消息，命中会话锁。
+  2. 在同一个会话上再发一条消息，命中会话锁（拒答在落库之前发生——库里不留这轮的任何一行）。
   3. 对照自动档：在 `src/components/ChatPanel.send.test.tsx` 里跑「会话锁被占：拒答不当成模型答复——只显示本地提示，不落库」一例，让 mock 返 `busy: true`。
 - **判据**：
   1. 【可观测】界面上出现的是**本地提示**「⏳ 模型正忙，本次未生成回复，请稍后重试」，不是拒答文案「这条会话正在处理上一条消息，请稍候再发。」——后者一个字都不许出现在气泡里。
   2. 【可观测】本轮的空占位气泡被摘掉：消息区不出现转圈的活体指示，末条是上面那条提示。
   3. 【可核对】提示不落库：`sqlite3 "~/Library/Application Support/com.renshi.wmessage/wmessage.db" "select count(*) from bot_messages where role='assistant' and content like '%正在处理上一条消息%'"` 返回 0。
-  4. 【可核对】用户消息**仍在库里**：`sqlite3 "~/Library/Application Support/com.renshi.wmessage/wmessage.db" "select count(*) from bot_messages where role='user'"` ≥ 1（回合开始即落库，历史里留一条孤立用户消息与提示文案自洽）。
+  4. 【可核对】用户消息**也不在库里**（真源化后口径翻转，2026-11-24 更正）：`sqlite3 "~/Library/Application Support/com.renshi.wmessage/wmessage.db" "select count(*) from bot_messages where role='user' and content like '%刚才那条%'"` 返回 0——busy 拒答发生在**任何落库之前**（`bot_chat/flow.rs` 的防重入守卫先于 `bot_chat_guarded`，后者才落用户行），前端乐观用户行一并摘掉，不留孤立用户消息。**原判据写「用户消息仍在库里 ≥ 1」，与现码相反**（真源化前的老口径），已被 `src/components/ChatPanel.test.tsx` 的「busy 拒答：乐观用户行一并摘掉（后端零落行）」一例钉住。
   5. 【可审计】`"~/Library/Application Support/com.renshi.wmessage/bot.log"` 出现一行 `bot_chat_rejected`，含「已有执行实例在跑（防重入拦截）」；判据是后端回的 `busy` **标记**，不是文案 —— 文案能被别的路径复述，标记不会。
 - **证据**：截图（提示行 + 无活体指示的末条）+ `"~/Library/Application Support/com.renshi.wmessage/bot.log"` 片段（检索命令：`grep -F "bot_chat_rejected" "~/Library/Application Support/com.renshi.wmessage/bot.log" | tail -20`）+ 自动档该用例的通过输出
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "busy_chat_result" src-tauri/src` 确认后端仍在返 `busy` 标记（`src-tauri/src/bot_chat/flow.rs`），前端摘气泡的分支看 `src/components/ChatPanel/useChatSessionActions.ts` 里读 busy 标记的那段判断（后端返的 busy 字段为真时先摘占位气泡再补提示）。
-- **缺口补验**：—（本行历史覆盖度为「全」；补验点：命中 busy 时**不得**出现任何助手消息落库，也不得把拒答文案写进下一轮上下文 —— 用 `select content from bot_messages where role='assistant'` 复核为空）。
+- **缺口补验**：实机面待验（自动面已过：`ChatPanel.send.test.tsx`「会话锁被占：拒答不当成模型答复——只显示本地提示，不落库」+ `ChatPanel.test.tsx`「busy 拒答：乐观用户行一并摘掉（后端零落行）」两例）。实机补验点：命中 busy 时**不得**出现任何助手消息落库（`select content from bot_messages where role='assistant'` 为空）、用户行同样不入库（判据 4）、拒答文案不写进下一轮上下文、bot.log 出现 bot_chat_rejected 行。
 
 ### ACC-I-05 · 注入块并进本轮用户消息，保住缓存前缀
 
