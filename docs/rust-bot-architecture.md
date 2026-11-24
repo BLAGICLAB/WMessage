@@ -7,7 +7,7 @@
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1285)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1287)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 │                        （setup 里另起清扫：上次被杀留下的 app_runs running 僵尸行）
 ├── app_state.rs (292)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        14 张执行期表 + 「全局状态总表」文档；详见 §2.1
@@ -416,7 +416,7 @@ src-tauri/src/
 ├── bot_anthropic.rs     Anthropic 协议适配（纯函数）：OpenAI ↔ /v1/messages 双向转换、auth 头、prompt caching
 ├── bot_anthropic/tests.rs  协议转换单测（body 构造 / 工具槽位映射 / 思考块 / SSE 事件解析）
 ├── bot_plan.rs          PREVR 动态规划：复杂任务先生成计划注入 prompt，失败 Replan（≤2 次）
-├── bot_scheduler.rs (1402)  定时任务卡调度：30s 扫描 schedule（每日/每周/at:），到点走 run_task_in_chat 自动执行；
+├── bot_scheduler.rs (1406)  定时任务卡调度：30s 扫描 schedule（每日/每周/at:），到点走 run_task_in_chat 自动执行；
 │                        SchedGuard 防重入；完成发系统通知；
 │                        机器人总开关关着时到点的作业判 Held（不派发、水位不推进，
 │                        恢复后仍在补跑窗口内）——否则每 30s 空转一轮、每天几千条跳过审计
@@ -468,7 +468,7 @@ src-tauri/src/
 ├── bot_artifacts.rs     产物登记：link_file_to_task → 收尾按 TaskExecOrigin 分流 →
 │                        落「通知中心」artifact_bind 消息（原 artifact-batch-ready 挂件弹窗已下线）→
 │                        通知页勾选 → confirm_artifact_batch 落库 + notif_resolve_artifact 回写
-├── notifications.rs (703) Agent 通知中心：notifications 表持久化消息（INSERT OR IGNORE 幂等，
+├── notifications.rs (865) Agent 通知中心：notifications 表持久化消息（INSERT OR IGNORE 幂等，
 │                        memory_proposal / artifact_bind / task_question 三类决策事件 +
 │                        service_alert 一类服务告警——只告知不决策，条件消失时按
 │                        (serviceId, alertType, warning) 三元组自动撤收）+
