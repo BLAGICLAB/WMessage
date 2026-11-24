@@ -24,6 +24,19 @@
 - `/R` 参数让安装器装完自动重启应用；前端再调 `relaunch()` 兜底（官方口径）。
 - 端点返回 latest.json（version / notes / pub_date / platforms.windows-x86_64
   {signature, url}）；signature = .sig 文件原文（多行内容 JSON 转义）。
+- **检查请求带 15 秒超时**：插件 `timeout` 默认 `None`（updater.rs:234），前端
+  不传则 reqwest 不设超时——更新服务器不可达时请求挂到操作系统的连接超时，
+  按钮全程停在「检查中」。`check({ timeout: 15000 })` 的单位是**毫秒**（Rust 侧
+  `Duration::from_millis`）；它只约束清单请求，下载阶段的超时是
+  `download` / `download_and_install` 各自的独立参数，不传则安装包下载不受限。
+- **失败出路**：失败态按阶段（检查没拿到清单 / 安装包没装上）给中文提示，
+  并提供「打开发布页」。按阶段而不是解析错误文本——插件经 IPC 传回的是
+  字符串，按内容猜类型是脆口径。
+- **逐端点回退确实存在**（updater.rs:545-658，插件 2.14.1）：请求失败 / 非 2xx /
+  响应解析失败都会落到下一条端点，只有「成功返回」才不回退。机制在，但本仓
+  只配了一条端点（见不做清单）。
+- **请求跟随系统代理**：reqwest 0.13 的默认特性含 `system-proxy`，应用声明
+  reqwest 时用默认特性——应用内更新请求跟随系统代理与环境变量代理。
 
 ## 三、发版纪律（每次出包四步）
 
@@ -51,9 +64,27 @@
 - 启动自动检查、静默更新、更新倒计时强推——更新永远手动。
 - macOS 自动更新（dmg 不公开发布；mac 检查入口本就不渲染）。
 - CI 自动发版（gh CLI 未装；发版三步全手动）。
+- **更新源镜像兜底——不做**（2026-11-24 实测定案）。背景：`github.com` 的下载
+  端点在本机网络间歇阻断（11-09、11-19 两次发布各 3/3 超时；11-24 复测 3/3
+  可达，0.6–1.5 秒）。候选逐一否决，实测均为本机 curl 直连、同日：
+  - `api.github.com/repos/…/releases/latest`：可达，但返回 GitHub API JSON，
+    不是 updater 要的清单格式（缺 `version` / `platforms`），插件解析不了；
+  - `raw.githubusercontent.com`：TLS 握手被断（curl 35，3/3）；且仓库根
+    `latest.json` 按约定不上 git，即使网络通取到的也是 404；
+  - jsDelivr：默认域 `cdn.jsdelivr.net` TLS 被断，`fastly` / `gcore` 节点可达，
+    但它只分发 git 仓库里的文件——安装包不进 git，取不到；就算只镜像清单，
+    清单里的安装包地址仍在 `github.com`，阻断时照样装不上；
+  - `blagiclab.github.io`（Pages）：域可达但未开通；v0.4.0 安装器约 91MB 接近
+    Pages 单文件上限，其它网络的可达性无保证，发版还要多一步同步。
+
+  结论：**没有「只改配置」就能生效的镜像**。清单与安装包现都在 `github.com`
+  域，阻断时一起失效；要做到阻断时仍可更新，得有两者都能落的托管（Pages 同步
+  或自有对象存储），等真有需要再立项。当前兜底 = 超时快速失败 + 出路提示 +
+  发布页手动下载（浏览器与 updater 的网络路径未必相同）。
 
 ## 五、验收
 
-- 组件五用例：`npx vitest run src/components/SettingsPage/UpdateCard.test.tsx`
+- 组件八用例：`npx vitest run src/components/SettingsPage/UpdateCard.test.tsx`
+  （含「检查请求必须带超时」——去掉超时参数即红，已变异验证）
 - 实机卡：`docs/acceptance/cards-08-platform.md` ACC-P-15（需首个 release）
 - SPEC 6-120 / 矩阵 6-120 已登记，`audit_acceptance_matrix.py` 对拍通过。

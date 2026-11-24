@@ -264,15 +264,16 @@
 - **历史卡**：—
 - **前置**：组件面即测即验；实机面需 GitHub Releases 上已发布首个带 latest.json 的版本
 - **步骤**：
-  1. 组件面（L1）：跑 `npx vitest run src/components/SettingsPage/UpdateCard.test.tsx`（五用例：UA 判定 / 非 Windows 不渲染 / 无新版显已最新 / 有新版下载→relaunch / 失败显式报错不冒充最新）。
+  1. 组件面（L1）：跑 `npx vitest run src/components/SettingsPage/UpdateCard.test.tsx`（八用例：UA 判定 / 非 Windows 不渲染 / 无新版显已最新 / 检查请求带超时 / 有新版下载→relaunch / 检查失败显式报错并给出路 / 检查失败可打开发布页 / 下载失败显式报错）。
   2. 实机（L2）：Windows 装旧版 → GitHub 发布更高版本 release（安装器改固定资产名 + latest.json）→ 设置页「通用设置」点「检查更新」。
   3. 看下载进度 → passive 安装进度条 → 应用自动重启 → 卡上版本号变新。
-  4. 断网点「检查更新」→ 看错误文案。
+  4. 断网点「检查更新」→ 计时看多久出错误文案，看文案下方有无出路提示与「打开发布页」按钮。
 - **判据**：
-  1. 【可核对】组件五用例全绿。
+  1. 【可核对】组件八用例全绿。
   2. 【可观测】实机：发现新版本 → 下载装完自动重启 → `getVersion` 变新。
-  3. 【可观测】断网/限流 → 红字错误文案，**不显示「已是最新」**。
+  3. 【可观测】断网/限流 → 红字错误文案，**不显示「已是最新」**；**15 秒内出结果**（不长时间停在「检查中」——插件默认不设超时，被黑洞时会挂到系统连接超时），文案下方有中文出路提示，点「打开发布页」能打开浏览器。
   4. 【可核对】`grep -n "pubkey" src-tauri/tauri.conf.json` 命中（验签公钥内置）；`grep -n "createUpdaterArtifacts" src-tauri/tauri.windows.conf.json` 命中（签名产物开关只在 Windows 侧，mac 构建不需签名密钥）。
+  5. 【可核对】`grep -n "timeout: CHECK_TIMEOUT_MS" src/components/SettingsPage/UpdateCard.tsx` 命中（检查请求带超时）；`grep -n -A 2 '"endpoints"' src-tauri/tauri.conf.json` 只列出一条 URL——**单端点、不做镜像**是实测定案（候选镜像逐一不可用的证据见 `docs/UPDATE-CHECK-DESIGN-2026-11-05.md` 不做清单），别当成缺口去补。
 - **证据**：vitest 输出 + 实机录屏 + GitHub release 页截图
 - **失败处置**：先查 latest.json 的 `signature` 字段是否为 .sig 原文（多行内容 JSON 转义）与 asset 是否用固定资产名；再查构建时是否导出了 `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)`。
 - **缺口补验**：实机更新链路未跑（需首个 release）；验签失败路径（篡改安装器）未制造。

@@ -11,7 +11,20 @@
 import { useCallback, useEffect, useState } from "react";
 import { check } from "@tauri-apps/plugin-updater";
 import { getVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Download, RefreshCw } from "lucide-react";
+import { handleCommandError } from "../../lib/errorHandler";
+
+/** 发布页——与 updater 端点同仓库。检查或下载失败时给用户的兜底出路：
+ *  浏览器与 updater 的网络路径未必相同（浏览器常另有代理），应用内拉不到
+ *  清单时发布页手动下载往往仍可行。 */
+const RELEASES_PAGE_URL = "https://github.com/BLAGICLAB/WMessage/releases";
+
+/** 检查请求的超时（毫秒）。updater 插件默认不设超时：更新服务器不可达时
+ *  请求会一直挂到操作系统的连接超时，按钮全程停在「检查中」。清单是个很小的
+ *  文件，正常网络一两秒到手，15 秒对慢网足够宽裕，又远短于系统超时。
+ *  只约束检查请求——安装包体积大且下载另有进度反馈，不受它限制。 */
+const CHECK_TIMEOUT_MS = 15_000;
 
 /** 非 Windows 平台不渲染；UA 判定单测可注入 */
 export function isWindowsPlatform(ua: string): boolean {
@@ -25,7 +38,15 @@ type UpdateState =
   | { t: "latest"; current: string }
   | { t: "available"; update: Update; got: number; total?: number }
   | { t: "downloading"; version: string; got: number; total?: number }
-  | { t: "error"; message: string };
+  | { t: "error"; stage: "check" | "download"; message: string };
+
+/** 失败后的出路提示：按阶段区分（检查没拿到清单 / 安装包没装上），不去
+ *  解析错误文本——插件经 IPC 传回的是字符串，按内容猜类型是脆口径。 */
+function failureHint(stage: "check" | "download"): string {
+  return stage === "check"
+    ? "可稍后重试；网络受限时可到发布页手动下载安装包。"
+    : "当前版本不受影响，可重试；也可到发布页手动下载安装包。";
+}
 
 export function UpdateCard({ ua = navigator.userAgent }: { ua?: string }) {
   const [state, setState] = useState<UpdateState>({ t: "idle" });
@@ -48,7 +69,7 @@ export function UpdateCard({ ua = navigator.userAgent }: { ua?: string }) {
   const checkForUpdate = useCallback(async () => {
     setState({ t: "checking" });
     try {
-      const u = await check();
+      const u = await check({ timeout: CHECK_TIMEOUT_MS });
       if (!u) {
         const v = await getVersion();
         setState({ t: "latest", current: v });
@@ -56,7 +77,11 @@ export function UpdateCard({ ua = navigator.userAgent }: { ua?: string }) {
         setState({ t: "available", update: u, got: 0, total: undefined });
       }
     } catch (e) {
-      setState({ t: "error", message: e instanceof Error ? e.message : String(e) });
+      setState({
+        t: "error",
+        stage: "check",
+        message: e instanceof Error ? e.message : String(e),
+      });
     }
   }, []);
 
@@ -83,8 +108,16 @@ export function UpdateCard({ ua = navigator.userAgent }: { ua?: string }) {
       });
       /* 进程在此前已被插件 exit(0) 接管（安装器自动重启），此处不可达不写代码 */
     } catch (e) {
-      setState({ t: "error", message: e instanceof Error ? e.message : String(e) });
+      setState({
+        t: "error",
+        stage: "download",
+        message: e instanceof Error ? e.message : String(e),
+      });
     }
+  }, []);
+
+  const openReleasesPage = useCallback(() => {
+    openUrl(RELEASES_PAGE_URL).catch((e) => handleCommandError(e, "打开发布页"));
   }, []);
 
   if (!isWindowsPlatform(ua)) return null;
@@ -156,9 +189,17 @@ export function UpdateCard({ ua = navigator.userAgent }: { ua?: string }) {
           <div className="text-sm text-[var(--danger)]">
             更新失败：{state.message}
           </div>
-          <button className="nm-btn mt-2" onClick={checkForUpdate}>
-            重试
-          </button>
+          <p className="mt-1 text-xs text-[var(--t3)]">
+            {failureHint(state.stage)}
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <button className="nm-btn" onClick={checkForUpdate}>
+              重试
+            </button>
+            <button className="nm-btn" onClick={openReleasesPage}>
+              打开发布页
+            </button>
+          </div>
         </div>
       )}
     </div>

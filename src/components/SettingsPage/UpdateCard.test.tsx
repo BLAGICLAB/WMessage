@@ -5,10 +5,15 @@ import { UpdateCard, isWindowsPlatform } from "./UpdateCard";
 const mocks = vi.hoisted(() => ({
   check: vi.fn(),
   getVersion: vi.fn(),
+  openUrl: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/plugin-updater", () => ({ check: mocks.check }));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: mocks.getVersion }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: mocks.openUrl }));
+
+/** 发布页地址：与 updater 端点同仓库（锁字面量，换仓库时这里必须跟着改） */
+const RELEASES_PAGE = "https://github.com/BLAGICLAB/WMessage/releases";
 
 const WIN_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36";
@@ -36,6 +41,8 @@ beforeEach(() => {
   mocks.check.mockReset();
   mocks.getVersion.mockReset();
   mocks.getVersion.mockResolvedValue("0.1.0");
+  mocks.openUrl.mockReset();
+  mocks.openUrl.mockResolvedValue(undefined);
 });
 
 describe("isWindowsPlatform", () => {
@@ -56,6 +63,30 @@ describe("UpdateCard", () => {
     render(<UpdateCard ua={WIN_UA} />);
     fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
     expect(await screen.findByText("✓ 已是最新（v0.1.0）")).toBeTruthy();
+  });
+
+  it("检查请求必须带超时——插件默认不设，服务器不可达时会挂到系统连接超时", async () => {
+    mocks.check.mockResolvedValue(null);
+    render(<UpdateCard ua={WIN_UA} />);
+    fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
+    await screen.findByText("✓ 已是最新（v0.1.0）");
+    // 字面量锁值：改超时要在这里显式过目
+    expect(mocks.check).toHaveBeenCalledWith({ timeout: 15_000 });
+  });
+
+  it("检查失败 → 原始错误照显 + 出路提示 + 可打开发布页；不冒充最新", async () => {
+    mocks.check.mockRejectedValue("error sending request: operation timed out");
+    render(<UpdateCard ua={WIN_UA} />);
+    fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
+    expect(
+      await screen.findByText(/更新失败：error sending request: operation timed out/),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/可稍后重试；网络受限时可到发布页手动下载安装包。/),
+    ).toBeTruthy();
+    expect(screen.queryByText(/已是最新/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "打开发布页" }));
+    expect(mocks.openUrl).toHaveBeenCalledWith(RELEASES_PAGE);
   });
 
   it("发现新版本 → 下载走完进 installed 态（重启由安装器 /R 完成，前端无 relaunch）", async () => {
@@ -93,6 +124,11 @@ describe("UpdateCard", () => {
     await screen.findByText("发现新版本 v0.2.0");
     fireEvent.click(screen.getByRole("button", { name: /下载并安装/ }));
     expect(await screen.findByText(/更新失败：签名校验失败/)).toBeTruthy();
+    // 下载阶段的出路提示与检查阶段不同：当前版本没动，不提「网络受限」
+    expect(
+      screen.getByText(/当前版本不受影响，可重试；也可到发布页手动下载安装包。/),
+    ).toBeTruthy();
+    expect(screen.queryByText(/可稍后重试/)).toBeNull();
     expect(screen.queryByText(/已是最新/)).toBeNull();
   });
 });
