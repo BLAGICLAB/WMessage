@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
   Bell,
+  BellRing,
   BrainCircuit,
   FolderInput,
   HelpCircle,
@@ -52,6 +53,10 @@ const KIND_META: Record<
   service_alert: {
     icon: <AlertTriangle size={15} aria-hidden />,
     label: "服务告警",
+  },
+  reminder: {
+    icon: <BellRing size={15} aria-hidden />,
+    label: "提醒",
   },
 };
 

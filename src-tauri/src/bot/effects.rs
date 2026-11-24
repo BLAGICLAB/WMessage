@@ -391,6 +391,38 @@ async fn deliver_notify<R: tauri::Runtime>(
             "id" => id,
             "text" => crate::bot::truncate_for_log(&p.body, 60)
         );
+        // 提醒类落留档行（status=done）：提醒只走系统通知层且插件层 show()
+        // 恒 Ok 不可检测真实投递——留档行是「已尝试投递」的账，静默丢失变
+        // 可见；通知页翻得到，不依赖系统通知是否真弹出来。
+        // id 带触发时刻：周期提醒每次触发各记一行，重复投递（at-least-once）
+        // 也如实各记一行——固定 id 会被 INSERT OR IGNORE 吞成「只记第一次」
+        let fired_at = crate::db::now_ms();
+        let archive_id = crate::notifications::reminder_archive_id(id, fired_at);
+        let title = p.title.clone();
+        let body = p.body.clone();
+        let archive_payload = serde_json::json!({ "reminderId": id, "firedAt": fired_at });
+        // 留档失败不重投通知（会重复轰炸）：通知已投出，这笔账记不上就审计留痕
+        if let Err(e) = crate::db::lock::with_write_conn(app, move |conn| {
+            crate::notifications::insert_with_status(
+                conn,
+                &archive_id,
+                crate::notifications::KIND_REMINDER,
+                &title,
+                &body,
+                &archive_payload,
+                crate::notifications::STATUS_DONE,
+            )
+        })
+        .await
+        {
+            crate::audit_event!(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "reminder.archive_failed",
+                "id" => id,
+                "err" => crate::bot::truncate_for_log(&e, 200)
+            );
+        }
     }
     Ok(())
 }
@@ -708,5 +740,41 @@ mod tests {
             .await
             .unwrap();
         assert!(rows.is_empty(), "达到 max_attempts 后停投递");
+    }
+
+    /// 提醒留档的接线守卫：系统通知层 show() 恒 Ok，真实投递不可检测——留档行
+    /// 是「已尝试投递」的唯一账。这段在 MockRuntime 下走不到（插件未注册即
+    /// Later 返回），只能锁源码：投递后必须落 KIND_REMINDER 行、id 必须带触发
+    /// 时刻、写失败必须审计（不许 `let _ =` 吞成静默）。断言串用 concat! 拆开，
+    /// 防止本测试自身的源码自匹配。
+    #[test]
+    fn reminder_delivery_must_archive_with_firing_scoped_id_and_audit_on_failure() {
+        let src = include_str!("effects.rs");
+        let start = src
+            .find("async fn deliver_notify<")
+            .expect("deliver_notify 应存在");
+        let body = &src[start..];
+        let end = body.find("\n}\n").map(|i| i + 3).unwrap_or(body.len());
+        let body = &body[..end];
+        assert!(
+            body.contains(concat!("crate::notifications::", "insert_with_status(")),
+            "提醒投递后必须落留档行"
+        );
+        assert!(
+            body.contains(concat!("crate::notifications::", "KIND_REMINDER")),
+            "留档行的 kind 必须是 KIND_REMINDER"
+        );
+        assert!(
+            body.contains(concat!("crate::notifications::", "reminder_archive_id(")),
+            "留档 id 必须带触发时刻——固定 id 会让周期提醒只记第一次"
+        );
+        assert!(
+            body.contains(concat!("\"reminder.", "archive_failed\"")),
+            "留档写失败必须审计留痕"
+        );
+        assert!(
+            !body.contains("let _ = crate::db::lock::with_write_conn"),
+            "留档写失败不得用 let _ = 静默吞掉"
+        );
     }
 }

@@ -3,12 +3,19 @@ import { invoke } from "@tauri-apps/api/core";
 /** Agent 通知中心消息（与 Rust notifications::NotificationView 对应） */
 export interface NotificationItem {
   id: string;
-  /** service_alert = 受管服务告警（只告知不决策） */
+  /**
+   * service_alert = 受管服务告警（只告知不决策）；
+   * reminder = 提醒已投递的留档行（出生即 done，只回看不操作）。
+   * 与 Rust notifications::KIND_* 一一对应——新增 kind 必须同步两处穷举映射
+   * （NotificationsPage 的 KIND_META、HomePanels 的 KIND_LABEL），漏一处
+   * 通知页渲染到该行即整页崩（Record 索引取到 undefined）。
+   */
   kind:
     | "memory_proposal"
     | "artifact_bind"
     | "task_question"
-    | "service_alert";
+    | "service_alert"
+    | "reminder";
   title: string;
   body: string;
   payload: Record<string, unknown> | null;

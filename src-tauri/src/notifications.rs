@@ -40,6 +40,16 @@ pub const KIND_TASK_QUESTION: &str = "task_question";
 /// 用户点「知道了」即算处理。payload 带 (serviceId, alertType, warning) 三元组，
 /// 供告警条件消失时精确撤收。
 pub const KIND_SERVICE_ALERT: &str = "service_alert";
+/// 提醒已投递的留档行：提醒通知只走系统通知层（effects），插件层 show()
+/// 恒 Ok 不可检测真实投递——留档行是「已尝试投递」的账，丢了不再是静默。
+pub const KIND_REMINDER: &str = "reminder";
+
+/// 提醒留档行的 id：`reminder-fired-<提醒 id>-<触发时刻毫秒>`。带触发时刻是
+/// 因为插入是幂等的（同 id 跳过）——周期提醒每次触发、以及 at-least-once 下的
+/// 重复投递，都得各记一行，固定 id 会被吞成「只记第一次」。
+pub(crate) fn reminder_archive_id(reminder_id: &str, fired_at_ms: i64) -> String {
+    format!("reminder-fired-{reminder_id}-{fired_at_ms}")
+}
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -79,6 +89,20 @@ pub fn notif_insert(
     body: &str,
     payload: &Value,
 ) -> Result<bool, String> {
+    insert_with_status(conn, id, kind, title, body, payload, STATUS_PENDING)
+}
+
+/// 带初始状态的插入内核：提醒留档行（KIND_REMINDER）出生即 done——它记的是
+/// 「已尝试投递」，不是待处理项。
+pub fn insert_with_status(
+    conn: &rusqlite::Connection,
+    id: &str,
+    kind: &str,
+    title: &str,
+    body: &str,
+    payload: &Value,
+    status: &str,
+) -> Result<bool, String> {
     ensure_table(conn)?;
     let n = conn
         .execute(
@@ -90,7 +114,7 @@ pub fn notif_insert(
                 title,
                 body,
                 payload.to_string(),
-                STATUS_PENDING,
+                status,
                 now_ms().to_string()
             ],
         )
@@ -441,6 +465,72 @@ pub async fn notifications_resolve(
     Ok(())
 }
 
+/// pending 超时回收：超过 keep_hours 仍未处理的提示行转 dismissed（通知页
+/// 可见，不是静默消失）。task_question（待答）豁免——提问等待可达 24h 属
+/// 合法长挂，聚合面/应答入口都读它。启动 + 每日各跑一次。
+pub fn sweep_stale_pending(conn: &rusqlite::Connection, keep_hours: i64) -> Result<usize, String> {
+    ensure_table(conn)?;
+    let cutoff = (now_ms() - keep_hours * 3600 * 1000).to_string();
+    conn.execute(
+        "UPDATE notifications SET status = ?2, resolved_at = ?3 \
+           WHERE status = ?1 AND created_at < ?4 AND kind != ?5",
+        rusqlite::params![
+            STATUS_PENDING,
+            STATUS_DISMISSED,
+            now_ms().to_string(),
+            cutoff,
+            KIND_TASK_QUESTION,
+        ],
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// pending 行的保留时长：3 天没处理的提示自动归档——通知页翻旧账够了，
+/// 更久的就是该清的噪音
+const STALE_PENDING_KEEP_HOURS: i64 = 72;
+const STALE_PENDING_SWEEP_INTERVAL_SECS: u64 = 24 * 60 * 60;
+
+/// 每日循环（与 trace 保留期清扫同节奏）：启动即扫一次 + 每 24h 一轮。
+pub fn spawn_pending_sweep(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let h = handle.clone();
+            let swept = tauri::async_runtime::spawn_blocking(move || {
+                crate::db::lock_db_write();
+                let conn = crate::db::open_db(&h).map_err(|e| e.to_string())?;
+                sweep_stale_pending(&conn, STALE_PENDING_KEEP_HOURS)
+            })
+            .await;
+            match swept {
+                Ok(Ok(0)) => {}
+                Ok(Ok(n)) => crate::audit::write_event(
+                    &handle,
+                    crate::audit::AuditLevel::Info,
+                    "notifications.pending_swept",
+                    &[("count", n.to_string())],
+                ),
+                Ok(Err(e)) => crate::audit::write_event(
+                    &handle,
+                    crate::audit::AuditLevel::Warn,
+                    "notifications.pending_sweep_fail",
+                    &[("err", e)],
+                ),
+                Err(e) => crate::audit::write_event(
+                    &handle,
+                    crate::audit::AuditLevel::Warn,
+                    "notifications.pending_sweep_fail",
+                    &[("err", e.to_string())],
+                ),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(
+                STALE_PENDING_SWEEP_INTERVAL_SECS,
+            ))
+            .await;
+        }
+    });
+}
+
 /// 清空已处理消息（done + dismissed）
 #[tauri::command]
 pub async fn notifications_clear_done(app: AppHandle) -> CommandResult<usize> {
@@ -699,5 +789,77 @@ mod tests {
         let pending = notif_list(&conn, Some(STATUS_PENDING)).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, "s1:rss");
+    }
+
+    /// pending 超时回收：过窗 pending 转 dismissed（通知页可见）、待答豁免、
+    /// done/dismissed 不动。
+    #[test]
+    fn stale_pending_sweep_respects_window_and_question_exemption() {
+        let conn = mem_conn();
+        ensure_table(&conn).unwrap();
+        let old_ms = (now_ms() - 100 * 3600 * 1000).to_string();
+        let fresh_ms = now_ms().to_string();
+        for (id, kind, created) in [
+            ("n-old", KIND_ARTIFACT, old_ms.clone()),
+            ("n-fresh", KIND_ARTIFACT, fresh_ms.clone()),
+            ("q-old", KIND_TASK_QUESTION, old_ms.clone()),
+            ("d-old", KIND_SERVICE_ALERT, old_ms.clone()),
+        ] {
+            let status = if id == "d-old" {
+                STATUS_DONE
+            } else {
+                STATUS_PENDING
+            };
+            conn.execute(
+                "INSERT INTO notifications (id, kind, title, body, payload, status, created_at) VALUES (?1, ?2, '', '', '{}', ?3, ?4)",
+                rusqlite::params![id, kind, status, created],
+            )
+            .unwrap();
+        }
+        let swept = sweep_stale_pending(&conn, 72).unwrap();
+        assert_eq!(swept, 1, "只收过窗的普通 pending");
+        let status_of = |id: &str| -> String {
+            conn.query_row(
+                "SELECT status FROM notifications WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(status_of("n-old"), STATUS_DISMISSED, "过窗 pending 归档");
+        assert_eq!(status_of("n-fresh"), STATUS_PENDING, "窗内不动");
+        assert_eq!(status_of("q-old"), STATUS_PENDING, "待答豁免");
+        assert_eq!(status_of("d-old"), STATUS_DONE, "已处理行不动");
+    }
+
+    /// 提醒留档行：出生即 done、kind=reminder；同一提醒每次触发各记一行
+    /// （周期提醒 / 重复投递都如实入账），只有完全同 id 才幂等跳过。
+    #[test]
+    fn reminder_archive_row_records_every_firing() {
+        let conn = mem_conn();
+        ensure_table(&conn).unwrap();
+        let archive = |fired_at: i64| {
+            let payload = serde_json::json!({ "reminderId": "r1", "firedAt": fired_at });
+            insert_with_status(
+                &conn,
+                &reminder_archive_id("r1", fired_at),
+                KIND_REMINDER,
+                "提醒",
+                "内容",
+                &payload,
+                STATUS_DONE,
+            )
+            .unwrap()
+        };
+        assert!(archive(1_000), "首次触发入账");
+        assert!(archive(2_000), "周期提醒再次触发必须再入一行");
+        assert!(!archive(2_000), "完全相同的 id 才幂等跳过");
+        let rows = notif_list(&conn, Some(STATUS_DONE)).unwrap();
+        let reminder_rows: Vec<_> = rows.iter().filter(|r| r.kind == KIND_REMINDER).collect();
+        assert_eq!(reminder_rows.len(), 2, "两次触发 = 两行留档");
+        assert!(
+            reminder_rows.iter().all(|r| r.status == STATUS_DONE),
+            "留档行不是待处理项，出生即 done"
+        );
     }
 }

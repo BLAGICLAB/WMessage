@@ -151,6 +151,7 @@ const KIND_LABEL: Record<NotificationItem["kind"], string> = {
   artifact_bind: "产物绑定",
   task_question: "任务提问",
   service_alert: "服务告警",
+  reminder: "提醒",
 };
 
 export function NotifyPanel({

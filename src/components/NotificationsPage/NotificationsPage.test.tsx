@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { NotificationsPage } from "./NotificationsPage";
 import type { NotificationItem } from "../../lib/notifications";
@@ -67,6 +67,38 @@ describe("NotificationsPage", () => {
     await userEvent.click(screen.getByRole("tab", { name: "全部" }));
     expect(screen.getByText("已处理消息")).toBeTruthy();
     expect(screen.getByText("已处理")).toBeTruthy();
+    expect(container).toBeTruthy();
+  });
+
+  it("提醒留档行（kind=reminder，出生即 done）：全部页签可渲染，带「提醒」标签且无操作按钮", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "notifications_list")
+        return [
+          mkItem({
+            id: "reminder-fired-r1-1000",
+            kind: "reminder",
+            status: "done",
+            title: "该喝水了",
+            body: "起来活动一下",
+            payload: { reminderId: "r1", firedAt: 1000 },
+          }),
+        ];
+      return null;
+    });
+    const { container } = render(<NotificationsPage />);
+    await waitFor(() =>
+      expect(screen.getByText("没有待处理的通知")).toBeTruthy(),
+    );
+    // 留档行不是待处理项：不进「待处理」页签、不计角标
+    expect(screen.queryByText("该喝水了")).toBeNull();
+    await userEvent.click(screen.getByRole("tab", { name: "全部" }));
+    // KIND_META 对 kind 穷举：缺这一项时 meta 为 undefined，取 meta.label 即整页崩
+    const article = screen.getByRole("article", { name: "提醒：该喝水了" });
+    expect(article).toBeInTheDocument();
+    expect(screen.getByText("起来活动一下")).toBeInTheDocument();
+    expect(
+      within(article).queryByRole("button"),
+    ).toBeNull();
     expect(container).toBeTruthy();
   });
 
