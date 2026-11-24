@@ -118,7 +118,7 @@
   8. 【可核对】`bot.log` 的 `llm.stream_failed` 行带 `err_chain`（含 hyper 真因，不再是孤零零一句 reqwest 包装串）、`bytes`、`elapsed_ms`、`phase=body`、`cause` 字段。
 - **证据**：截图（三处错误提示与「重试」入口 + 断流气泡）+ `<data_dir>/bot.log` 中第 3 步的 `llm.request_failed` 行与第 4 步的 `llm.stream_failed` 行
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -rnF "llm.request_failed" src-tauri/src` 确认事件名还在源码里；提示仍说「反馈日志」= 变体映射没生效（应用侧缺陷）
-- **缺口补验**：TaskInvalidState / InvalidArgument / LlmRequestFailed 精确化未验
+- **缺口补验**：实机 2026-11-15 已验读侧断流分层文案（idle 成因专属 + 本轮未完成 + 重试指引，stream_idle_timeout bytes/phase/cause 留痕）；当批发现的 F-新1（send 层失败文案亮原始串）与 F-新2（失败气泡无重试按钮）均已修。**仍缺**：TaskInvalidState / InvalidArgument / LlmRequestFailed 三种错误码的精确化文案未验
 
 ### ACC-E-06 · 执行类谎报守卫
 

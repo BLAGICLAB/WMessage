@@ -294,7 +294,7 @@
   3. 【可核对】文件缺失或为空时 system 不含该槽（空串跳过，无多余文案）。
 - **证据**：vitest / cargo 输出 + bot.log 审计行
 - **失败处置**：先查 data_dir 下 instructions.md 是否被外部占用（读错误按空指令处理、留 warn 日志）；再查 PromptSlot 槽序是否被人改动（槽位序测试会红）。
-- **缺口补验**：实机「设置页编辑→发消息→模型遵从指令」端到端未验；截断标注在真机 system 的呈现未验。
+- **缺口补验**：实机 2026-11-07 已验：设置页编辑→[已阅指令]遵从 + 重启还原 + 截断 WARN（当批发现的静默截断缺陷已修 69cae9b6）+ 超限保存前端闸拒。**仍缺**：截断标注在真机 system 提示里的呈现未验
 
 ### ACC-P-17 · 回合级快照回滚
 
@@ -313,7 +313,7 @@
   4. 【可观测】审计 `turn.rollback`（restored/skipped_drift/failed）与 `checkpoint.swept` 在 bot.log 可查。
 - **证据**：cargo/vitest 输出 + bot.log 审计行
 - **失败处置**：先查 checkpoints 目录是否被人为清空（快照缺失=不可恢复，按 deny 设计）；再查 ChatGuard 忙闸误判（`chat_guard_is_held` 转正后的锁表访问）。
-- **缺口补验**：实机三态弹层端到端（撤回复/连消息撤/只撤文件）未验；manage_file move 双凭证的实机回滚未验；Windows 回收站撤销（trash crate 平台差异）未验。
+- **缺口补验**：实机 2026-11-07 已验：撤回复 + 撤文件三凭证 restored=3、漂移闸 skipped_drift=1 手动保留、move 双凭证 restored=4、busy 闸 UI 前置语义。**仍缺**：三态弹层端到端（撤回复/连消息撤/只撤文件）未单独跑；Windows 回收站撤销（trash crate 平台差异）未验
 
 ### ACC-P-18 · 工具分组按需挂载
 
@@ -331,7 +331,7 @@
   3. 【可核对】activate_tools 只接受 desktop/services/apps 三组名；子 agent 会话白名单链路不受影响（0.55 先拒）。
 - **证据**：cargo 输出 + 量化数字
 - **失败处置**：先查组清单覆盖完整性测试（新增工具忘入组会红）；再查开关同步（load_config / update_config_file 两处都写 set_groups_enabled）。
-- **缺口补验**：实机「开关开→对话→activate_tools→桌面工具实际可用」端到端未验；激活瞬间缓存 miss 的 input 成本实测未做；设置页 UI 开关（方案 P-3 手改 config 口径）未做。
+- **缺口补验**：实机 2026-11-07 已验：灰度默认关的对照（桌面工具可用但无闸拒绝）+ 开关开 activate_tools→下轮 screenshot 落盘端到端。**仍缺**：激活瞬间缓存 miss 的 input 成本实测未做；设置页 UI 开关（方案 P-3 手改 config 口径）未做
 
 ### ACC-P-19 · MCP elicitation 桥接
 
@@ -372,7 +372,7 @@
   5. 【可核对】无人值守（!interactive）不触发分类器（保持快速拒）。
 - **证据**：cargo 输出 + bot.log 审计行
 - **失败处置**：先查 selfcheckModelId 是否可解析（decide_selfcheck 同款链路，厂商未验证回落 None）；再查连拦计数泄漏（allow 分支必须清零）。
-- **缺口补验**：实机端到端（开关开→真弹窗前分类器判定→allow 免弹窗/deny 拒）未验；无人值守路径未验；分类器误拦的实际体验未评估。
+- **缺口补验**：实机 2026-11-07 已验三分支端到端（Unsure/Unsure/unsure_no_model 弹窗兜底绝不放行；当时挂的是 auto 档）。**仍缺**：连拦停用与无人值守路径未构造（L1 背书）；分类器误拦的实际体验未评估
 
 ### ACC-P-21 · MCP OAuth 授权
 
@@ -392,7 +392,7 @@
   5. 【可核对】回调服务器只绑 127.0.0.1 随机端口、只收一个请求、5 分钟超时。
 - **证据**：cargo 输出 + 实机录屏（浏览器授权往返）
 - **失败处置**：先查授权服务器是否发布 /.well-known 元数据（无则报人话错误）；DCR 失败 → 配置 oauthClientId 手动档；refresh 401 → token 已清，重新登录。
-- **缺口补验**：实机全流程（浏览器授权 → 回调 → token → Bearer 调用 → 401 刷新重连）未验；client_secret 型 IdP 不支持（偏离 12）；Windows 回调端口防火墙提示未验。
+- **缺口补验**：实机 2026-11-07 已验登录全流程两次过（DCR→浏览器→302 回调→PKCE token→审计 + keyring）。**仍缺**：Bearer 调用与 401 刷新重连面（当批发现的 F-6：登录后 mount 快照不刷新、过期刷新未生效，已随 11-16 一批修）；client_secret 型 IdP 不支持（偏离 12）；Windows 回调端口防火墙提示未验
 
 ### ACC-P-22 · 提醒接入定时模块（顶部标签切换）
 
@@ -422,7 +422,7 @@
   8. 【可观测】步骤 10：通知未授权时**只在提醒 tab**出现提示条（作业不依赖系统通知，不提示）；查不到授权状态不算未授权（不报假警）；「重新检查」能复查并让提示条消失（`grep -n "isPermissionGranted" src/components/SchedulePage/SchedulePage.tsx` 命中）。
 - **证据**：两个标签的截图（含计数）+ 提醒行截图（灰态/已暂停/编辑面板）+ reminders 表查询输出 + bot.log 事件行
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——`grep -n "reminder_set_enabled" src-tauri/src/lib.rs` 命中 = 命令注册在；不命中 = 卡片过期
-- **缺口补验**：实机全流程未跑（标签切换、计数、增删改、到点自动刷新、通知未授权提示条与「重新检查」）；提醒到点实际响铃未验
+- **缺口补验**：实机 2026-11-15 已验：提醒页签分组 + 行操作、到点系统通知真弹 + 触发即删（一次性）、每日提醒推进/暂停恢复重算不补响/改期重算/过期丢弃全过。**仍缺**：M196 未授权提示条半面环境受限（驱动 System Settings 超预算，组件测试钉渲染）；提醒到点实际响铃未验
 
 ### ACC-P-23 · 自定义厂商与本地模型服务（免鉴权）
 
