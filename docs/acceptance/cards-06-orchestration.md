@@ -332,7 +332,7 @@
   11. 【可观测】步骤 8：超时的那次运行，运行记录的状态是「超时」一类（**不是**「运行启动失败」），且**记了真实耗时**（不是 0）。
   12. 【可核对】`grep -n "\"timeout\"\|\"stopped\"\|\"failed\"" src-tauri/src/apps/mod.rs` 命中 `app_runs` 表 status 列的四档取值 `ok` / `failed` / `timeout` / `stopped`；`grep -n "fn failed_run_report" -A 8 src-tauri/src/apps/mod.rs` 命中失败分类——超时那次程序明明跑起来了，不记成「运行启动失败」。
   13. 【可核对】`grep -n "Archive\|Trash2" src/components/AppsPage/AppsPage.tsx` 命中两个**不同**的图标名——不可逆与可逆不共用同一个垃圾桶图标。
-  14. 【可核对】**已知口径疑点（验收时重点复核）**：`grep -n "fn resolve_timeout" -A 8 src-tauri/src/py/runtime.rs` 的上限是 `MAX_TIMEOUT_SECS = 600`（run_python 工具路径的上限），而 apps 域的天花板是 `APPS_MAX_TIMEOUT_SECS = 1800`；两者不在同一层——`apps/commands.rs::resolve_run_timeout` 先钳到 1800，随后 `apps/mod.rs::run` 把该值原样交给 `runtime::run_python` → `run_python_at` → `resolve_timeout`，**在那里又被 600 钳一次**。按此链路推演：声明 900 / 1800 / 7200 秒的程序，实际生效值都是 600 秒（`resolve_timeout` 报 `clamped=true`）。验收时用一个声明 >600 秒的程序实测真实运行时长：若不到 600 秒就被砍，记为**实现与 SPEC 不符**（SPEC 4-102 写「一律钳到全局天花板 30 分钟」），开缺陷单。
+    14. 【可核对】**声明时长真按 1800 秒天花板生效**（原「600 秒二次钳制」疑点已消解，2026-11-24 更正）：`py/runtime.rs` 已从 `resolve_timeout` 改为 `resolve_timeout_with_cap(timeout_secs, cap)`——执行层带**上限参数**下行，apps 路径传 `APPS_MAX_TIMEOUT_SECS = 1800`（`bot/constants.rs:126`），600 秒的 `PY_MAX_TIMEOUT_SECS` 只作用于 `run_python` 工具路径。验收时用一个声明 900 / 1800 秒的程序实测真实运行时长：**不到声明值就被砍**才算与 SPEC 不符（SPEC 4-102 写「一律钳到全局天花板 30 分钟」），否则通过。勘误提示：原判据写的 `grep "fn resolve_timeout"` 已不命中（函数改名），按 `grep -n "fn resolve_timeout_with_cap" src-tauri/src/py/runtime.rs` 查。
 - **证据**：截图（程序页归档图标 + 归档视图垃圾桶图标 + 两个确认框全文 + 运行记录状态）+ 三张表的查询输出 + `apps/` 目录列表（删除前后）+ grep 终端输出
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——本卡无审计事件，改用源码检索分家：`grep -n "fn delete_core" src-tauri/src/apps/manage.rs` 命中 = 彻底删除逻辑还在；不命中 = 卡片过期
 - **缺口补验**：归档视图、彻底删除三表与目录、整文件集上架、版本回滚、timeoutSecs 未验
