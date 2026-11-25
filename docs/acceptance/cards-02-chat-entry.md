@@ -246,7 +246,7 @@
   4. 【可观测】当前会话条目同时带三重标记：nm-inset 底色、品牌色竖条、实心图标；该行 `aria-current="page"`。
   5. 【可观测】会话栏底部有会话计数（一个数字），不是空白。
   6. 【可观测】折叠钮只在聊天头部左侧一个（会话栏内没有第二个折叠入口）；收起后栏内控件消失、展开后恢复，状态存 localStorage `chat-rail-open`（重开应用仍是收起态）。
-  7. 【可核对】`grep -n "w-\[224px\]" src/components/ChatPanel/SessionRail.tsx` 命中；`grep -n "relativeTime" src/components/ChatPanel/SessionRail.tsx` 命中（相对时间落在第二行）。
+  7. 【可核对】`grep -n "SESSION_RAIL_W = 224" src/components/ChatPanel/chatLayout.ts` 命中（2026-11-25 更正：栏宽已收进 chatLayout 的常量 `SESSION_RAIL_W`，SessionRail 里不再有 `w-[224px]` 类名，照原文 grep 命中 0）；`grep -n "relativeTime" src/components/ChatPanel/SessionRail.tsx` 命中（相对时间落在第二行）。
 - **证据**：截图（聊天页全貌 + 标尺标注会话栏宽度 + 当前会话行特写 + 收起态）
-- **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（本卡无审计事件，改查 `grep -n "w-\[224px\]" src/components/ChatPanel/SessionRail.tsx`：宽度被改 = 卡片过期）
+- **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（本卡无审计事件，改查 `grep -n "SESSION_RAIL_W = 224" src/components/ChatPanel/chatLayout.ts`：宽度被改 = 卡片过期）
 - **缺口补验**：会话栏常驻 224px 与两行式条目未验

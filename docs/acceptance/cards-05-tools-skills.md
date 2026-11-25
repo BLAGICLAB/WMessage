@@ -132,7 +132,7 @@
   7. 【可审计】<data_dir>/bot.log 中出现 `mcp.server_saved`（检索命令：`grep -F "mcp.server_saved" "<data_dir>/bot.log" | tail -20`）；删服务器出现 `mcp.server_deleted`，拨开关出现 `mcp.server_toggled`。
   8. 【可审计】工具清单发现成功出现 `mcp.tools_discovered`，发现失败出现 `mcp.discover_failed`，连接断开出现 `mcp.disconnected`。
   9. 【可观测】步骤 9：改了 env 里的 API token 后该服务器**重连**（指纹认 env/headers）——状态点重新走一遍「待发现 → 静默待命」。
-  10. 【可核对】`grep -n "pub fn fingerprint" -A 15 src-tauri/src/bot/mcp/manager.rs` 命中 env / headers 参与哈希——**不用序列化值算指纹**（机密字段被剥掉，改了不换指纹 = 不重连 = 旧凭据继续用）。
+  10. 【可核对】`grep -n "fn fingerprint" -A 15 src-tauri/src/bot/mcp/manager.rs` 命中 env / headers 参与哈希（2026-11-25 更正：原写 `pub fn fingerprint`，可见性已收窄为 `pub(crate) fn fingerprint`，照原文 grep 命中 0）——**不用序列化值算指纹**（机密字段被剥掉，改了不换指纹 = 不重连 = 旧凭据继续用）。
   11. 【可观测】步骤 10：`127.0.0.1` 与 `192.168.1.10` 两种内网地址**在保存口就被拒**（给出「仅允许公网」类原因）；公网地址能保存。
   12. 【可核对】`grep -n "check_public_url" src-tauri/src/bot/mcp/manager.rs` 命中 DNS 级闸（域名解析出的每个 IP 都必须公网，判据单源在 `bot_web::check_public_url`）；`grep -n "resolve_to_addrs" src-tauri/src/bot/mcp/manager.rs` 命中——解析结果钉给 reqwest，校验与请求之间不再二次解析（DNS TOCTOU 窗口关闭）。
   13. 【可核对】`grep -n "redirect::Policy::none" src-tauri/src/bot/mcp/manager.rs` 命中——禁跟随重定向（公网端点 302 到内网即穿透「仅公网」闸）。
@@ -290,10 +290,10 @@
   9. 【可观测】步骤 8：失败那次在 `wmessage-py-runs/` 下留有运行目录（跑完即删的旧行为已改掉）；步骤 9：成功那次的目录已被清掉（留存只发生在失败路径）。
   10. 【可核对】`grep -n "fn finish_run_dir" -A 12 src-tauri/src/py/runtime.rs` 命中——只有退出码 0 才清目录；`grep -n "retained_note" src-tauri/src/py/runtime.rs` 命中失败提示带留存目录。
   11. 【可核对】`grep -n "SCRIPT_FILE" src-tauri/src/py/runtime.rs` 命中——脚本正文与执行入口分文件（看门狗不拼进正文，报错行号与模型看到的文件一致）。
-  12. 【可核对】`grep -n "emitted_any" src-tauri/src/bot_model_loop/sse.rs` 命中——流读取失败可重发本轮的判据是「有没有向前端吐过内容」，上限 1 次；`grep -n "fn skill_finish" src-tauri/src/bot_skills/runtime.rs` 命中放弃重试时的收尾路径（收尾与重试只在一处做）。
+  12. 【可核对】`grep -n "emitted_body" src-tauri/src/bot_model_loop/sse.rs` 命中——流读取失败可重发本轮的判据是「有没有向前端吐过内容」，上限 1 次（2026-11-25 更正：原写 `emitted_any`，该标识符在流式断流修复里改名成 `emitted_body`，照原文 grep 命中 0 会被误判成「卡片过期」）；`grep -n "fn skill_finish" src-tauri/src/bot_skills/runtime.rs` 命中放弃重试时的收尾路径（收尾与重试只在一处做）。
   13. 【可审计】脚本失败那次 <data_dir>/bot.log 中出现 `tool.return`（检索命令：`grep -F "tool.return" "<data_dir>/bot.log" | tail -20`）且工具名是 `run_python`——工具失败配平落账，调用数与返回数对得上（配平缺失 = 统计面板出现「悬挂调用」）。
 - **证据**：截图（授权窗确认后技能继续 + 失败报错文案 + scriptPath 重跑成功）+ `wmessage-py-runs/` 目录两次 `ls` 输出 + <data_dir>/bot.log 片段
-- **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "emitted_any" src-tauri/src` 确认重发判据还在源码里（`emitted_any` / `pending_confirm_id` / `scriptPath` 三处任一 grep 不到 = 卡片过期）
+- **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "emitted_body" src-tauri/src` 确认重发判据还在源码里（`emitted_body` / `pending_confirm_id` / `scriptPath` 三处任一 grep 不到 = 卡片过期）
 - **缺口补验**：10-26 新增：授权窗误杀、悬空 run、scriptPath 落盘、运行目录留存四条修法未验
 
 ### ACC-T-10 · 内置技能已退役
