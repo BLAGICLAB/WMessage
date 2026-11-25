@@ -109,7 +109,7 @@
   2. 【可观测】步骤 3：该会话里用户消息与助手回复都在，顺序不变；助手侧不是空占位气泡。
   3. 【可观测】步骤 4 刷新后：同一轮的助手回复正文仍在（不是只剩用户消息那一半），且与刷新前逐字一致。
   4. 【可观测】刷新后没有出现同一段正文重复两遍（残缺视图被整段写回库的老问题不复现）。
-  5. 【可核对】`grep -rn "bot_history_save" src-tauri/src/` 命中——回合开始即落库、回合收尾再写最终态，库里始终是这一轮的真源。
+  5. 【可核对】`grep -rn "bot_history_save" src-tauri/src/lib.rs` **无命中**——该命令已随真源化（2026-11-06 批）断代删除，库里只剩 `bot_history_save_inner` / `bot_history_save_audited` 两个内部函数，不对外暴露（2026-11-25 更正：原判据写「grep 命中 src-tauri/src/」，那个命令早已不在，照原文查命令注册会判错）；现行落库口径三处 grep 命中：`grep -n "bot-msg-upserted" src-tauri/src/bot_chat.rs`（用户行与回合终稿经行内核 upsert 后广播，库里始终是这一轮的真源）、`grep -n "fn build_final_row" src-tauri/src/bot_chat.rs`（终稿行构造）、`grep -n "bot_history_replace_summary" src-tauri/src/bot_chat.rs`（摘要行投影）。
 - **证据**：截图（切走前 / 切回后 / 刷新后同一会话）+ `<data_dir>/bot.log` 片段
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（`chat.history_truncated` / `chat.history_save_truncated` 是历史截断事件，只在历史超限时出现；它不出现不等于本卡失败）
 - **缺口补验**：—
