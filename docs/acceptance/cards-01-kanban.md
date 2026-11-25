@@ -165,7 +165,7 @@
   5. 【可核对】`grep -n "const doneCount = subtasks.filter" src/components/TodoCard/TodoCard.tsx` 命中进度计数来源；`grep -n "doneCount}/\${subtasks.length" src/components/TodoCard/TodoCard.tsx` 命中进度文案格式（2026-11-25 更正：原写 `doneCount}/{subtasks.length`，少一个 `$`——代码里是 `${doneCount}/${subtasks.length}`，照原文 grep 命中 0）；`grep -n "bot={!!task.botAssigned}" src/components/TodoCard/TodoCard.tsx` 命中归属头像的两态来源；`grep -n "isTrashed\|isArchived" src/lib/taskScope.ts` 命中只读判定。
 - **证据**：截图（3 条子任务 + 进度 + 折叠前后 + 两种归属头像各 1 张）
 - **失败处置**：本卡无专属审计事件，改查源码分家——`grep -n "doneCount" src/components/TodoCard/TodoCard.tsx` 无命中 = 进度口径已改（卡片过期）；命中但机器上进度不显示或头像不切换 = 应用侧回归，开缺陷单
-- **缺口补验**：子任务进度、折叠、归属头像切换未逐项验
+- **缺口补验**：**L1 已验（2026-11-25）**：子任务进度「· N/M」（TodoCard.test.tsx 三例：已完成数与总数都写在「+ 添加子任务」行上、全未完成是 0/N、没有子任务不出现「· 0/0」）；**仍缺**：折叠只测回调不测往返、折叠/回收站「点标题不弹编辑、拖动不生效」、归属头像切换无用例；实机折叠态观感与拖拽手感未跑
 
 ### ACC-K-08 · 截止时间只有两种合法形态，写入即校验
 

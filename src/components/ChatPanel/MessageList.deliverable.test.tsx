@@ -86,6 +86,59 @@ describe("气泡交付物区", () => {
     ).toBeNull();
   });
 
+  /* 超过 2 个交付物就折叠成「交付物 N ▾」（ACC-I-07 判据）：一屏塞十几个
+   * chip 会把正文挤下去，所以多的收进一个可展开的按钮。此前无用例守。 */
+  it("超过 2 个交付物 → 折叠成「交付物 N ▾」，点开才见清单", async () => {
+    const paths = ["/Users/x/a.pptx", "/Users/x/b.pptx", "/Users/x/c.md"];
+    stubProbe(paths);
+    const messages: Msg[] = [
+      {
+        role: "assistant",
+        content: `已生成 ${paths.join("、")}`,
+        fileChanges: paths.map((p) => ({
+          path: p,
+          kind: "create" as const,
+          added: 1,
+          deleted: 0,
+        })),
+      },
+    ];
+    render(<MessageList messages={messages} {...baseProps} />);
+
+    const toggle = await screen.findByRole("button", { name: /交付物 3/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // 折叠态下清单不渲染（省得把正文挤下去）
+    expect(screen.queryByTitle("打开交付物：/Users/x/a.pptx")).toBeNull();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTitle("打开交付物：/Users/x/a.pptx")).toBeInTheDocument();
+    expect(screen.getByTitle("打开交付物：/Users/x/c.md")).toBeInTheDocument();
+  });
+
+  it("≤2 个交付物 → 直接平铺，没有折叠按钮", async () => {
+    const paths = ["/Users/x/a.pptx", "/Users/x/b.md"];
+    stubProbe(paths);
+    const messages: Msg[] = [
+      {
+        role: "assistant",
+        content: `已生成 ${paths.join("、")}`,
+        fileChanges: paths.map((p) => ({
+          path: p,
+          kind: "create" as const,
+          added: 1,
+          deleted: 0,
+        })),
+      },
+    ];
+    render(<MessageList messages={messages} {...baseProps} />);
+
+    expect(
+      await screen.findByTitle("打开交付物：/Users/x/a.pptx"),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /交付物 \d/ })).toBeNull();
+  });
+
   it("chip 只有图标 + 文件名，没有 ±行数（行数是轨迹语义，不是交付物语义）", async () => {
     stubProbe(["/Users/x/宣贯.pptx"]);
     const messages: Msg[] = [

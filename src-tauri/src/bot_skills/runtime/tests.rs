@@ -911,3 +911,19 @@ fn clip_document_body_respects_cap_and_disclosure() {
     );
     assert!(out.contains(disclosure), "披露行必须在场");
 }
+
+/// 步数软警告阈值（ACC-T-07 判据 9/10）：按总步数比例算，再钳到上下界。
+/// 阈值算错会让模型收尾提醒早不来或永远不来，两头都坏。
+#[test]
+fn skill_budget_warn_limits_scale_and_clamp() {
+    let (lo, hi) = crate::bot::constants::SKILL_BUDGET_WARN_STEPS_CLAMP;
+    // 10 步 → 10/10 = 1（等于下界）
+    assert_eq!(skill_budget_warn_limits(10), 1);
+    // 50 步 → 5（等于上界）
+    assert_eq!(skill_budget_warn_limits(50), hi);
+    // 100 步 → 10 → 被上界钳回 5
+    assert_eq!(skill_budget_warn_limits(100), hi);
+    // 极小步数 → 0 → 被下界钳回 1（不能是 0：0 意味着永远不提醒）
+    assert_eq!(skill_budget_warn_limits(1), lo);
+    assert!(lo >= 1, "下界至少 1——0 意味着永远不提醒");
+}

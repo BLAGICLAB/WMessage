@@ -613,3 +613,32 @@ mod selfcheck_vendor_gate_tests {
         );
     }
 }
+
+/// 轮数上限：`max_rounds` 只许往下钳，不得突破安全网（ACC-T-07 判据 7/8）。
+/// 此前只有一个源码锚点，没有用例守着——改成向上取就没人拦。
+#[cfg(test)]
+mod max_rounds_clamp_tests {
+    use crate::bot::constants::MAX_ROUNDS;
+    use crate::bot_model_loop::resolve_max_rounds;
+
+    #[test]
+    fn skill_declared_rounds_are_capped_by_the_safety_net() {
+        // 声明 10 轮 → 取 10（安全网 200 不构成限制）
+        assert_eq!(resolve_max_rounds(Some(10), MAX_ROUNDS as usize), 10);
+        // 声明 9999 轮 → 被安全网钳回 200
+        assert_eq!(
+            resolve_max_rounds(Some(9999), MAX_ROUNDS as usize),
+            MAX_ROUNDS as usize
+        );
+    }
+
+    #[test]
+    fn no_declaration_means_the_safety_net() {
+        assert_eq!(
+            resolve_max_rounds(None, MAX_ROUNDS as usize),
+            MAX_ROUNDS as usize
+        );
+        // 声明 0 也不能把轮数钳成 0（那等于一轮都不跑）
+        assert_eq!(resolve_max_rounds(Some(0), MAX_ROUNDS as usize), 0);
+    }
+}

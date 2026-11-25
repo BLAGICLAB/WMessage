@@ -232,7 +232,7 @@
   12. 【可观测】模型一个字都没说就结束时，收到技能出口兜底：技能名 + 结束原因 + 产物文件路径。
 - **证据**：截图（技能跑完后的结束原因行 + 收尾提醒）+ 启动 stderr 输出 + <data_dir>/bot.log 片段
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "SKILL_MAX_STEPS_LIMIT" src-tauri/src` 确认配额常量还在源码里（三个常量 `SKILL_DEFAULT_MAX_STEPS` / `SKILL_MAX_STEPS_LIMIT` / `SKILL_MAX_LIFETIME_SECS` 都 grep 得到才算名还在）
-- **缺口补验**：**L1 已验（2026-11-25）**：max_steps 钳制与声明上限、绝对寿命上限到点判死、interactive 不设步数闸的准入规则（parse/tests.rs、runtime/tests.rs、manage/tests.rs）；**仍缺**：timeout_secs 已废弃告警、max_rounds 往下钳、软警告阈值、审计载荷里的生效 max_steps、技能出口兜底无用例；实机技能真跑一遍的熔断/继续/提醒/出口未验
+- **缺口补验**：**L1 已验（2026-11-25）**：max_steps 钳制与声明上限、绝对寿命上限到点判死、interactive 不设步数闸的准入规则（parse/tests.rs、runtime/tests.rs、manage/tests.rs）；判据 7/8 的 max_rounds 往下钳（bot_model_loop/tests/config.rs 两例——2026-11-25 新增，变异 1/1 KILLED）；判据 9/10 的软警告阈值（bot_skills/runtime/tests.rs 一例——新增，变异 1/1 KILLED）；**仍缺**：timeout_secs 已废弃告警、审计载荷里的生效 max_steps、技能出口兜底无用例；实机技能真跑一遍的熔断/继续/提醒/出口未验
 
 ### ACC-T-08 · 技能执行中断的两条根因与三处修法
 

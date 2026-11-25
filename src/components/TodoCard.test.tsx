@@ -69,6 +69,44 @@ const completedTask: Task = {
 };
 
 describe("TodoCardView", () => {
+  /* 子任务进度「· N/M」（ACC-K-07 判据）：完成数与总数都写在「+ 添加子任务」
+   * 那一行上——此前没有任何用例断言它，进度显示回退（比如 done 恒为 0）没人拦。 */
+  it("子任务进度：已完成数与总数都写在「+ 添加子任务」行上", () => {
+    const withSubtasks: Task = {
+      ...baseTask,
+      subtasks: [
+        { id: "s1", text: "第一步", done: true },
+        { id: "s2", text: "第二步", done: false },
+        { id: "s3", text: "第三步", done: true },
+      ],
+    };
+    render(
+      <TodoCardView task={withSubtasks} onUpdate={vi.fn()} onDelete={vi.fn()} />,
+    );
+    expect(screen.getByText(/\+ 添加子任务/)).toHaveTextContent("2/3");
+  });
+
+  it("子任务全未完成：进度是 0/N（不是空、也不是 N/N）", () => {
+    const withSubtasks: Task = {
+      ...baseTask,
+      subtasks: [
+        { id: "s1", text: "第一步", done: false },
+        { id: "s2", text: "第二步", done: false },
+      ],
+    };
+    render(
+      <TodoCardView task={withSubtasks} onUpdate={vi.fn()} onDelete={vi.fn()} />,
+    );
+    expect(screen.getByText(/\+ 添加子任务/)).toHaveTextContent("0/2");
+  });
+
+  it("没有子任务时不显示进度（不出现「· 0/0」）", () => {
+    render(
+      <TodoCardView task={baseTask} onUpdate={vi.fn()} onDelete={vi.fn()} />,
+    );
+    expect(screen.getByText(/\+ 添加子任务/)).not.toHaveTextContent("0/0");
+  });
+
   it("默认渲染：标题、DoneCircle、FoldToggle 都可见", () => {
     render(
       <TodoCardView task={baseTask} onUpdate={vi.fn()} onDelete={vi.fn()} />,
