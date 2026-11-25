@@ -178,6 +178,38 @@ describe("聊天窗滚动（流式期）", () => {
     scrollTo.mockRestore();
   });
 
+  /* 贴底判据是「离底 ≤32px」这条带（ChatPanel.tsx 的 gap <= STICK_BOTTOM_PX），
+   * 不是「恰好在底部」——两者是不同状态。上面那条用例守的是后者（用户没翻过
+   * 时的默认跟随），这里守的是带宽本身：带内恢复跟随、带外不拽。 */
+  it("离底在 32px 带内（gap=20）→ 增量重新跟随到底部", async () => {
+    const user = userEvent.setup();
+    const { fire, list } = await startStreaming(user);
+    stubGeometry(list);
+    const scrollTo = vi.spyOn(Element.prototype, "scrollTo");
+    // 几何桩：scrollHeight=1000 / clientHeight=400 → gap = 600 - scrollTop
+    list.scrollTop = 580; // gap = 20 ≤ 32
+    fireEvent.scroll(list);
+    scrollTo.mockClear();
+    await act(async () => fire("带内新输出"));
+    expect(await screen.findByText("带内新输出")).toBeInTheDocument();
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000 });
+    scrollTo.mockRestore();
+  });
+
+  it("离底刚出带（gap=50）→ 增量不把视口拽回底部", async () => {
+    const user = userEvent.setup();
+    const { fire, list } = await startStreaming(user);
+    stubGeometry(list);
+    const scrollTo = vi.spyOn(Element.prototype, "scrollTo");
+    list.scrollTop = 550; // gap = 50 > 32
+    fireEvent.scroll(list);
+    scrollTo.mockClear();
+    await act(async () => fire("带外新输出"));
+    expect(await screen.findByText("带外新输出")).toBeInTheDocument();
+    expect(scrollTo).not.toHaveBeenCalled();
+    scrollTo.mockRestore();
+  });
+
   it("翻过历史后发消息：视口回到底部跟着这一轮", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {

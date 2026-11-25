@@ -1106,6 +1106,8 @@ mod extract_script_e2e_tests;
 #[cfg(test)]
 mod fake_success_guard_tests;
 #[cfg(test)]
+mod out_path_tests;
+#[cfg(test)]
 mod pptx_template_tests;
 #[cfg(test)]
 mod script_stderr_guard_tests;

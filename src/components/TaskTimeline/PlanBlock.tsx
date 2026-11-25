@@ -8,7 +8,7 @@ import { DoneCircle } from "../DoneCircle";
 
 /** 重叠簇第 3 张（lane ≥ 2）起的塌缩档：内容只剩头像（上）+ 对勾（下），
  *  尺寸随块高（≈窗口分钟数）三档。 */
-function stackSize(durMin: number): { size: 16 | 12 | 10; cls: string } {
+export function stackSize(durMin: number): { size: 16 | 12 | 10; cls: string } {
   if (durMin >= 90) return { size: 16, cls: " s-lg" };
   if (durMin >= 40) return { size: 12, cls: " s-md" };
   return { size: 10, cls: " s-sm" };
