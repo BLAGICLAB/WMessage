@@ -120,7 +120,7 @@
   6. 【可核对】`grep -n "export function titleRows" -A 6 src/components/TaskTimeline/week.ts` 显示 1/2/4/6 四档阈值；`grep -n "function stackSize" -A 4 src/components/TaskTimeline/PlanBlock.tsx` 显示 16/12/10 三档；`grep -n "fmtHours" -A 4 src/components/TaskTimeline/week.ts` 显示 90 → 1.5 的口径。
 - **证据**：截图（四个时长档各 1 张 + 双卡半区 1 张 + 三卡塌缩 1 张）
 - **失败处置**：本卡无专属审计事件，改查源码分家——`grep -n "titleRows" src/components/TaskTimeline/week.ts` 无命中 = 分档口径已改（卡片过期）；常量在但机器上不塌缩或行数不对 = 应用侧回归，开缺陷单
-- **缺口补验**：**L1 已验（2026-11-25）**：titleRows 四档 1/2/4/6、fmtHours 去尾零、重叠分栏（week.test.ts「titleRows：矮块 1 行…」「fmtHours：分钟 → 小时去尾零」「两段重叠 → 同簇两栏」）；**仍缺**：塌缩块三档尺寸（stackSize 16/12/10，PlanBlock.tsx 内部函数未导出）、双击塌缩块开自己的浮窗无用例；实机四个时长档的标题行数与三卡塌缩观感未跑
+- **缺口补验**：**L1 已验（2026-11-25）**：titleRows 四档 1/2/4/6、fmtHours 去尾零、重叠分栏（week.test.ts「titleRows：矮块 1 行…」「fmtHours：分钟 → 小时去尾零」「两段重叠 → 同簇两栏」）；塌缩块三档尺寸 16/12/10（PlanBlock.test.ts 5 例——stackSize 原是模块内部函数，本轮导出并补例，变异 3/3 KILLED）；**仍缺**：双击塌缩块开自己的浮窗无用例；实机四个时长档的标题行数与三卡塌缩观感未跑
 
 ### ACC-K-06 · 已归档卡原位封存：虚线边 + 红印章 + 双击跳归档区定位
 

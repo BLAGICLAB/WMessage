@@ -115,7 +115,7 @@
 ### ACC-I-06 · 助手气泡承载本轮全部执行态
 
 - **SPEC**：3-38
-- **层级**：L1+L2（自动档 `src/components/ChatPanel/LiveIndicator.test.tsx`（12 例）；实机档见下）
+- **层级**：L1+L2（自动档 `src/components/ChatPanel/LiveIndicator.test.tsx`（10 例——2026-11-25 更正：原写 12 例，实为 10）；实机档见下）
 - **历史卡**：M91,M92（部分）
 - **前置**：机器人总开关已开；已配至少一个可用模型；已配至少一个会触发思考 / 工具调用的模型
 - **步骤**：

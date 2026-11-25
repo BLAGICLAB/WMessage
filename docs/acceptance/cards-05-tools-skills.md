@@ -35,7 +35,7 @@
   12. 【可核对】`grep -n "bot_plan_state" src-tauri/src/lib.rs` 命中命令注册；`grep -n "applyEvent\|applySnapshot" src/components/ChatPanel/planStore.ts` 命中「事件=变化流、命令=状态源」两条写入口，且两条都按 `updatedAt` 比新旧（旧的不许盖新的）。
 - **证据**：截图（浮层三段 + 三态图标 + 过期提示 + 环境信息概览）+ <data_dir>/bot.log 片段
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "bot-plan" src-tauri/src` 确认事件名还在源码里（`bot-plan` grep 不到 = 卡片过期；grep 得到但机器上无事件 = 应用侧回归）
-- **缺口补验**：**L1 已验（2026-11-25）**：三段与三态渲染、无计划时的空态、命令回包比事件旧不覆盖、过期标记、bot-plan 事件会话过滤与在途回灌（PlanPanel.test.tsx 10 例 + ChatPanel.plan.test.tsx 3 例）+ 后端「任一时刻只允许一条正在做」与入参不合法不留半份状态（plan_state.rs + bot/tools/plan.rs）；**仍缺**：不新增独立 OS 窗口、「环境信息不列文件清单」无用例；实机浮层观感与 bot-plan 审计行未跑
+- **缺口补验**：**L1 已验（2026-11-25）**：三段与三态渲染、无计划时的空态、命令回包比事件旧不覆盖、过期标记、bot-plan 事件会话过滤与在途回灌（PlanPanel.test.tsx 10 例 + ChatPanel.plan.test.tsx 3 例）+ 后端「任一时刻只允许一条正在做」与入参不合法不留半份状态（plan_state.rs + bot/tools/plan.rs）；判据 9 的「环境信息只给概览、不列文件清单」（PlanPanel.test.tsx 断言 +12/-3 在、文件名 a.rs 不在）；**仍缺**：不新增独立 OS 窗口无用例；判据 9 的「清单入口点了之后真落到右侧栏『改动』子页」只断言了回调被调、没断言真实导航；实机浮层观感与 bot-plan 审计行未跑
 
 ### ACC-T-02 · Word 模板双层口径
 
@@ -383,7 +383,7 @@
   12. 【可审计】生成产物走的是工具通道：<data_dir>/bot.log 中本轮出现 `tool.call` 与配平的 `tool.return`（检索命令：`grep -F "tool.call" "<data_dir>/bot.log" | tail -20`），工具名是 `create_word` / `create_excel` / `create_pdf` / `create_ppt` 之一。
 - **证据**：截图（右侧栏「打开产物文件夹」入口 + 产物汇总弹窗）+ 产物目录三次 `ls` 输出 + 文件修改时间对比
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "bot_open_gen_dir" src-tauri/src` 确认命令名还在源码里（`bot_open_gen_dir` 与 `gen_out_path_in` 都 grep 得到才算名还在）
-- **缺口补验**：**L1 已验（2026-11-25）**：产物登记去重与四类分流（bot_artifacts.rs 5 例）+ 目录入口/命名循环/后端解析路径/搬运/日志写法五处 grep 命中；**仍缺**：同名加 (n) 永不覆盖没有直接用例（gen_out_path_in 无单测）、产物登记表弹窗（勾选绑定/跳过）、目录预建与旧文件修改时间不变无用例；实机四种格式同名产物序号递增与通知中心绑定卡未跑
+- **缺口补验**：**L1 已验（2026-11-25）**：产物登记去重与四类分流（bot_artifacts.rs 5 例）+ 目录入口/命名循环/后端解析路径/搬运/日志写法五处 grep 命中；判据 3/4 的同名加 (n) 与永不覆盖（py/document/out_path_tests.rs 6 例——2026-11-25 新增，变异 3/3 KILLED）；**仍缺**：产物登记表弹窗（勾选绑定/跳过）、旧文件修改时间不变无用例（用例只验内容未变）；实机四种格式同名产物序号递增与通知中心绑定卡未跑
 ### ACC-P-11 · run_python 断网与目的地闸
 
 - **SPEC**：6-116
