@@ -35,7 +35,7 @@
   12. 【可核对】`grep -n "bot_plan_state" src-tauri/src/lib.rs` 命中命令注册；`grep -n "applyEvent\|applySnapshot" src/components/ChatPanel/planStore.ts` 命中「事件=变化流、命令=状态源」两条写入口，且两条都按 `updatedAt` 比新旧（旧的不许盖新的）。
 - **证据**：截图（浮层三段 + 三态图标 + 过期提示 + 环境信息概览）+ <data_dir>/bot.log 片段
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "bot-plan" src-tauri/src` 确认事件名还在源码里（`bot-plan` grep 不到 = 卡片过期；grep 得到但机器上无事件 = 应用侧回归）
-- **缺口补验**：10-26 新增，全库无命中：update_plan 整表替换、bot-plan 事件、面板三段与过期标记未验
+- **缺口补验**：**L1 已验（2026-11-25）**：三段与三态渲染、无计划时的空态、命令回包比事件旧不覆盖、过期标记、bot-plan 事件会话过滤与在途回灌（PlanPanel.test.tsx 10 例 + ChatPanel.plan.test.tsx 3 例）+ 后端「任一时刻只允许一条正在做」与入参不合法不留半份状态（plan_state.rs + bot/tools/plan.rs）；**仍缺**：不新增独立 OS 窗口、「环境信息不列文件清单」无用例；实机浮层观感与 bot-plan 审计行未跑
 
 ### ACC-T-02 · Word 模板双层口径
 
@@ -100,7 +100,7 @@
   14. 【可核对】`grep -n "fn maybe_extract_from_session" -A 12 src-tauri/src/memory/extract.rs` 命中——自动抽取按会话收尾触发，且受抽取限频约束。
 - **证据**：截图（统计行 + 8 项参数卡 + 合并前后对比）+ 导出 JSON 文件 + 评估器总榜输出
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "memory.consolidate" src-tauri/src` 确认事件名还在源码里（`memory.consolidate` / `memory.consolidate_now` / `memory.consolidate_failed` 三个都 grep 得到才算名还在）
-- **缺口补验**：自动抽取、去重阈值、记忆整理、检索参数 8 项、黄金集 recall@5 未验
+- **缺口补验**：**L1 已验（2026-11-25）**：去重三档分支、容量淘汰与保护、混合打分三态、整理三 op 解析、抽取限频、记忆条目读写与向量重算、评估器自检（memory 模块 + tests/memory_eval.rs）；**仍缺**：检索参数卡 8 项的默认值与保存回填、导出导入语义去重无用例；**黄金集 recall@5 至今没有一次实跑输出**（评估器是 #[ignore]，docs 里只有「recall@5 > 0 = 评估器自检」这条口径）；实机设置页记忆区与抽取审计行未跑
 
 ### ACC-T-04 · MCP 外部服务器
 
@@ -144,7 +144,7 @@
   19. 【可核对】`grep -n "fn is_builtin_id" -A 4 src-tauri/src/bot/mcp/builtin.rs` 命中内置 id 判据；`grep -n "enabled: false" src-tauri/src/bot/mcp/builtin.rs` 命中内置条目的默认停用态；`grep -n "{!s.builtin" src/components/SettingsPage/McpPanel.tsx` 命中「内置条目隐藏删除按钮」的前端守卫。
 - **证据**：截图（状态点三态 + 脱敏视图 + 进程资源区 + 仅公网拒绝提示）+ 两次 `ps` 输出 + <data_dir>/bot.log 片段
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "mcp.server_saved" src-tauri/src` 确认事件名还在源码里（`mcp.server_saved` / `mcp.server_deleted` / `mcp.server_toggled` / `mcp.tools_discovered` / `mcp.disconnected` / `mcp.discover_failed` 六个都 grep 得到才算名还在）
-- **缺口补验**：覆盖面最广的一块
+- **缺口补验**：**L1 已验（2026-11-25）**：指纹随 env/headers 变、机密脱敏、仅公网闸与禁跟随重定向、工具清单落盘、内置 Playwright 条目四例、stdio 1MB 行上限（mcp 模块 90 余例）；**仍缺**：开开关不启动进程与调用期拉起回收、状态点三态与冷却期不重连、改 env 后重连、内网地址保存口拒绝、进程资源区 5s 轮询、平台不支持提示均无用例；实机整卡未跑（ps 两次输出、状态点三态、脱敏视图、仅公网拒绝提示、审计行）
 
 ### ACC-T-05 · MCP 工具函数名跨断连稳定
 
@@ -169,7 +169,7 @@
   7. 【可核对】`grep -n "disambiguation_suffix_colliding_with_real_tool_name_stays_unique" src-tauri/src/bot/mcp/mount.rs` 命中——消歧后缀撞到真实工具名时继续递增（不产出重名）。
 - **证据**：截图（两次工具清单的函数名对比）+ 聊天里模型两次发出的工具名 + <data_dir>/bot.log 片段
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "NameRegistry" src-tauri/src` 确认登记簿还在源码里；grep 得到但序号漂了 = 实现回归（这是静默错调，只能实机发现）
-- **缺口补验**：—
+- **缺口补验**：**L1 已验（2026-11-25）**：序号不因服务器离开而前移（names_survive_a_server_dropping_out）、按旧名定位离线服务器（lookup_resolves_a_tool_of_an_offline_server）、消歧确定性、后缀撞真名继续递增（mount.rs 4 例）；**仍缺**：模型侧函数名（mcp_my_tool_read / _2）无用例；实机两台同前缀服务器的实际函数名与路由未验——卡面自认静默错调只能实机发现
 
 ### ACC-T-06 · 技能系统
 
@@ -232,7 +232,7 @@
   12. 【可观测】模型一个字都没说就结束时，收到技能出口兜底：技能名 + 结束原因 + 产物文件路径。
 - **证据**：截图（技能跑完后的结束原因行 + 收尾提醒）+ 启动 stderr 输出 + <data_dir>/bot.log 片段
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "SKILL_MAX_STEPS_LIMIT" src-tauri/src` 确认配额常量还在源码里（三个常量 `SKILL_DEFAULT_MAX_STEPS` / `SKILL_MAX_STEPS_LIMIT` / `SKILL_MAX_LIFETIME_SECS` 都 grep 得到才算名还在）
-- **缺口补验**：10-26/10-29 改口径：无墙钟无独立预算、max_steps 仅 auto 生效未验
+- **缺口补验**：**L1 已验（2026-11-25）**：max_steps 钳制与声明上限、绝对寿命上限到点判死、interactive 不设步数闸的准入规则（parse/tests.rs、runtime/tests.rs、manage/tests.rs）；**仍缺**：timeout_secs 已废弃告警、max_rounds 往下钳、软警告阈值、审计载荷里的生效 max_steps、技能出口兜底无用例；实机技能真跑一遍的熔断/继续/提醒/出口未验
 
 ### ACC-T-08 · 技能执行中断的两条根因与三处修法
 
@@ -260,7 +260,7 @@
   10. 【可核对】`grep -n "SCHEMA_GREP_FILES" src-tauri/src/bot/registry/schemas.rs` 命中——工具描述同步说清两种形态。
 - **证据**：截图（连续失败后的技能状态行 + 长技能正文全文出现在对话里 + 单文件 grep 命中）+ <data_dir>/bot.log 片段
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "skill_step_fail" src-tauri/src` 确认事件名还在源码里（grep 不到 = 卡片过期；grep 得到但机器上无 = 应用侧回归）
-- **缺口补验**：10-26 新增：失败语义按 mode 分岔、use_skill 正文不受全局 cap 压制、grep_files 兼容单文件
+- **缺口补验**：**L1 已验（2026-11-25）**：失败语义按 mode 分岔（advance_dsl_* 族）、grep_files 目录/单文件双形态、use_skill 走 per-tool 预算（65536）不与全局 cap 取小、工具描述同步两种形态（runtime/tests.rs + output.rs/schemas.rs/read.rs 的 grep 命中）；**仍缺**：连败 3 次才判死与中途成功清零、长正文不被 cap 压制、单文件形态不被拒无用例；实机三条行为未跑
 
 ### ACC-T-09 · PPT 制作中断的四个根因与四处修法
 
@@ -294,7 +294,7 @@
   13. 【可审计】脚本失败那次 <data_dir>/bot.log 中出现 `tool.return`（检索命令：`grep -F "tool.return" "<data_dir>/bot.log" | tail -20`）且工具名是 `run_python`——工具失败配平落账，调用数与返回数对得上（配平缺失 = 统计面板出现「悬挂调用」）。
 - **证据**：截图（授权窗确认后技能继续 + 失败报错文案 + scriptPath 重跑成功）+ `wmessage-py-runs/` 目录两次 `ls` 输出 + <data_dir>/bot.log 片段
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "emitted_body" src-tauri/src` 确认重发判据还在源码里（`emitted_body` / `pending_confirm_id` / `scriptPath` 三处任一 grep 不到 = 卡片过期）
-- **缺口补验**：10-26 新增：授权窗误杀、悬空 run、scriptPath 落盘、运行目录留存四条修法未验
+- **缺口补验**：**L1 已验（2026-11-25）**：确认按 id 绑定与危险确认才暂停、收尾路径、失败留存目录与失败文案、重发判据（runtime/tests.rs + py/runtime.rs + bot/tools/doc.rs + sse.rs 的 grep 命中）；**仍缺**：file_access 确认后技能继续跑、脚本 raise 报失败、成功清目录/失败留目录无用例；实机授权窗不误杀、失败文案与 scriptPath 重跑未跑；2026-11-25 更正：重发判据标识符在流式断流修复里已改名（emitted_any → emitted_body）
 
 ### ACC-T-10 · 内置技能已退役
 
@@ -352,7 +352,7 @@
   12. 【可审计】<data_dir>/bot.log 中出现 `skill.enabled_changed`（检索命令：`grep -F "skill.enabled_changed" "<data_dir>/bot.log" | tail -20`），载荷含技能名与目标开关值。
 - **证据**：截图（置灰行 + tooltip + SKILL.md 内容）+ <data_dir>/bot.log 片段
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "skill.enabled_changed" src-tauri/src` 确认事件名还在源码里（`skill.enabled_changed` grep 不到 = 卡片过期）
-- **缺口补验**：—
+- **缺口补验**：**L1 已验（2026-11-25）**：frontmatter enabled 单一事实源与原子写（set_enabled_* 六例）、启动预审拒绝禁用技能、外部手改同样生效（parse/tests.rs + runtime/tests.rs）；**仍缺**：整行置灰、意图路由不产出该技能、use_skill 被拒、系统提示清单过滤——三道闸的接线层无用例，改开关后重建路由表也无用例；实机拨杆 UI 与模型侧表现未验
 
 ### ACC-T-12 · 产物统一落 AI_Gen_Files
 
@@ -383,7 +383,7 @@
   12. 【可审计】生成产物走的是工具通道：<data_dir>/bot.log 中本轮出现 `tool.call` 与配平的 `tool.return`（检索命令：`grep -F "tool.call" "<data_dir>/bot.log" | tail -20`），工具名是 `create_word` / `create_excel` / `create_pdf` / `create_ppt` 之一。
 - **证据**：截图（右侧栏「打开产物文件夹」入口 + 产物汇总弹窗）+ 产物目录三次 `ls` 输出 + 文件修改时间对比
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "bot_open_gen_dir" src-tauri/src` 确认命令名还在源码里（`bot_open_gen_dir` 与 `gen_out_path_in` 都 grep 得到才算名还在）
-- **缺口补验**：同名加 (n) 永不覆盖、启动预建、产物登记表弹窗未验
+- **缺口补验**：**L1 已验（2026-11-25）**：产物登记去重与四类分流（bot_artifacts.rs 5 例）+ 目录入口/命名循环/后端解析路径/搬运/日志写法五处 grep 命中；**仍缺**：同名加 (n) 永不覆盖没有直接用例（gen_out_path_in 无单测）、产物登记表弹窗（勾选绑定/跳过）、目录预建与旧文件修改时间不变无用例；实机四种格式同名产物序号递增与通知中心绑定卡未跑
 ### ACC-P-11 · run_python 断网与目的地闸
 
 - **SPEC**：6-116

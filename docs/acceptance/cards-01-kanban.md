@@ -73,7 +73,7 @@
   6. 【可核对】`grep -n "SLIDE_MS = 240" src/components/TaskTimeline/TaskEditorOverlay.tsx` 命中滑入时长；`grep -n "EXIT_MS = SLIDE_MS + 40" src/components/TaskTimeline/TaskEditorOverlay.tsx` 命中退场 280ms；`grep -n "LEFT = NAV_W + NAV_GAP" src/components/TaskTimeline/TaskEditorOverlay.tsx` 命中——浮窗左缘由导航宽常量算出，没有写死像素。
 - **证据**：截图（浮窗停稳态含间距标注 + 原位换卡前后两张）+ 录屏（滑入与滑出各一段）
 - **失败处置**：本卡无专属审计事件，改查源码分家——`grep -n "SLIDE_MS" src/components/TaskTimeline/TaskEditorOverlay.tsx` 无命中 = 动画时长口径已改（卡片过期）；常量在但机器上不滑入 = 应用侧回归，开缺陷单
-- **缺口补验**：双击开浮窗、240ms 滑入滑出、跨页原位换任务不重播动画未验
+- **缺口补验**：**L1 已验（2026-11-25）**：滑入/退场时长与 token 同源、原位换卡不重播、Esc 走退场四条（TaskEditorOverlay.test.tsx 8 例）；**仍缺**：浮窗宽 300px 与上下 3px、左缘 4px 的像素间距、单击不误开浮窗均无用例；实机逐帧观感（滑入 ≤300ms / 退场 280ms）未跑，实机侧只有 M55 覆盖 Esc 层级裁决
 
 ### ACC-K-04 · 浮窗关闭拨杆：保存关闭 / 不保存关闭两条分支
 
@@ -97,7 +97,7 @@
   6. 【可核对】`grep -rn "saveOnClose" src/components/TaskTimeline/TaskDetailPanel.tsx src/App.tsx` 命中拨杆状态与其重置逻辑；`grep -rn "保存关闭\|不保存关闭" src/components/TaskTimeline/TaskDetailPanel.tsx` 命中两条关闭键文案；`grep -n "discardEditor" src/App.tsx` 命中新建卡的回滚删除路径。
 - **证据**：截图（拨杆开 / 拨杆关两种状态 + 关闭键文案 + 新建取消后的任务池）
 - **失败处置**：本卡无专属审计事件，改查源码分家——`grep -rn "saveOnClose" src/components/TaskTimeline/TaskDetailPanel.tsx src/App.tsx` 无命中 = 拨杆已退役（卡片过期）；命中但机器上拨杆缺失或新建卡残留 = 应用侧回归，开缺陷单
-- **缺口补验**：10-21 新增，全库无实机卡；不保存关闭两条分支完全未验
+- **缺口补验**：**L1 已验（2026-11-25）**：拨杆默认开/两条关闭文案/换卡复位/不持久化 + 不保存关闭分支（TaskDetailPanel.test.tsx 6 例、TaskEditorOverlay.test.tsx 1 例）；**仍缺**：宿主侧 discardEditor 回滚（只回滚本次改动字段、新建卡取消后不落库）无用例；实机需 sqlite 验取消新建后任务池与回收站都不多行，以及重启应用后拨杆仍为「开」
 
 ### ACC-K-05 · 计划块 v2：标题行数分档 / 同列双卡半区 / 整簇塌缩
 
@@ -120,7 +120,7 @@
   6. 【可核对】`grep -n "export function titleRows" -A 6 src/components/TaskTimeline/week.ts` 显示 1/2/4/6 四档阈值；`grep -n "function stackSize" -A 4 src/components/TaskTimeline/PlanBlock.tsx` 显示 16/12/10 三档；`grep -n "fmtHours" -A 4 src/components/TaskTimeline/week.ts` 显示 90 → 1.5 的口径。
 - **证据**：截图（四个时长档各 1 张 + 双卡半区 1 张 + 三卡塌缩 1 张）
 - **失败处置**：本卡无专属审计事件，改查源码分家——`grep -n "titleRows" src/components/TaskTimeline/week.ts` 无命中 = 分档口径已改（卡片过期）；常量在但机器上不塌缩或行数不对 = 应用侧回归，开缺陷单
-- **缺口补验**：标题行数分档 1/2/4/6、同列双卡半区、3 卡以上整簇塌缩三档尺寸未验
+- **缺口补验**：**L1 已验（2026-11-25）**：titleRows 四档 1/2/4/6、fmtHours 去尾零、重叠分栏（week.test.ts「titleRows：矮块 1 行…」「fmtHours：分钟 → 小时去尾零」「两段重叠 → 同簇两栏」）；**仍缺**：塌缩块三档尺寸（stackSize 16/12/10，PlanBlock.tsx 内部函数未导出）、双击塌缩块开自己的浮窗无用例；实机四个时长档的标题行数与三卡塌缩观感未跑
 
 ### ACC-K-06 · 已归档卡原位封存：虚线边 + 红印章 + 双击跳归档区定位
 
@@ -187,7 +187,7 @@
   4. 【可核对】`grep -n "截止时间格式必须是 YYYY-MM-DD 或 YYYY-MM-DDTHH:mm" src-tauri/src/db/tasks.rs` 命中后端守卫文案；`grep -rn "isValidDateTimeLocal" src/components/TaskTimeline/TaskDetailPanel.tsx` 命中前端同款守卫；`grep -rn "isValidDateTimeLocal" src/format.test.ts` 命中单测覆盖。
 - **证据**：截图（三种非法值的输入框状态 + 两种合法值的落库后显示）+ sqlite 查询输出
 - **失败处置**：本卡无专属审计事件，改查源码分家——`grep -rn "isValidDateTimeLocal" src/components/TaskTimeline/TaskDetailPanel.tsx` 无命中 = 守卫已改（卡片过期）；守卫在但非法值仍落库 = 应用侧回归，开缺陷单
-- **缺口补验**：「不保存关闭」路径下的截止值校验未验
+- **缺口补验**：**L1 已验（2026-11-25）**：日期守卫四种边界（src/format.test.ts「2026-02-31 这类不存在的日期必须拒绝」「时分越界拒绝」「不完整/畸形输入拒绝」「合法值通过」）+ 后端守卫文案命中；**仍缺**：输入框层行为（拒收或回到上一个合法值、不弹「保存成功」）与纯日期形态补 23:59 无用例；实机侧 M45（fulltest-2026-10-24 PASS）覆盖 bot 写口与「库里无脏格式行」，UI 写口与「不保存关闭」路径下的截止值校验仍未验
 
 ### ACC-K-09 · 文件绑定语义：追加制 / 文件夹槽替换 / 10 封顶 / bot 只增不减
 
@@ -211,7 +211,7 @@
   6. 【可核对】`grep -n "MAX_TASK_FILES = 10" src/lib/taskFiles.ts` 命中前端上限；`grep -n "超出部分已忽略" src/lib/taskFiles.ts` 命中提示文案；`grep -rn "AI_Gen_Files" src-tauri/src/bot/registry/schemas.rs` 命中「仅允许 AI_Gen_Files 目录内」「最多 10 个，每卡一个文件夹，绑新文件夹替换旧的」两条约束。
 - **证据**：截图（绑定面板选完后的列表 + 超限提示 + bot 绑定后的列表）+ sqlite 查询输出
 - **失败处置**：本卡无专属审计事件，改查源码分家——`grep -n "MAX_TASK_FILES" src/lib/taskFiles.ts` 无命中 = 上限口径已改（卡片过期）；常量在但机器上能绑超过 10 个 = 应用侧回归，开缺陷单
-- **缺口补验**：文件夹槽替换制、每卡 10 封顶、AI_Gen_Files 白名单校验、bot 渠道只增不减未验
+- **缺口补验**：**L1 已验（2026-11-25）**：文件夹槽替换、同路径去重/同名不同路径、超限截断、10 封顶与跨语言锁步、并发合并不覆盖（taskFiles.test.ts 9 例、useTaskFiles.test.tsx 3 例）；**仍缺**：超限提示的弹出路径与 bot 渠道「只增不减」无用例；实机需 sqlite 验 files 序列 ≤10、目录类条目 ≤1；历史卡 S21 在复验手册里仍是「待跑」
 
 ### ACC-K-10 · 子任务卡：＋ 生成 / ↗ 跳转 / × 删除 + 母卡删除二选一
 
@@ -236,7 +236,7 @@
   7. 【可核对】`grep -n "一并删除子卡\|仅删母卡" src/App.tsx` 命中弹窗两键文案。
 - **证据**：截图（子任务行悬停三按钮 + ＋ 生成后的池子 + 二选一弹窗 + 两种选择后的结果）
 - **失败处置**：本卡无专属审计事件，改查源码分家——`grep -n "一并删除子卡" src/App.tsx` 无命中 = 二选一弹窗已改（卡片过期）；命中但机器上「↗」跳错卡或「×」连带删了子卡 = 应用侧回归，开缺陷单
-- **缺口补验**：＋生成子卡 / ↗ 跳转 / × 删除三条交互与母卡删除二选一弹窗未验
+- **缺口补验**：**L1 已验（2026-11-25）**：＋/↗/× 三按钮与状态切换、母卡删除二选一弹窗（TaskDetailPanel.test.tsx 4 例、App.test.tsx 确认框文案与「选『仅删母卡』→ 子卡不动」）；**仍缺**：库级 parent_id 结果（生成卡 parent_id=母卡 id、× 解关联后置空）、生成卡彻底删除后再点 ↗ 的静默无用例；实机整条交互链（悬停三按钮 → 生成 → 跳转 → 删除 → 母卡删除二选一）未跑
 
 ### ACC-K-11 · 自动归档：7 天边界 + 大模型自动打标 ≤3 + 归档页搜索筛选
 
@@ -284,7 +284,7 @@
   7. 【可审计】`grep -F "tag_merge" "<data_dir>/bot.log" | tail -20` 与 `grep -F "tag_merge_rollback" "<data_dir>/bot.log" | tail -20` —— 合并与撤销各留一条审计行。
 - **证据**：截图（聚簇面板 + 合并前后标签对照 + 三种非法主标签名的报错各 1 张）
 - **失败处置**：用 `grep -F "tag_merge" src-tauri/src` 确认事件名还在源码里——事件名没了 = 卡片过期；名字在但合并没生效 = 应用侧回归，开缺陷单
-- **缺口补验**：本条已有历史卡覆盖，本轮复核现状即可
+- **缺口补验**：**L1 已验（2026-11-25）**：别名精确匹配、整簇改写、撤销回滚、历史行写失败整批回滚、空名拒绝（tags_consolidate.rs 内联测试）+ 占位值与长度口径与后端一致（botConsolidate.test.ts 2 例）；**仍缺**：前端「占位值」「超长」两种报错文案与「归档页当场刷新、图谱同步变化」无用例；实机聚簇面板整段交互与 tag_merge / tag_merge_rollback 两条审计行未跑（历史卡 M28/M29/M36 覆盖的是变异侧）
 
 ### ACC-K-13 · 回收站：软删只写 deletedAt、移废纸篓三选项、彻底删除
 
@@ -310,7 +310,7 @@
   9. 【可核对】软删卡不得被定时器读到：到原定排期 / 截止时刻，不产生该卡的执行或提醒（定时作业列表里也没有它）。
 - **证据**：截图（回收站列表 + 恢复后回到原时间格 + 三选项弹窗 + 指名持有者的拒绝提示）+ sqlite 查询输出
 - **失败处置**：用 `grep -F "tasks.delete_non_self" src-tauri/src` 确认事件名还在源码里（本卡主路径无专属事件，此条用于排查机器人误删他人的卡）；主路径失败改查源码分家——`grep -rn "sched_last" src-tauri/src/db/tasks.rs` 有命中 = 旧触发器复活（判失败）
-- **缺口补验**：移废纸篓三选项弹窗、删除被引用文件时指名持有者、彻底删除三表清理未验（矩阵「三表清理」的前提存疑：现行实现只删 `tasks` 一张表，无三表级联）
+- **缺口补验**：**L1 已验（2026-11-25）**：回收站按删除时间倒序、软删只带 deletedAt、彻底删除失败不阻断（TrashPage.test.tsx 2 例、App.test.tsx 3 例）+ 旧触发器退役（sched_last 无命中、scheduled_jobs 独立表命中）；**仍缺**：三选项弹窗、删被引用文件时的指名持有者、软删卡不被定时器读到无用例；实机需 sqlite 验排期保留与恢复回原格；**矩阵「三表清理」的前提已确认为错**——现行实现只删 `tasks` 一张表，无三表级联
 
 ### ACC-K-14 · 多人汇总：导出合并（updated_at 新者胜）+ owner_id + 头像落 people 表
 
@@ -331,7 +331,7 @@
   5. 【可审计】`grep -F "tasks_export" "<data_dir>/bot.log" | tail -20` 与 `grep -F "tasks_import" "<data_dir>/bot.log" | tail -20` —— 导出与导入各留一条审计行。
 - **证据**：截图（导入前后任务标题对照 + 图谱节点归属）+ 导出的 JSON 片段 + sqlite 查询输出
 - **失败处置**：用 `grep -F "tasks_import" src-tauri/src` 确认事件名还在源码里——事件名没了 = 卡片过期；名字在但合并结果是旧版胜出 = 应用侧回归，开缺陷单
-- **缺口补验**：导入信封 profile 卡头像落 people 表、多人汇总的 owner_id 归属未验
+- **缺口补验**：**L1 已验（2026-11-25）**：导入后重载 UI、upsert 取 updated_at 更新的那份（含 null 分支用例 db/tests/upsert.rs）、两个审计事件名在源码；**仍缺**：owner_id 归属与 profile 头像落 people 表、「任务页只显自己的而图谱显全部」无用例；实机需 sqlite 验头像与归属；M53 是「删除/导入广播 + 导入导出审计」（部分 3/5 半 PASS），不覆盖头像与归属
 
 ### ACC-K-15 · 定时任务卡 ⏰：四档、到点自动执行、2h 补跑窗口
 
@@ -379,7 +379,7 @@
   6. 【可核对】`grep -n "wm.home.kpis\|wm.home.kpi.snapshot" src/lib/homeKpi.ts` 命中 KPI 选择与快照两个本地存储键（这两个是本地键，不是 bot.log 里的审计事件）。
 - **证据**：截图（首页全景含 KPI / 必应图 / 到期横条角标 / 周柱状图，轮播前后各 1 张）
 - **失败处置**：本卡无专属审计事件，改查源码分家——`grep -n "ROTATE_MS" src/components/HomePage/DueTicker.tsx` 无命中 = 轮播口径已改（卡片过期）；常量在但机器上不轮播 / KPI 数字与池子对不上 = 应用侧回归，开缺陷单
-- **缺口补验**：KPI 完成率口径、必应每日一图、即将到期横条轮播、本周柱状图未验
+- **缺口补验**：**L1 已验（2026-11-25）**：KPI 口径与四格真实计数、三池计数、涨跌角标快照基线、必应图成功/失败两态、到期横条 1/N 计数与 4s 轮播、本周七组柱 14 根（homeKpi.test.ts + HomePage.test.tsx + homeData.test.ts）；**仍缺**：KPI 可换组且重进仍同一组、必应图 16:9 与外跳大图与当天缓存、横条悬停暂停（用例名自承「悬停暂停逻辑见组件」）、今天那根高亮无用例；实机首页整页观感未跑
 
 ### ACC-K-17 · 主窗口：九视图切换 + ⌘K 命令面板 + 关窗转托盘
 
@@ -399,7 +399,7 @@
   4. 【可核对】`grep -n "inert={view === \"settings\"}" src/App.tsx` 命中（设置期间主树不可交互）；`grep -rn "tasks-changed" src/App.tsx src/components/` 命中任务变更广播的订阅点（这是前端广播事件，不进 bot.log，不能拿它去 grep 日志）。
 - **证据**：截图（十一个视图各 1 张关键屏 + 命令面板过滤结果 + 托盘图标）
 - **失败处置**：本卡无专属审计事件，改查源码分家——`grep -rn "tasks-changed" src/App.tsx src/components/` 无命中 = 广播订阅已改（卡片过期）；命中但机器上切视图残留半屏 = 应用侧回归，开缺陷单
-- **缺口补验**：七个视图（任务/图谱/定时/程序/活动/通知/聊天）切换与挂载零断言
+- **缺口补验**：**L1 已验（2026-11-25）**：归档/工作区/回收站三处视图切换、会话栏常驻与 aria-current、⌘K 过滤与设置期只渲染一份（App.test.tsx + CommandPalette.test.tsx）；**仍缺**：十一个入口未逐个断言、托盘唤回与视图保持无用例；实机逐个切换无半屏残留 + 关窗后进程仍在与托盘唤回未跑；2026-11-25 更正：本卡原写 10 个入口且用了旧标签「日程」、漏「程序」，已按 App.tsx 的 NAV_ITEMS 6 + AGENT_ITEMS 5 改
 
 ### ACC-K-18 · 主导航宽度 184px
 
@@ -461,7 +461,7 @@
   5. 【可核对】`grep -n "fixed inset-0 z-\[60\]" src/App.tsx` 命中叠层样式（2026-11-25 更正：原写 `z-[60]`，方括号在 grep 基本正则里是字符组，照原文 grep 命中 0——叠层样式本身在位，是命令写错）；`grep -n "inert={view === \"settings\"}" src/App.tsx` 命中 inert 屏蔽；设置页有独立「返回」按钮且崩了只塌设置壳（各自独立 ErrorBoundary，不带走主树）。
 - **证据**：截图（设置页盖住聊天区 + 底层流式气泡仍在增长 + 返回后的完整回复 + 只弹一份的命令面板）+ 录屏（流式中切设置再切回）
 - **失败处置**：本卡无专属审计事件，改查源码分家——`grep -n "fixed inset-0 z-" src/App.tsx` 无命中 = 设置页改成提前 return 替换主树了（判失败，应用侧回归）
-- **缺口补验**：本条已有历史卡覆盖，本轮复核现状即可
+- **缺口补验**：**L1 已验（2026-11-25）**：设置是叠层主树不卸载（流式订阅仍在）、全局弹窗逃出 inert、草稿跨切设置存活、⌘K 只渲染一份（App.test.tsx 4 例）+ 叠层样式与 inert 接线 grep 命中；**仍缺**：「这条回复的过程没丢、最终正文完整」与设置页独立 ErrorBoundary 无用例；实机流式中切设置看背后继续长、主树点不动、返回后正文完整未跑；2026-11-25 更正：原 grep 写 z-[60]，方括号在 grep 基本正则里是字符组，照原文命中 0——叠层样式本身在位
 
 ### ACC-K-21 · 聊天会话栏宽度 224px
 

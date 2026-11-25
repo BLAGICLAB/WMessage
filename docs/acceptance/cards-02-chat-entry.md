@@ -67,7 +67,7 @@
   5. 【可核对】`grep -n "view === \"chat\" ? \"h-full\" : \"hidden\"" src/App.tsx` 命中——ChatPanel 用可见性切换而非条件渲染卸载。
 - **证据**：截图（切走前 / 切回后同一会话的同一屏）+ 录屏（流式中切页再切回）
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（本卡无审计事件，改查 `grep -rn "chat-focus-session" src/components/ChatPanel/`：监听器不在 = 卡片过期）
-- **缺口补验**：execute-task / chat-focus-session / subagent-finished 三监听器在切走页面期间的行为未验
+- **缺口补验**：**L1 已验（2026-11-25）**：主窗口靠 hidden 切页不卸载容器、用户行与终稿落库后前端按 bot-msg-upserted 投影、四监听器接线与 chat-open-session 三态（session/usage/send/stream 四份 ChatPanel 测试 + bot_chat/user_turn_tests.rs）；**仍缺**：切走期间触发的定时任务那一支无用例；实机切走再切回的界面观感未跑
 
 ### ACC-C-04 · 聊天窗滚动语义：贴底才跟随
 
@@ -91,7 +91,7 @@
   6. 【可核对】`grep -n "STICK_BOTTOM_PX" src/components/ChatPanel/constants.ts` 值为 32。
 - **证据**：截图（离底状态 / 贴底状态各一张，带滚动条位置）+ 录屏
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（本卡无审计事件，改查 `grep -n "STICK_BOTTOM_PX" src/components/ChatPanel/constants.ts`：常量被改 = 卡片过期）
-- **缺口补验**：无实机卡：贴底 32px 判据、滚回底恢复跟随未验
+- **缺口补验**：**L1 已验（2026-11-25）**：往上翻不被拽回底、贴底跟随、翻历史后发消息复位、切走切回回到底部、报错时已流出正文不吞（ChatPanel.scroll.test.tsx 5 例）+ 32px 常量 grep 命中；**仍缺**：切到另一个会话后视口立即复位无用例；实机贴底观感与录屏未跑（全库无实机卡）
 
 ### ACC-C-05 · 在途回合不丢：回合开始即落库
 
@@ -112,7 +112,7 @@
   5. 【可核对】`grep -rn "bot_history_save" src-tauri/src/lib.rs` **无命中**——该命令已随真源化（2026-11-06 批）断代删除，库里只剩 `bot_history_save_inner` / `bot_history_save_audited` 两个内部函数，不对外暴露（2026-11-25 更正：原判据写「grep 命中 src-tauri/src/」，那个命令早已不在，照原文查命令注册会判错）；现行落库口径三处 grep 命中：`grep -n "bot-msg-upserted" src-tauri/src/bot_chat.rs`（用户行与回合终稿经行内核 upsert 后广播，库里始终是这一轮的真源）、`grep -n "fn build_final_row" src-tauri/src/bot_chat.rs`（终稿行构造）、`grep -n "bot_history_replace_summary" src-tauri/src/bot_chat.rs`（摘要行投影）。
 - **证据**：截图（切走前 / 切回后 / 刷新后同一会话）+ `<data_dir>/bot.log` 片段
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（`chat.history_truncated` / `chat.history_save_truncated` 是历史截断事件，只在历史超限时出现；它不出现不等于本卡失败）
-- **缺口补验**：—
+- **缺口补验**：**L1 已验（2026-11-25）**：用户行与终稿落库真源、上下文从库重建、按 client_msg_id 幂等 upsert（bot_chat/user_turn_tests.rs）+ 现行落库口径三处 grep 命中（bot_history_save 命令已随真源化断代删除，库里只剩同名内部函数）；**仍缺**：刷新窗口后逐字一致与同一段正文不重复两遍无用例（jsdom 只覆盖事件投影，不覆盖重载）；实机切页与刷新结果未跑
 
 ### ACC-C-06 · 在途流式可恢复：序号 + 回放缓冲 + 在途登记
 
@@ -224,7 +224,7 @@
   7. 【可核对】`grep -n "botDisabled" src/components/ChatPanel/InputArea.tsx` 命中——输入卡禁用面（textarea disabled + 发送/附件键禁用 + 说明文案）由该 prop 驱动。
 - **证据**：截图（开关关闭时的聊天页 + 打开后的聊天页）
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（本卡无专属审计事件；`config.active_switched` 是模型/厂商切换落盘事件，与机器人总开关不是同一条，不要用它的有无判本卡）
-- **缺口补验**：输入框禁用+说明文案未实机验（「完全不渲染」判据已按 2026-11-22 拍板退役为「禁用+提示」口径——草稿可见性与「先打字后开开关」的流优先）
+- **缺口补验**：**L1 已验（2026-11-25）**：开关关时会话不加载、输入卡禁用 + 占位与说明文案、发送与附件键禁用、会话列表容器仍在（ChatPanel.session.test.tsx 1 例）+ 后端 require_bot_enabled 与四处接线 grep 命中；**仍缺**：关闭期间库里条数不增、重新打开后立刻恢复无用例；实机开关关闭→打开整段未跑；「完全不渲染」判据已按 2026-11-22 拍板退役为「禁用+提示」口径（草稿可见性与「先打字后开开关」的流优先）
 
 ### ACC-C-11 · 聊天页两栏布局：常驻会话栏 224px + 两行式条目
 
@@ -249,4 +249,4 @@
   7. 【可核对】`grep -n "SESSION_RAIL_W = 224" src/components/ChatPanel/chatLayout.ts` 命中（2026-11-25 更正：栏宽已收进 chatLayout 的常量 `SESSION_RAIL_W`，SessionRail 里不再有 `w-[224px]` 类名，照原文 grep 命中 0）；`grep -n "relativeTime" src/components/ChatPanel/SessionRail.tsx` 命中（相对时间落在第二行）。
 - **证据**：截图（聊天页全貌 + 标尺标注会话栏宽度 + 当前会话行特写 + 收起态）
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（本卡无审计事件，改查 `grep -n "SESSION_RAIL_W = 224" src/components/ChatPanel/chatLayout.ts`：宽度被改 = 卡片过期）
-- **缺口补验**：会话栏常驻 224px 与两行式条目未验
+- **缺口补验**：**L1 已验（2026-11-25）**：会话栏常驻与当前会话 aria-current、两侧栏宽度同源、栏宽与相对时间的两条 grep 命中；**仍缺**：实测 224px、两行式条目与相对时间形态、三重标记、栏底会话计数、chat-rail-open 跨进程保持均无用例；实机截图量宽与当前会话行特写未跑；2026-11-25 更正：栏宽已收进 chatLayout 的 SESSION_RAIL_W 常量，照旧命令 grep 命中 0
