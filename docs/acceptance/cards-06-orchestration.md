@@ -353,7 +353,7 @@
 - **判据**：
   1. 【可核对】步骤 1-3 每步的查询输出与所述一致；`session_id` 唯一索引存在（`grep -n "idx_work_items_session" src-tauri/src/db/work_items.rs`）。
   2. 【可观测】步骤 4：`stage=failed` 且 error 文案含「进程重启」；调度 tick 的陈旧清扫不误伤 `awaiting_answer` 行（`grep -n "sweep_stale_working" src-tauri/src/bot_scheduler.rs` 命中 30s tick 接线）。
-  3. 【可核对】`work_items_list` / `work_items_needing_human` 两命令注册（`grep -n "work_items_list" src-tauri/src/lib.rs`）。
+  3. 【可核对】聚合面命令注册（2026-11-24 更正：原写 `work_items_list` / `work_items_needing_human` 两命令，已随 2026-11-16 的死代码清零 90f1b61e 删除——照原 grep 命中 0 会被误判成「卡片过期」）：`grep -n "needs_attention_list" src-tauri/src/lib.rs` 命中；「需要人处理」聚合面由这一个命令提供（person 族阶段的行 + 失败/超限的 subagent + 失败的作业，查询时聚合）。
 - **证据**：work_items 表查询输出（各步骤）+ 重启前后对比 + grep 终端输出
 - **失败处置**：`grep -n "upsert_for_session" src-tauri/src/bot_chat/flow.rs` 命中 = 接线在；不命中 = 卡片过期
 
