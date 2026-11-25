@@ -229,7 +229,8 @@
   7. 【可核对】`grep -n "lucide-react" src/App.tsx` 命中——图标走 lucide 统一图标集，不用手绘字符图标。
 - **证据**：截图（浅色/深色/跟随系统三态 + 四个页面各一张 + 特大字号导航 + 焦点环）
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（本卡无审计事件，改查 `grep -n "nm-card" src/ui/main.css`：nm 类不在 = 卡片过期）
-- **缺口补验**：无实机卡：nm 组件类、深浅色三态、a11y 基线未验
+- **缺口补验**：a11y 判据 4 的自动化面已补齐（2026-11-25）：确认弹窗对话框语义（`role="dialog"` + `aria-modal="true"` + `aria-labelledby` 指向可见标题）、带 `aria-label="关闭"` 的关闭按钮（行为同「拒绝」，不放行）、焦点移进对话框后 Tab 依次可达关闭/拒绝/确认（`src/components/ConfirmMap/ConfirmMap.test.tsx` 三例，变异 6/6 KILLED）；键盘焦点环基线（全局 `:focus-visible` 兜底 + 四类 nm 交互件焦点环 + `--focus-ring` 浅深两套顶层定义，`src/ui/main.css.test.ts` 三例，变异 8/8 KILLED）；聊天页当前会话 `aria-current="page"` 由 `src/components/ChatPanel.test.tsx` 已有用例覆盖。**仍缺**：实机——三态主题与跟随系统切换、nm 控件浅深两套观感、特大字号导航省略、Tab 焦点环的实际可见性；另全应用 Tab 遍历与导航特大字号省略仍无自动化用例
+
 
 ### ACC-P-10 · 流式恢复链与等待闸加固（2026-10-30 批次）
 

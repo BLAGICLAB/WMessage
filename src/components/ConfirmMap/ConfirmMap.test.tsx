@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 
 // Mock @tauri-apps/api/event + core BEFORE import
@@ -370,5 +371,72 @@ describe("ConfirmMap", () => {
       expect(calls).toHaveLength(1);
       expect(calls[0][1]).toMatchObject({ requestId: "dead-1", approved: false });
     });
+  });
+
+  /* a11y 基线：确认弹窗要有可读的对话框语义、带 aria-label 的关闭按钮，
+   * 且主要交互控件 Tab 可达。 */
+  it("对话框语义：role=dialog + aria-modal + aria-labelledby 指向可见标题", async () => {
+    render(<ConfirmMap />);
+    await act(async () => {
+      emit({
+        id: "a11y-1",
+        tool: "apps_publish",
+        detail: "d",
+        kind: "danger",
+        sessionId: null,
+      });
+    });
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    const labelledBy = dialog.getAttribute("aria-labelledby");
+    expect(labelledBy).toBeTruthy();
+    // 可读名称取自可见标题（Label in Name），不是另编一个名字
+    expect(document.getElementById(labelledBy!)?.textContent).toContain(
+      "apps_publish",
+    );
+    expect(dialog).toHaveAccessibleName(/apps_publish/);
+  });
+
+  it("带 aria-label 的关闭按钮：点它 = 拒绝（approved=false，不放行）", async () => {
+    render(<ConfirmMap />);
+    await act(async () => {
+      emit({
+        id: "a11y-2",
+        tool: "apps_publish",
+        detail: "d",
+        kind: "danger",
+        sessionId: null,
+      });
+    });
+    const close = screen.getByRole("button", { name: "关闭" });
+    fireEvent.click(close);
+    await act(async () => {});
+    expect(invokeMock).toHaveBeenCalledWith("bot_confirm_response", {
+      requestId: "a11y-2",
+      approved: false,
+      always: null,
+    });
+    expect(screen.queryByTestId("confirm-map-modal")).not.toBeInTheDocument();
+  });
+
+  it("焦点移进对话框：Tab 依次走到关闭 → 拒绝 → 确认", async () => {
+    const user = userEvent.setup();
+    render(<ConfirmMap />);
+    await act(async () => {
+      emit({
+        id: "a11y-3",
+        tool: "apps_publish",
+        detail: "d",
+        kind: "danger",
+        sessionId: null,
+      });
+    });
+    expect(screen.getByRole("dialog")).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "关闭" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByTestId("confirm-map-deny")).toHaveFocus();
+    await user.tab();
+    expect(screen.getByTestId("confirm-map-approve")).toHaveFocus();
   });
 });

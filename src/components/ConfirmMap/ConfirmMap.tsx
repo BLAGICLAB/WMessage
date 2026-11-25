@@ -12,8 +12,9 @@
 //! kind="file_access" 是白名单外路径授权，三选一（允许一次 / 始终允许该目录 / 拒绝）。
 //! 60s 无响应 → 后端自动拒绝（spec §12.7 fail-safe）。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { X } from "lucide-react";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { Modal } from "../../ui/Modal";
 
@@ -39,6 +40,10 @@ export default function ConfirmMap() {
   pendingRef.current = pending;
   // busy 的同步镜像：respond 重入守卫用（state busy 异步提交，同窗双发防不住）
   const busyRef = useRef(false);
+  // 标题 id 供 aria-labelledby 引用（对话框的可读名称 = 可见标题）
+  const titleId = useId();
+  // 面板 ref：弹窗打开时把焦点移进对话框，Tab 从弹窗内控件开始走
+  const panelRef = useRef<HTMLDivElement | null>(null);
 
   // 监听后端 bot-confirm 事件
   useTauriListen<BotConfirmPayload>("bot-confirm", (p) => {
@@ -110,6 +115,13 @@ export default function ConfirmMap() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, remaining]);
 
+  // 焦点移进对话框：Tab 键从弹窗内的控件开始走（否则焦点留在被遮住的
+  // 主树上，Tab 会先穿过看不见的控件），屏幕阅读器也会播报对话框标题。
+  // 面板本身 tabIndex={-1}，不吃 Tab 停靠点。
+  useEffect(() => {
+    if (pending) panelRef.current?.focus();
+  }, [pending?.id]);
+
   // always=null = 未指定（普通允许/拒绝）；true 只由「始终允许该目录」给出
   async function respond(approved: boolean, always: boolean | null = null) {
     const cur = pendingRef.current;
@@ -146,9 +158,16 @@ export default function ConfirmMap() {
       // 主树被 inert（不可点），弹层留在里面就按不动了
       portal
     >
-      <div className="nm-card w-full max-w-md p-5 space-y-4">
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className="nm-card w-full max-w-md p-5 space-y-4 outline-none"
+      >
         <div className="flex items-center justify-between">
-          <h3 className="text-base font-semibold text-[var(--t1)]">
+          <h3 id={titleId} className="text-base font-semibold text-[var(--t1)]">
             {pending.tool}
             {pending.kind === "danger" && (
               <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700">
@@ -161,15 +180,29 @@ export default function ConfirmMap() {
               </span>
             )}
           </h3>
-          <span
-            className={`text-xs tabular-nums ${
-              remaining <= 10 ? "text-red-600" : "text-[var(--t3)]"
-            }`}
-            title="60s 无响应默认拒绝"
-            data-testid="confirm-map-countdown"
-          >
-            {remaining}s
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span
+              className={`text-xs tabular-nums ${
+                remaining <= 10 ? "text-red-600" : "text-[var(--t3)]"
+              }`}
+              title="60s 无响应默认拒绝"
+              data-testid="confirm-map-countdown"
+            >
+              {remaining}s
+            </span>
+            <button
+              type="button"
+              className="nm-icon-btn h-6 w-6"
+              aria-label="关闭"
+              data-testid="confirm-map-close"
+              disabled={busy}
+              // 关闭 = 拒绝（与「拒绝」按钮同一条路径）：60s 超时本来也默认拒绝，
+              // 关闭不给「不表态就放行」留口子
+              onClick={() => void respond(false)}
+            >
+              <X size={14} aria-hidden />
+            </button>
+          </div>
         </div>
 
         <pre

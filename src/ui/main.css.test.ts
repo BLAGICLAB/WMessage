@@ -363,3 +363,91 @@ describe("main.css 浮层入场", () => {
     expect(rightAligned).toBe(2);
   });
 });
+
+/* 键盘焦点环基线：
+ * 焦点环是 CSS 规则，组件测试看不见它——规则被删或改成 none 时界面会静默
+ * 退化成「键盘用户看不到自己在哪」，所以在这里锁死。 */
+describe("main.css 键盘焦点环基线", () => {
+  /** 取选择器块的完整内容（配平花括号，支持 @supports/@media 嵌套） */
+  function blockOf(sel: string): string {
+    const i = css.indexOf(sel + " {");
+    if (i < 0) return "";
+    const open = css.indexOf("{", i);
+    let depth = 0;
+    for (let j = open; j < css.length; j++) {
+      if (css[j] === "{") depth++;
+      else if (css[j] === "}") {
+        depth--;
+        if (depth === 0) return css.slice(open + 1, j);
+      }
+    }
+    return "";
+  }
+
+  /** 块内顶层声明（被 @supports/@media 吞进去的不算——那是条件覆盖，不是定义） */
+  function topLevelDecls(block: string): string {
+    let depth = 0;
+    let buf = "";
+    let out = "";
+    for (const ch of block) {
+      if (ch === "{") {
+        depth++;
+        continue;
+      }
+      if (ch === "}") {
+        depth--;
+        buf = "";
+        continue;
+      }
+      if (depth === 0) {
+        if (ch === ";") {
+          out += buf + ";";
+          buf = "";
+        } else buf += ch;
+      }
+    }
+    return out + buf;
+  }
+
+  it("全局 :focus-visible 兜底规则在（未定制焦点态的交互件有轮廓）", () => {
+    expect(css).toMatch(
+      /:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--brand\)/s,
+    );
+  });
+
+  it("nm 交互件各带焦点环（按钮 / 图标按钮 / 输入框 / 主按钮）", () => {
+    for (const sel of [
+      ".nm-btn:focus-visible",
+      ".nm-icon-btn:focus-visible",
+      ".nm-input:focus",
+      ".nm-btn-brand:focus-visible",
+    ]) {
+      const body = blockOf(sel);
+      expect(body, `缺 ${sel} 的焦点态规则`).not.toBe("");
+      // 焦点态要么画轮廓要么画环，不能两个都没有。
+      // 「排除 none」的前瞻必须紧贴冒号：`outline:\s*(?!none)` 会被 \s* 回溯
+      // 钻空子（\s* 匹配 0 字符时前瞻站在空格前，"outline: none" 照样命中）——
+      // 变异验证里这一条就是这么 SURVIVED 出来的。
+      const hasRing =
+        /box-shadow:\s*var\(--focus-ring\)/.test(body) ||
+        /outline:(?!\s*none)[^;]+/.test(body);
+      expect(hasRing, `${sel} 没有可见焦点环`).toBe(true);
+    }
+  });
+
+  it("--focus-ring token 浅深两套都定义且看得见", () => {
+    // 浅色根 + 深色覆盖各一份顶层定义，缺一份 → 另一套主题下焦点环退化成看不见
+    for (const [name, sel] of [
+      ["浅色", ":root"],
+      ["深色", ".dark"],
+    ] as const) {
+      const decls = topLevelDecls(blockOf(sel));
+      const token = decls.match(/--focus-ring:\s*([^;]+);/)?.[1]?.trim() ?? "";
+      expect(token, `${name}主题缺 --focus-ring 顶层定义`).not.toBe("");
+      expect(token).not.toBe("none");
+      expect(token).not.toBe("transparent");
+      // 全透明的 rgba（alpha=0）跟没画一样
+      expect(token).not.toMatch(/rgba\([^)]*,\s*0(?:\.0+)?\)\s*$/);
+    }
+  });
+});
