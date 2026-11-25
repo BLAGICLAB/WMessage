@@ -450,7 +450,7 @@
   6. 【可观测】步骤 9：对照组探活失败文案如实（普通厂商「匿名 2xx 不转正」回归未破）。
 - **证据**：bot-config.json 的 noAuthVendors/modelsByProvider 输出 + 厂商页与详情页截图 + Ollama 侧（`ollama ps`）请求到达记录 + 对照组探活失败截图
 - **失败处置**：先分「功能坏了」还是「环境坏了」——Ollama 未起/端口不对时探活失败属环境；`grep -n "no_auth_vendors" src-tauri/src/bot/config/types.rs` 命中 = 字段在；聊天下拉不出现先查 verified_vendors 是否转正（探活是否匿名通过）
-- **缺口补验**：**L1 已验（2026-11-25）**：免鉴权名单优先于 keyring I/O（resolve_no_auth_vendor_returns_empty_key_without_keyring / resolve_vendor_not_in_no_auth_list_still_requires_key）、探活匿名转正分叉（anon_probe_hint_skipped_for_no_auth_vendors）、写 key 即移出名单、厂商面 13 例（SettingsPage.vendor.test.tsx）；**仍缺**：绿点 + 聊天下拉可见 + 真对话不带鉴权头这条闭环与对照组失败文案无用例；实机全流程未跑（Ollama 真服务对话、Anthropic 格式本地端点、删除厂商同步清名单）；Windows 侧钥匙串路径未验
+- **缺口补验**：**L1 已验（2026-11-25）**：免鉴权名单优先于 keyring I/O（resolve_no_auth_vendor_returns_empty_key_without_keyring / resolve_vendor_not_in_no_auth_list_still_requires_key）、探活匿名转正分叉（anon_probe_hint_skipped_for_no_auth_vendors）、写 key 即移出名单、厂商面 13 例（SettingsPage.vendor.test.tsx）；**仍缺**：判据 1 的「完全不带鉴权头」只有源码 grep（bot_model_loop/request.rs 的空 key 分支跳过 bearer_auth / apply_anthropic_auth），没有断言覆盖——bot_anthropic 模块内的单测覆盖的是消息形态（thinking 块、tool_result 配对）不是鉴权头；绿点 + 聊天下拉可见 + 真对话不带鉴权头这条闭环与对照组失败文案也无用例；实机全流程未跑（Ollama 真服务对话、Anthropic 格式本地端点、删除厂商同步清名单）；Windows 侧钥匙串路径未验
 
 ### ACC-P-24 · 已结束的一次性作业区（执行记录留档 30 天）
 

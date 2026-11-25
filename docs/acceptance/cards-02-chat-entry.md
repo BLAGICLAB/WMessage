@@ -67,7 +67,7 @@
   5. 【可核对】`grep -n "view === \"chat\" ? \"h-full\" : \"hidden\"" src/App.tsx` 命中——ChatPanel 用可见性切换而非条件渲染卸载。
 - **证据**：截图（切走前 / 切回后同一会话的同一屏）+ 录屏（流式中切页再切回）
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（本卡无审计事件，改查 `grep -rn "chat-focus-session" src/components/ChatPanel/`：监听器不在 = 卡片过期）
-- **缺口补验**：**L1 已验（2026-11-25）**：主窗口靠 hidden 切页不卸载容器、用户行与终稿落库后前端按 bot-msg-upserted 投影、四监听器接线与 chat-open-session 三态（session/usage/send/stream 四份 ChatPanel 测试 + bot_chat/user_turn_tests.rs）；**仍缺**：切走期间触发的定时任务那一支无用例；实机切走再切回的界面观感未跑
+- **缺口补验**：**L1 已验（2026-11-25）**：用户行与终稿落库后前端按 bot-msg-upserted 投影、四监听器接线与 chat-open-session 三态、切走期间的在途回灌（ChatPanel.inflight.test.tsx「在途回灌：后端说还在跑 → 这一轮的事件补进气泡」「在途回灌：后端说已收尾 → 不补任何东西」）、子 agent 终态重拉（session/usage/send/stream/inflight 五份 ChatPanel 测试 + bot_chat/user_turn_tests.rs）；**仍缺**：切走期间触发的定时任务那一支无用例；**判据 5 的常挂载断言实际在「机器人总开关关闭」用例里（session.test.tsx），不在 busy 用例**——本卡只有 hidden 切换的 grep 命中，没有专门断言「切走时 ChatPanel 不卸载」的用例；实机切走再切回的界面观感未跑
 
 ### ACC-C-04 · 聊天窗滚动语义：贴底才跟随
 
@@ -91,7 +91,7 @@
   6. 【可核对】`grep -n "STICK_BOTTOM_PX" src/components/ChatPanel/constants.ts` 值为 32。
 - **证据**：截图（离底状态 / 贴底状态各一张，带滚动条位置）+ 录屏
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（本卡无审计事件，改查 `grep -n "STICK_BOTTOM_PX" src/components/ChatPanel/constants.ts`：常量被改 = 卡片过期）
-- **缺口补验**：**L1 已验（2026-11-25）**：往上翻不被拽回底、贴底跟随、翻历史后发消息复位、切走切回回到底部、报错时已流出正文不吞（ChatPanel.scroll.test.tsx 5 例）+ 32px 常量 grep 命中；**仍缺**：切到另一个会话后视口立即复位无用例；实机贴底观感与录屏未跑（全库无实机卡）
+- **缺口补验**：**L1 已验（2026-11-25）**：往上翻不被拽回底（用例把视口设到离底 500px）、翻历史后发消息复位、切走切回回到底部、报错时已流出正文不吞（ChatPanel.scroll.test.tsx 4 例）+ 32px 常量 grep 命中；**仍缺**：判据 2 的「离底 ≤32px 后恢复跟随」无用例——现有「贴着底时，流式增量仍然自动滚到底（跟随不丢）」用例没有先翻到带内（几何桩下 scrollTop 仍是 0、组件的贴底标记没被 scroll 事件改过），它守的是「用户没翻过时默认跟随」，32px 这条带宽没有用例；判据 3 的「切换到另一个会话后视口立即复位」也无用例；实机贴底观感与录屏未跑（全库无实机卡）
 
 ### ACC-C-05 · 在途回合不丢：回合开始即落库
 
@@ -112,7 +112,7 @@
   5. 【可核对】`grep -rn "bot_history_save" src-tauri/src/lib.rs` **无命中**——该命令已随真源化（2026-11-06 批）断代删除，库里只剩 `bot_history_save_inner` / `bot_history_save_audited` 两个内部函数，不对外暴露（2026-11-25 更正：原判据写「grep 命中 src-tauri/src/」，那个命令早已不在，照原文查命令注册会判错）；现行落库口径三处 grep 命中：`grep -n "bot-msg-upserted" src-tauri/src/bot_chat.rs`（用户行与回合终稿经行内核 upsert 后广播，库里始终是这一轮的真源）、`grep -n "fn build_final_row" src-tauri/src/bot_chat.rs`（终稿行构造）、`grep -n "bot_history_replace_summary" src-tauri/src/bot_chat.rs`（摘要行投影）。
 - **证据**：截图（切走前 / 切回后 / 刷新后同一会话）+ `<data_dir>/bot.log` 片段
 - **失败处置**：先分清「应用坏了」还是「卡片过期」——用 `grep -F "<事件名>" src-tauri/src` 确认事件名还在源码里（`chat.history_truncated` / `chat.history_save_truncated` 是历史截断事件，只在历史超限时出现；它不出现不等于本卡失败）
-- **缺口补验**：**L1 已验（2026-11-25）**：用户行与终稿落库真源、上下文从库重建、按 client_msg_id 幂等 upsert（bot_chat/user_turn_tests.rs）+ 现行落库口径三处 grep 命中（bot_history_save 命令已随真源化断代删除，库里只剩同名内部函数）；**仍缺**：刷新窗口后逐字一致与同一段正文不重复两遍无用例（jsdom 只覆盖事件投影，不覆盖重载）；实机切页与刷新结果未跑
+- **缺口补验**：**L1 已验（2026-11-25）**：用户行与终稿落库真源、上下文从库重建、按 client_msg_id 幂等 upsert（bot_chat/user_turn_tests.rs）+ 现行落库口径三处 grep 命中（bot_history_save 命令已随真源化断代删除，库里只剩同名内部函数）+ 不重复（ChatPanel.inflight.test.tsx「在途回灌：同号事件再从实时通道来一次 → 不重复叠加」「二次回灌窗口与本地游标不连续 → 清残迹整轮重建，旧文不混入」+ ChatPanel.stream.test.tsx「bot-think-delta 走序号去重闸：回灌重放与实时重叠的同一条增量只累加一次」）；**仍缺**：判据 3/4 的「刷新窗口后逐字一致、同一段正文不重复两遍」无用例（jsdom 侧覆盖的是事件投影与在途回灌，不覆盖 webview 重载后的整轮还原）；实机切页与刷新结果未跑
 
 ### ACC-C-06 · 在途流式可恢复：序号 + 回放缓冲 + 在途登记
 
