@@ -1,6 +1,6 @@
 [package]
 name = "wmessage"
-version = "0.4.0"
+version = "0.5.0"
 description = "WMessage - 任务看板 + AI 助手桌面应用"
 authors = ["张晓峰 <zxf_83117@163.com>"]
 edition = "2021"
